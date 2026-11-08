@@ -43,6 +43,9 @@ class BubbleVisibilityDeviceTest {
     private var savedShowOnPasswords = false
     private var pinSet = false
     private var lockWasDisabled: String? = null
+    private var savedA11yServices = ""
+    private var savedA11yEnabled = ""
+    private var a11ySnapshotTaken = false
 
     @Before
     fun stage() {
@@ -55,6 +58,10 @@ class BubbleVisibilityDeviceTest {
         }
         shell("input keyevent KEYCODE_WAKEUP")
         shell("wm dismiss-keyguard")
+        // Snapshot BEFORE the first mutation, absent keys included ("null"), so restore() puts back what was here.
+        savedA11yServices = shell("settings get secure enabled_accessibility_services").trim()
+        savedA11yEnabled = shell("settings get secure accessibility_enabled").trim()
+        a11ySnapshotTaken = true
         // Re-putting the same setting string does NOT rebind a service the instrumentation restart killed
         // (`android-tooling.md` RULE: install-then-force-stop): clear it, then set it.
         // executeShellCommand has no shell, so quotes would be literal: delete instead of putting "".
@@ -67,19 +74,47 @@ class BubbleVisibilityDeviceTest {
         assertTrue("staging: the paste service never bound, so no bubble can be judged", bound == true)
     }
 
+    /**
+     * Every restoration runs, whatever an earlier one did, and a failed one fails the test by name. A killed
+     * process skips `@After` entirely, so a PIN can only be promised cleared on a run that reaches here.
+     */
     @After
     fun restore() {
-        if (pinSet) {
-            shell("locksettings clear --old $PIN")
-            pinSet = false
+        val failures = mutableListOf<String>()
+        fun step(name: String, block: () -> Unit) {
+            try { block() } catch (error: Throwable) { failures += "$name: ${error.message}" }
         }
-        lockWasDisabled?.let { if (it == "true" || it == "false") shell("locksettings set-disabled $it") }
-        lockWasDisabled = null
-        runBlocking {
-            prefs.bubbleVisibilityStored.first().hiddenApps.forEach { prefs.setBubbleHiddenInApp(it, hidden = false) }
-            savedHidden.forEach { prefs.setBubbleHiddenInApp(it, hidden = true) }
-            prefs.setBubbleShowOnPasswords(savedShowOnPasswords)
+        step("temporary PIN") {
+            if (pinSet) {
+                val cleared = shell("locksettings clear --old $PIN")
+                check("cleared" in cleared.lowercase()) { "locksettings clear said: ${cleared.trim()}" }
+                pinSet = false
+            }
         }
+        step("lock screen disabled state") {
+            lockWasDisabled?.let { if (it == "true" || it == "false") shell("locksettings set-disabled $it") }
+            lockWasDisabled = null
+        }
+        step("accessibility settings") {
+            if (a11ySnapshotTaken) {
+                restoreSecure("enabled_accessibility_services", savedA11yServices)
+                restoreSecure("accessibility_enabled", savedA11yEnabled)
+                a11ySnapshotTaken = false
+            }
+        }
+        step("bubble preferences") {
+            runBlocking {
+                prefs.bubbleVisibilityStored.first().hiddenApps.forEach { prefs.setBubbleHiddenInApp(it, hidden = false) }
+                savedHidden.forEach { prefs.setBubbleHiddenInApp(it, hidden = true) }
+                prefs.setBubbleShowOnPasswords(savedShowOnPasswords)
+            }
+        }
+        if (failures.isNotEmpty()) throw AssertionError("cleanup failed: ${failures.joinToString("; ")}")
+    }
+
+    /** `settings get` prints "null" for an absent key; an absent key is deleted, never invented. */
+    private fun restoreSecure(key: String, value: String) {
+        if (value == "null" || value.isEmpty()) shell("settings delete secure $key") else shell("settings put secure $key $value")
     }
 
     @Test
@@ -112,11 +147,11 @@ class BubbleVisibilityDeviceTest {
     fun aLockedPhoneHidesTheLipsAndUnlockingBringsThemBack() {
         focus(BubbleFieldsActivity.FOCUS_NAME)
         awaitBubble(shown = true, "ordinary field (positive control)")
+        // A phone whose lock screen was switched off never shows the keyguard; snapshot before any change.
+        lockWasDisabled = shell("locksettings get-disabled").trim()
         val set = shell("locksettings set-pin $PIN")
         assertTrue("staging: could not set a temporary PIN on this phone: $set", "set" in set.lowercase())
         pinSet = true
-        // A phone whose lock screen was switched off never shows the keyguard; put it back in [restore].
-        lockWasDisabled = shell("locksettings get-disabled").trim()
         shell("locksettings set-disabled false")
         shell("input keyevent KEYCODE_SLEEP")
         assertTrue("staging: the phone did not lock after sleep", awaitLocked(locked = true))

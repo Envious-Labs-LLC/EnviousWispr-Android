@@ -48,16 +48,16 @@ internal class AccessibilityBubbleHost(
     private val bubblePositionStore by lazy { BubblePositionStore(service.applicationContext) }
     private var closed = false
 
-    // Which microphone a take would use right now, for the bubble's colour (#171). Two inputs, both
-    // written on the main thread: the phone's input list, read once at registration and again on every
-    // add or remove the system pushes (no poll, no timer), and the Input device pick from preferences.
-    // The pick is null until the first preference emission, and nothing is computed before both are
-    // known, so the first paint is never a guess about the saved pick.
     // Where the idle bubble may appear (#523), written on main from the preference collect. Null until the
     // first emission: no idle bubble is drawn before the user's hidden apps are known.
     private var visibilityStored: BubbleVisibilityStored? = null
     private var lastDecision: BubbleVisibility.Decision? = null
 
+    // Which microphone a take would use right now, for the bubble's colour (#171). Two inputs, both
+    // written on the main thread: the phone's input list, read once at registration and again on every
+    // add or remove the system pushes (no poll, no timer), and the Input device pick from preferences.
+    // The pick is null until the first preference emission, and nothing is computed before both are
+    // known, so the first paint is never a guess about the saved pick.
     private var connectedInputs: List<InputDeviceCandidate> = emptyList()
     private var inputDevicePick: InputDevicePick? = null
     private val audioDeviceCallback = object : AudioDeviceCallback() {
@@ -89,10 +89,9 @@ internal class AccessibilityBubbleHost(
                 overlay.onPositionChanged = { position -> historyScope.launch { bubblePositionStore.save(position) } }
                 overlay.start()
             }
-            // The chosen look, and every later change to it, applied on the main thread. Its own scope:
-            // this collect never completes, and it must not be one of the history scope's children.
-            // Where the idle bubble may appear (#523). Until the first emission the bubble is not drawn, so a
-            // hidden app never flashes it at service start; every change re-checks the focused field at once.
+            // Where the idle bubble may appear (#523), on the same scope for the same reason as the look below.
+            // Until the first emission the bubble is not drawn, so a hidden app never flashes it at service
+            // start; every change re-checks the focused field at once.
             lookScope.launch {
                 AppPreferences(service.applicationContext).bubbleVisibilityStored.collect { stored ->
                     mainHandler.post {
@@ -101,6 +100,8 @@ internal class AccessibilityBubbleHost(
                     }
                 }
             }
+            // The chosen look, and every later change to it, applied on the main thread. Its own scope:
+            // this collect never completes, and it must not be one of the history scope's children.
             lookScope.launch {
                 AppPreferences(service.applicationContext).state.collect { preferences ->
                     mainHandler.post {

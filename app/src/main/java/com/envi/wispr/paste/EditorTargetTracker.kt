@@ -6,6 +6,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.envi.wispr.debug.DebugLogger
 
+/** The remembered editor's app and password flag, for the bubble only (#523); content-free. */
+internal data class FieldTraits(val packageName: String, val passwordField: Boolean)
+
 /**
  * Which editor a dictation aims at (#217): the editor the user last focused (remembered), and the editor a
  * take pinned (the one its words go to). Both the pin and the floating bubble ask this one owner the same
@@ -14,9 +17,6 @@ import com.envi.wispr.debug.DebugLogger
  * Every call runs on the service's main thread. The node copies this holds are its own: it recycles them,
  * and a caller reads the pinned editor only through [withPinnedNode] and the three read-only properties.
  */
-/** The remembered editor's app and password flag, for the bubble only; content-free. */
-internal data class FieldTraits(val packageName: String, val passwordField: Boolean)
-
 internal class EditorTargetTracker(private val service: AccessibilityService) {
 
     private companion object {

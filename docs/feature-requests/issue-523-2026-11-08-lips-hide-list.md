@@ -342,3 +342,9 @@ storage.
 - Two existing drift guards were updated to the new wiring with the same intent: `LipsBubbleWiringTest`
   (revalidation now calls `activateField`) and `AppShellShapeTest` (the actions `remember` keys on seven
   view models).
+- Revert receipts (2026-11-08, on checkpoint `8e5a8fda`, files restored with `git checkout` afterwards):
+  `decide` forced to `Show` turned 5 `BubbleVisibilityTest` rows red; runner `isSensitive` forced to `false`
+  turned `theInsertionRunnerAsksTheSharedPasswordRule` red; revalidation calling `overlay.fieldActivated`
+  directly turned `onlyActivateFieldTellsTheOverlayAFieldIsActive` red; dropping the web-password variation
+  turned `aWebPasswordIsAPasswordBox` red. Full suite on the checkpoint: 2055 tests, 0 failures, 1 skipped
+  (`scripts/measure-tests.sh`).

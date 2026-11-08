@@ -14,6 +14,9 @@ import com.envi.wispr.debug.DebugLogger
  * Every call runs on the service's main thread. The node copies this holds are its own: it recycles them,
  * and a caller reads the pinned editor only through [withPinnedNode] and the three read-only properties.
  */
+/** The remembered editor's app and password flag, for the bubble only; content-free. */
+internal data class FieldTraits(val packageName: String, val passwordField: Boolean)
+
 internal class EditorTargetTracker(private val service: AccessibilityService) {
 
     private companion object {
@@ -135,6 +138,18 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
      * remembered.
      */
     fun rememberedFieldKey(): Any? = lastTarget?.let(::fieldKey)
+
+    /**
+     * What the bubble's visibility decision needs to know about the remembered editor (#523): its app and
+     * whether it is a password box. Read right after the field was remembered or refreshed. A node that can
+     * no longer be read counts as not a password box, so the bubble fails toward showing.
+     */
+    fun rememberedFieldTraits(): FieldTraits? = lastTarget?.let { target ->
+        FieldTraits(
+            packageName = target.packageName,
+            passwordField = runCatching { PasswordFieldRule.isPasswordField(target.node) }.getOrDefault(false),
+        )
+    }
 
     /**
      * The bubble's question (#217): is the remembered editor still focused? When it is not, and [discover]

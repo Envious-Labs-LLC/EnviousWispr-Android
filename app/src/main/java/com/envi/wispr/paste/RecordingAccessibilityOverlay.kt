@@ -150,6 +150,20 @@ internal class RecordingAccessibilityOverlay(
         if (changed) render()
     }
 
+    /**
+     * A field is focused but the idle bubble must not be drawn on it (#523: locked phone, hidden app, password
+     * box). Like [fieldLost], and it also ends an IDLE drag, because [render] draws a drag before it reads the
+     * field state. A running take is never touched: its recorder is drawn from [snapshot] first.
+     */
+    fun fieldSuppressed() {
+        val endIdleDrag = !snapshot.visible && dragBox != null
+        if (endIdleDrag) {
+            cancelGesture()
+            removeHideTarget()
+        }
+        if (fieldActive) fieldLost() else if (endIdleDrag) render()
+    }
+
     fun fieldLost() {
         if (!fieldActive) return
         fieldActive = false

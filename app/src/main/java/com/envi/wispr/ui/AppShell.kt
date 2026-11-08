@@ -247,8 +247,8 @@ internal fun EnviousWisprApp(
                         SettingsPage.WhatsNew -> WhatsNewPage()
                         SettingsPage.Appearance -> AppearancePage(
                             preferences = preferences,
-                            onDynamicColorChanged = actions.appearance.onDynamicColorChanged,
-                            onBubbleLookChanged = actions.appearance.onBubbleLookChanged,
+                            bubbleVisibility = state.bubbleVisibility,
+                            actions = actions.appearance,
                         )
                         SettingsPage.Microphone -> MicrophonePage(
                             readiness = readiness,

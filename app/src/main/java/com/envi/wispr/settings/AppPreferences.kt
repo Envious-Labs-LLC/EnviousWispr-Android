@@ -76,6 +76,17 @@ internal data class AppPreferencesState(
 /** The Developer page's stored values (#378); a null switch was never set. */
 internal data class DeveloperStored(val unlocked: Boolean, val detailedLog: Boolean?, val keepRecordings: Boolean?)
 
+/**
+ * Where the idle floating bubble may appear (#523): the package names of apps the user hid it in, and whether
+ * it shows on password boxes. Kept OUT of [AppPreferencesState] on purpose, like [DeveloperStored]: that state
+ * feeds `app.launched` and the settings telemetry, and the user's app list never leaves the phone. Defaults
+ * are a fresh install's: nothing hidden by app, password boxes hidden.
+ */
+internal data class BubbleVisibilityStored(
+    val hiddenApps: Set<String> = emptySet(),
+    val showOnPasswords: Boolean = false,
+)
+
 internal fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptions(
     removeFillers = fillerRemovalEnabled,
     spokenEmoji = emojiFormatterEnabled,
@@ -271,6 +282,35 @@ internal class AppPreferences(context: Context) {
             )
         }
 
+    /**
+     * Where the idle bubble may appear (#523), outside [AppPreferencesState] (see [BubbleVisibilityStored]).
+     * A read failure emits the defaults, so the bubble fails OPEN in every app: a wrong hide costs the primary
+     * trigger, a wrong show costs one button on screen.
+     */
+    val bubbleVisibilityStored: Flow<BubbleVisibilityStored> = dataStore.data
+        .map { preferences ->
+            BubbleVisibilityStored(
+                hiddenApps = preferences[Keys.BUBBLE_HIDDEN_APPS] ?: emptySet(),
+                showOnPasswords = preferences[Keys.BUBBLE_SHOW_ON_PASSWORDS] ?: false,
+            )
+        }
+        .catch { exception ->
+            if (exception is IOException) emit(BubbleVisibilityStored()) else throw exception
+        }
+
+    /** Adds or removes one app; a blank package name is never stored. */
+    suspend fun setBubbleHiddenInApp(packageName: String, hidden: Boolean) {
+        if (packageName.isBlank()) return
+        dataStore.edit { preferences ->
+            val current = preferences[Keys.BUBBLE_HIDDEN_APPS] ?: emptySet()
+            preferences[Keys.BUBBLE_HIDDEN_APPS] = if (hidden) current + packageName else current - packageName
+        }
+    }
+
+    suspend fun setBubbleShowOnPasswords(show: Boolean) {
+        dataStore.edit { preferences -> preferences[Keys.BUBBLE_SHOW_ON_PASSWORDS] = show }
+    }
+
     suspend fun setDeveloperUnlocked() {
         dataStore.edit { it[Keys.DEVELOPER_UNLOCKED] = true }
     }
@@ -290,6 +330,8 @@ internal class AppPreferences(context: Context) {
     }
 
     private object Keys {
+        val BUBBLE_HIDDEN_APPS = stringSetPreferencesKey("bubble_hidden_apps")
+        val BUBBLE_SHOW_ON_PASSWORDS = booleanPreferencesKey("bubble_show_on_passwords")
         val RECORDING_SOUNDS = booleanPreferencesKey("recording_sounds_enabled")
         val RECORDING_SOUND_PAIRING = stringPreferencesKey("recording_sound_pairing")
         val RECORDING_VIBRATION = booleanPreferencesKey("recording_vibration_enabled")

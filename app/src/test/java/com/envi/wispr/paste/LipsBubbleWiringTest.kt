@@ -175,7 +175,8 @@ class LipsBubbleWiringTest {
         // Since #217 the bubble asks the tracker, which checks and adopts; the bubble then renders.
         val revalidate = PasteSources.slice(bubbleHost, "private fun revalidateBubbleField(", "\n    /**")
         assertTrue(revalidate.contains("val key = tracker.refreshFocusedField(discover)"))
-        assertTrue(revalidate.indexOf("overlay.fieldActivated(key) else overlay.fieldLost()") in 0 until revalidate.indexOf("overlay.keyboardBounds(dockedKeyboardTop())"))
+        // Since #523 an active field goes through the one visibility decision (`activateField`).
+        assertTrue(revalidate.indexOf("activateField(overlay, key) else overlay.fieldLost()") in 0 until revalidate.indexOf("overlay.keyboardBounds(dockedKeyboardTop())"))
         val body = PasteSources.slice(tracker, "fun refreshFocusedField(discover: Boolean): Any? {", "\n    /**")
         assertTrue(body.contains("if (!stillFocused && discover)"))
         assertTrue(body.contains("findFocusedEditableTarget()"))

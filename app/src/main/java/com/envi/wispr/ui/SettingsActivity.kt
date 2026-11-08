@@ -63,6 +63,10 @@ class SettingsActivity : ComponentActivity() {
         ModelWorkViewModel.Factory(appContext = applicationContext, readiness = readinessViewModel.state)
     }
 
+    private val bubbleVisibilityViewModel: BubbleVisibilityViewModel by viewModels {
+        BubbleVisibilityViewModel.Factory(appContext = applicationContext)
+    }
+
     private val microphonePermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
@@ -98,9 +102,10 @@ class SettingsActivity : ComponentActivity() {
             val polish by polishViewModel.settings.collectAsStateWithLifecycle()
             val discovery by polishViewModel.providerDiscovery.collectAsStateWithLifecycle()
             val models by modelWorkViewModel.models.collectAsStateWithLifecycle()
+            val bubbleVisibility by bubbleVisibilityViewModel.state.collectAsStateWithLifecycle()
 
             EnviousWisprTheme(dynamicColor = shell.preferences.dynamicColorEnabled) {
-                val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel, modelWorkViewModel) {
+                val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel, modelWorkViewModel, bubbleVisibilityViewModel) {
                     AppActions(
                         shell = ShellActions(
                             onStartDictation = {
@@ -181,6 +186,10 @@ class SettingsActivity : ComponentActivity() {
                         appearance = AppearanceActions(
                             onDynamicColorChanged = shellViewModel::setDynamicColorEnabled,
                             onBubbleLookChanged = shellViewModel::setBubbleLook,
+                            onBubbleShowOnPasswordsChanged = bubbleVisibilityViewModel::setShowOnPasswords,
+                            onBubbleHideIn = bubbleVisibilityViewModel::hideIn,
+                            onBubbleShowIn = bubbleVisibilityViewModel::showIn,
+                            onLoadBubblePickableApps = bubbleVisibilityViewModel::loadPickable,
                         ),
                     )
                 }
@@ -194,6 +203,7 @@ class SettingsActivity : ComponentActivity() {
                         polish = polish,
                         discovery = discovery,
                         models = models,
+                        bubbleVisibility = bubbleVisibility,
                     ),
                     licenseNotices = thirdPartyNotices,
                     actions = actions,

@@ -64,7 +64,8 @@ class BubbleVisibilityWiringTest {
         assertTrue(receiver, receiver.contains("discoverFieldWithRetry()"))
         assertTrue("each broadcast starts a fresh sequence", receiver.indexOf("cancelDiscoveryRetries()") in 0 until receiver.indexOf("discoverFieldWithRetry()"))
         assertFalse(receiver.contains("refresh()"))
-        assertTrue("registered with the main handler", host.contains("}, null, mainHandler, Context.RECEIVER_NOT_EXPORTED)"))
+        // EXPORTED: SystemUI sends USER_PRESENT, and NOT_EXPORTED dropped it on a Galaxy S24 Ultra.
+        assertTrue("registered with the main handler, exported", host.contains("}, null, mainHandler, Context.RECEIVER_EXPORTED)"))
         assertTrue("unregistered at close", PasteSources.slice(host, "fun close()", "\n    }").contains("unregisterReceiver(lockReceiver)"))
     }
 

@@ -124,12 +124,15 @@ internal class AccessibilityBubbleHost(
             // Firebase Test Lab: the lips stayed hidden after unlock until a re-tap). The system's screen and
             // unlock broadcasts re-check the field instead. Pushed by the system, so no idle cost.
             // Guarded: a throw here would take down the accessibility service, and auto-paste with it.
+            // EXPORTED on purpose: USER_PRESENT is sent by SystemUI's keyguard, not the system uid, and a
+            // NOT_EXPORTED receiver never heard it on a Galaxy S24 Ultra (Test Lab matrix-17ihfy4fh57pt: no
+            // bubble log at all after "keyguardGone"). All three are protected broadcasts, so no app can fake them.
             runCatching {
                 service.registerReceiver(lockReceiver, IntentFilter().apply {
                     addAction(Intent.ACTION_SCREEN_ON)
                     addAction(Intent.ACTION_SCREEN_OFF)
                     addAction(Intent.ACTION_USER_PRESENT)
-                }, null, mainHandler, Context.RECEIVER_NOT_EXPORTED)
+                }, null, mainHandler, Context.RECEIVER_EXPORTED)
             }.onFailure { error -> DebugLogger.error(TAG, "Unable to watch lock changes for the bubble", error) }
             // The chosen look, and every later change to it, applied on the main thread. Its own scope:
             // this collect never completes, and it must not be one of the history scope's children.

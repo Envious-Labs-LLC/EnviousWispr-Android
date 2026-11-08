@@ -56,9 +56,16 @@ internal class AccessibilityBubbleHost(
     // first emission: no idle bubble is drawn before the user's hidden apps are known.
     private var visibilityStored: BubbleVisibilityStored? = null
     private var lastDecision: BubbleVisibility.Decision? = null
-    /** Delivered on main (registered with [mainHandler]): the lock state changed, so re-check the field. */
+    /**
+     * Delivered on main (registered with [mainHandler]): the lock state changed, so look for the field again
+     * with the same discover-and-retry sequence an app switch uses. A single re-check is not enough: on a
+     * Galaxy S24 Ultra the unlock broadcast arrives while the keyguard is still animating away, before the
+     * app's window has focus back (Test Lab matrix-32skk5u4yv4i0, 2026-11-08: lips still hidden after unlock).
+     */
     private val lockReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) = refresh()
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (recordingOverlay != null) discoverFieldWithRetry()
+        }
     }
 
     // Which microphone a take would use right now, for the bubble's colour (#171). Two inputs, both

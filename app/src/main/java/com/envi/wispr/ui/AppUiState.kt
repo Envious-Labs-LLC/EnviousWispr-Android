@@ -6,7 +6,7 @@ import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import com.envi.wispr.vocabulary.ui.DictionaryUiState
 
 /**
- * Everything the screens read, one field per owning view model (#218). The activity builds it from seven
+ * Everything the screens read, one field per owning view model (#218). The activity builds it from its
  * collected states; nothing here is stored, so no feature has a second home.
  */
 internal data class AppUiState(
@@ -19,6 +19,8 @@ internal data class AppUiState(
     val discovery: ProviderDiscoveryUiState = ProviderDiscoveryUiState(),
     /** The two model cards, from `ModelWorkViewModel` (#255). */
     val models: ModelWorkUiState = ModelWorkUiState(),
+    /** Where the floating button may appear, from `BubbleVisibilityViewModel` (#523). */
+    val bubbleVisibility: BubbleVisibilityUiState = BubbleVisibilityUiState(),
 ) {
     /**
      * True until preferences, terms, transcripts and readiness have each emitted once. Read from each

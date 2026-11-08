@@ -101,12 +101,12 @@ internal fun WhatsNewPage() {
 @Composable
 internal fun AppearancePage(
     preferences: AppPreferencesState,
-    onDynamicColorChanged: (Boolean) -> Unit,
-    onBubbleLookChanged: (BubbleLook) -> Unit,
+    bubbleVisibility: BubbleVisibilityUiState,
+    actions: AppearanceActions,
 ) {
     ScreenContainer(subtitle = SettingsPage.Appearance.subtitle) {
         SettingsGroup("Floating button") {
-            BubbleLookPicker(selected = preferences.bubbleLook, onSelect = onBubbleLookChanged)
+            BubbleLookPicker(selected = preferences.bubbleLook, onSelect = actions.onBubbleLookChanged)
         }
         Text(
             "The floating button and the recorder that replaces it while you talk share one look. " +
@@ -114,13 +114,20 @@ internal fun AppearancePage(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        BubbleWhereItAppears(
+            state = bubbleVisibility,
+            onShowOnPasswordsChanged = actions.onBubbleShowOnPasswordsChanged,
+            onHideIn = actions.onBubbleHideIn,
+            onShowIn = actions.onBubbleShowIn,
+            onLoadPickable = actions.onLoadBubblePickableApps,
+        )
         SettingsGroup("Colours") {
             SettingsToggleRow(
                 title = "Use Galaxy colours",
                 // Wallpaper colours are Android 12; every supported phone has them at minSdk 33 (#260).
                 subtitle = "Take the colours from this phone's wallpaper instead of EnviousWispr's own.",
                 checked = preferences.dynamicColorEnabled,
-                onCheckedChange = onDynamicColorChanged,
+                onCheckedChange = actions.onDynamicColorChanged,
             )
         }
         Text(

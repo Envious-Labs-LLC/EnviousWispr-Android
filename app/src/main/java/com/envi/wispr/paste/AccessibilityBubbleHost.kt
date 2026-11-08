@@ -1,5 +1,6 @@
 package com.envi.wispr.paste
 
+import android.app.KeyguardManager
 import android.graphics.Rect
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -14,6 +15,7 @@ import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.audio.InputDeviceResolver
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.settings.BubbleVisibilityStored
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -45,6 +47,11 @@ internal class AccessibilityBubbleHost(
     private var recordingOverlay: RecordingAccessibilityOverlay? = null
     private val bubblePositionStore by lazy { BubblePositionStore(service.applicationContext) }
     private var closed = false
+
+    // Where the idle bubble may appear (#523), written on main from the preference collect. Null until the
+    // first emission: no idle bubble is drawn before the user's hidden apps are known.
+    private var visibilityStored: BubbleVisibilityStored? = null
+    private var lastDecision: BubbleVisibility.Decision? = null
 
     // Which microphone a take would use right now, for the bubble's colour (#171). Two inputs, both
     // written on the main thread: the phone's input list, read once at registration and again on every
@@ -81,6 +88,17 @@ internal class AccessibilityBubbleHost(
             recordingOverlay = RecordingAccessibilityOverlay(service).also { overlay ->
                 overlay.onPositionChanged = { position -> historyScope.launch { bubblePositionStore.save(position) } }
                 overlay.start()
+            }
+            // Where the idle bubble may appear (#523), on the same scope for the same reason as the look below.
+            // Until the first emission the bubble is not drawn, so a hidden app never flashes it at service
+            // start; every change re-checks the focused field at once.
+            lookScope.launch {
+                AppPreferences(service.applicationContext).bubbleVisibilityStored.collect { stored ->
+                    mainHandler.post {
+                        visibilityStored = stored
+                        refresh()
+                    }
+                }
             }
             // The chosen look, and every later change to it, applied on the main thread. Its own scope:
             // this collect never completes, and it must not be one of the history scope's children.
@@ -140,7 +158,7 @@ internal class AccessibilityBubbleHost(
                 if (remembered) {
                     // The field is found the direct way; stop any discovery-retry sequence still chasing it.
                     cancelDiscoveryRetries()
-                    tracker.rememberedFieldKey()?.let { overlay.fieldActivated(it) }
+                    tracker.rememberedFieldKey()?.let { activateField(overlay, it) }
                 } else if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
                     // A focus that lands unremembered can be the return to an app whose editor is already
                     // focused (no fresh focus event for the editor itself): discover, and retry until it is
@@ -233,10 +251,42 @@ internal class AccessibilityBubbleHost(
      */
     private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false): Boolean {
         val key = tracker.refreshFocusedField(discover)
-        if (key != null) overlay.fieldActivated(key) else overlay.fieldLost()
+        if (key != null) activateField(overlay, key) else overlay.fieldLost()
         overlay.keyboardBounds(dockedKeyboardTop())
         return key != null
     }
+
+    /**
+     * The ONE place the host tells the overlay a field is active (#523). The tracker keeps the field either
+     * way, so pinning, the side button and insertion never depend on what is drawn here.
+     */
+    private fun activateField(overlay: RecordingAccessibilityOverlay, key: Any) {
+        val stored = visibilityStored ?: return overlay.fieldSuppressed(key)
+        val traits = tracker.rememberedFieldTraits()
+        val decision = BubbleVisibility.decide(
+            keyguardLocked = keyguardLocked(),
+            passwordField = traits?.passwordField ?: false,
+            packageName = traits?.packageName,
+            hiddenApps = stored.hiddenApps,
+            showOnPasswords = stored.showOnPasswords,
+        )
+        if (decision != lastDecision) {
+            // The reason only, never the package (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
+            DebugLogger.debug(TAG, "Bubble visibility reason=${BubbleVisibility.reason(decision)}")
+            lastDecision = decision
+        }
+        when (decision) {
+            BubbleVisibility.Decision.Show -> overlay.fieldActivated(key)
+            BubbleVisibility.Decision.HiddenLocked,
+            BubbleVisibility.Decision.HiddenApp,
+            BubbleVisibility.Decision.HiddenPassword -> overlay.fieldSuppressed(key)
+        }
+    }
+
+    /** A read that fails counts as unlocked: a wrong hide costs the primary trigger. */
+    private fun keyguardLocked(): Boolean = runCatching {
+        service.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked ?: false
+    }.getOrDefault(false)
 
     /**
      * Discover the focused editor now, and if none is accessible yet, re-look at [DISCOVERY_RETRY_DELAYS_MS]

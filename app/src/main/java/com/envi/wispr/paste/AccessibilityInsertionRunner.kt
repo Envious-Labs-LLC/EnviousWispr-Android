@@ -11,7 +11,6 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.VibratorManager
 import android.provider.Settings
-import android.text.InputType
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import com.envi.wispr.debug.DebugLogger
@@ -492,19 +491,7 @@ internal class AccessibilityInsertionRunner(
             node.textSelectionEnd,
         )
 
-    private fun isSensitive(node: AccessibilityNodeInfo): Boolean {
-        if (node.isPassword) return true
-        val inputType = node.inputType
-        val inputClass = inputType and InputType.TYPE_MASK_CLASS
-        val variation = inputType and InputType.TYPE_MASK_VARIATION
-        return when (inputClass) {
-            InputType.TYPE_CLASS_TEXT -> variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
-                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
-                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
-            InputType.TYPE_CLASS_NUMBER -> variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            else -> false
-        }
-    }
+    private fun isSensitive(node: AccessibilityNodeInfo): Boolean = PasswordFieldRule.isPasswordField(node)
 
     private fun restorePreviousClipboardIfSafe(pending: PendingInsertion) {
         if (!pending.clipboardOverwritten) return

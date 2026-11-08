@@ -119,6 +119,10 @@ internal class ClipboardActions(
 internal class AppearanceActions(
     val onDynamicColorChanged: (Boolean) -> Unit,
     val onBubbleLookChanged: (BubbleLook) -> Unit,
+    val onBubbleShowOnPasswordsChanged: (Boolean) -> Unit,
+    val onBubbleHideIn: (String) -> Unit,
+    val onBubbleShowIn: (String) -> Unit,
+    val onLoadBubblePickableApps: () -> Unit,
 )
 
 internal class SoundsActions(

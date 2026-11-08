@@ -261,7 +261,7 @@ internal class AccessibilityBubbleHost(
      * way, so pinning, the side button and insertion never depend on what is drawn here.
      */
     private fun activateField(overlay: RecordingAccessibilityOverlay, key: Any) {
-        val stored = visibilityStored ?: return overlay.fieldSuppressed()
+        val stored = visibilityStored ?: return overlay.fieldSuppressed(key)
         val traits = tracker.rememberedFieldTraits()
         val decision = BubbleVisibility.decide(
             keyguardLocked = keyguardLocked(),
@@ -279,7 +279,7 @@ internal class AccessibilityBubbleHost(
             BubbleVisibility.Decision.Show -> overlay.fieldActivated(key)
             BubbleVisibility.Decision.HiddenLocked,
             BubbleVisibility.Decision.HiddenApp,
-            BubbleVisibility.Decision.HiddenPassword -> overlay.fieldSuppressed()
+            BubbleVisibility.Decision.HiddenPassword -> overlay.fieldSuppressed(key)
         }
     }
 

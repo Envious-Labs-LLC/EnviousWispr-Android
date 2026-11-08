@@ -40,8 +40,8 @@ class BubbleVisibilityWiringTest {
     @Test
     fun everyHiddenDecisionSuppressesAndNoBubbleIsDrawnBeforeTheListIsKnown() {
         val activate = PasteSources.slice(host, "private fun activateField(", "private fun keyguardLocked(")
-        assertTrue(activate.contains("val stored = visibilityStored ?: return overlay.fieldSuppressed()"))
-        assertTrue(activate.contains("BubbleVisibility.Decision.HiddenPassword -> overlay.fieldSuppressed()"))
+        assertTrue(activate.contains("val stored = visibilityStored ?: return overlay.fieldSuppressed(key)"))
+        assertTrue(activate.contains("BubbleVisibility.Decision.HiddenPassword -> overlay.fieldSuppressed(key)"))
         assertFalse("the decision `when` stays exhaustive", activate.contains("else ->"))
     }
 
@@ -61,10 +61,22 @@ class BubbleVisibilityWiringTest {
 
     @Test
     fun suppressionEndsOnlyAnIdleDragNeverARunningTake() {
-        val suppressed = PasteSources.slice(overlay, "fun fieldSuppressed()", "fun fieldLost()")
+        val suppressed = PasteSources.slice(overlay, "fun fieldSuppressed(key: Any)", "fun fieldLost()")
         assertTrue(suppressed.contains("val endIdleDrag = !snapshot.visible && dragBox != null"))
-        assertTrue(suppressed.contains("cancelGesture()"))
-        assertTrue(suppressed.contains("removeHideTarget()"))
+        // The cancel lives INSIDE the guard; moved outside it, it would end a hold-to-talk (Codex code round 1).
+        assertTrue(
+            suppressed,
+            Regex("""if\s*\(endIdleDrag\)\s*\{\s*cancelGesture\(\)\s*removeHideTarget\(\)\s*}""").containsMatchIn(suppressed),
+        )
+    }
+
+    @Test
+    fun aSuppressedDifferentFieldStillEndsADropToHide() {
+        val suppressed = PasteSources.slice(overlay, "fun fieldSuppressed(key: Any)", "fun fieldLost()")
+        assertTrue(suppressed.contains("if (hiddenForKey != null && hiddenForKey != key) hiddenForKey = null"))
+        val activate = PasteSources.slice(host, "private fun activateField(", "private fun keyguardLocked(")
+        assertEquals("both suppress calls pass the field", 2, count(activate, "overlay.fieldSuppressed(key)"))
+        assertFalse(activate.contains("fieldSuppressed()"))
     }
 
     @Test

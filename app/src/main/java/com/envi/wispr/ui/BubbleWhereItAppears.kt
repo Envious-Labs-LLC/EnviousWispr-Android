@@ -13,6 +13,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -35,6 +36,10 @@ internal fun BubbleWhereItAppears(
     onLoadPickable: () -> Unit,
 ) {
     var picking by rememberSaveable { mutableStateOf(false) }
+    // Keyed on the saved flag, so a picker restored after process death lists the apps again.
+    LaunchedEffect(picking) {
+        if (picking) onLoadPickable()
+    }
 
     SettingsGroup("Where it appears") {
         SettingsToggleRow(
@@ -54,10 +59,7 @@ internal fun BubbleWhereItAppears(
                 "Pick another app to keep the floating button out of."
             },
             ready = null,
-            onClick = {
-                onLoadPickable()
-                picking = true
-            },
+            onClick = { picking = true },
         )
     }
     Text(

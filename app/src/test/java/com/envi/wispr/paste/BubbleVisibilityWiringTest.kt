@@ -53,6 +53,23 @@ class BubbleVisibilityWiringTest {
     }
 
     @Test
+    fun lockAndUnlockReCheckTheFocusedField() {
+        // Measured 2026-11-08 on a Galaxy S24 Ultra (Test Lab): unlock above a shown-over-lock app sends no
+        // window event, so without these broadcasts the lips stayed hidden until a re-tap.
+        listOf("Intent.ACTION_SCREEN_ON", "Intent.ACTION_SCREEN_OFF", "Intent.ACTION_USER_PRESENT").forEach {
+            assertTrue("$it is not watched", host.contains("addAction($it)"))
+        }
+        // The retrying discovery, not a single refresh: the unlock broadcast can beat the window's focus back.
+        val receiver = PasteSources.slice(host, "private val lockReceiver", "\n    }\n")
+        assertTrue(receiver, receiver.contains("discoverFieldWithRetry()"))
+        assertTrue("each broadcast starts a fresh sequence", receiver.indexOf("cancelDiscoveryRetries()") in 0 until receiver.indexOf("discoverFieldWithRetry()"))
+        assertFalse(receiver.contains("refresh()"))
+        // EXPORTED: SystemUI sends USER_PRESENT, and NOT_EXPORTED dropped it on a Galaxy S24 Ultra.
+        assertTrue("registered with the main handler, exported", host.contains("}, null, mainHandler, Context.RECEIVER_EXPORTED)"))
+        assertTrue("unregistered at close", PasteSources.slice(host, "fun close()", "\n    }").contains("unregisterReceiver(lockReceiver)"))
+    }
+
+    @Test
     fun aKeyguardReadThatFailsCountsAsUnlocked() {
         val read = PasteSources.slice(host, "private fun keyguardLocked()", "\n    }")
         assertTrue(read.contains("isKeyguardLocked ?: false"))

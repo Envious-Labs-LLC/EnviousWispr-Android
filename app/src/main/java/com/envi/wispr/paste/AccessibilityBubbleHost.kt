@@ -1,6 +1,10 @@
 package com.envi.wispr.paste
 
 import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Rect
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -52,6 +56,21 @@ internal class AccessibilityBubbleHost(
     // first emission: no idle bubble is drawn before the user's hidden apps are known.
     private var visibilityStored: BubbleVisibilityStored? = null
     private var lastDecision: BubbleVisibility.Decision? = null
+    /**
+     * Delivered on main (registered with [mainHandler]): the lock state changed, so look for the field again
+     * with the same discover-and-retry sequence an app switch uses. A single re-check is not enough: on a
+     * Galaxy S24 Ultra the unlock broadcast arrives while the keyguard is still animating away, before the
+     * app's window has focus back (Test Lab matrix-32skk5u4yv4i0, 2026-11-08: lips still hidden after unlock).
+     */
+    private val lockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (recordingOverlay == null) return
+            // A fresh sequence per broadcast: coalescing into a screen-on sequence near its end would leave
+            // the unlock one short attempt (Codex code round 6). Three bounded system events, not a loop.
+            cancelDiscoveryRetries()
+            discoverFieldWithRetry()
+        }
+    }
 
     // Which microphone a take would use right now, for the bubble's colour (#171). Two inputs, both
     // written on the main thread: the phone's input list, read once at registration and again on every
@@ -100,6 +119,21 @@ internal class AccessibilityBubbleHost(
                     }
                 }
             }
+            // Lock and unlock over a field that stays focused (#523): a keyguard dismissed above an app shown
+            // over the lock emits no window event the service hears (measured 2026-11-08, Galaxy S24 Ultra on
+            // Firebase Test Lab: the lips stayed hidden after unlock until a re-tap). The system's screen and
+            // unlock broadcasts re-check the field instead. Pushed by the system, so no idle cost.
+            // Guarded: a throw here would take down the accessibility service, and auto-paste with it.
+            // EXPORTED on purpose: USER_PRESENT is sent by SystemUI's keyguard, not the system uid, and a
+            // NOT_EXPORTED receiver never heard it on a Galaxy S24 Ultra (Test Lab matrix-17ihfy4fh57pt: no
+            // bubble log at all after "keyguardGone"). All three are protected broadcasts, so no app can fake them.
+            runCatching {
+                service.registerReceiver(lockReceiver, IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                }, null, mainHandler, Context.RECEIVER_EXPORTED)
+            }.onFailure { error -> DebugLogger.error(TAG, "Unable to watch lock changes for the bubble", error) }
             // The chosen look, and every later change to it, applied on the main thread. Its own scope:
             // this collect never completes, and it must not be one of the history scope's children.
             lookScope.launch {
@@ -198,6 +232,7 @@ internal class AccessibilityBubbleHost(
         if (closed) return
         closed = true
         lookScope.cancel()
+        runCatching { service.unregisterReceiver(lockReceiver) }
         service.getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(audioDeviceCallback)
         recordingOverlay?.stop()
         recordingOverlay = null

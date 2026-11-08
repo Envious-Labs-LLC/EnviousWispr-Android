@@ -28,6 +28,17 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!--
+            #523: an ordinary and a password editor for the bubble-visibility device test. showWhenLocked lets
+            the test hold a focused editor ABOVE a secure lock, which is exactly the case the bubble must hide in.
+        -->
+        <activity
+            android:name="com.envi.wispr.BubbleFieldsActivity"
+            android:exported="true"
+            android:label="Bubble fields"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
         <activity
             android:name="com.envi.wispr.ClipboardPasteTargetActivity"
             android:exported="true"

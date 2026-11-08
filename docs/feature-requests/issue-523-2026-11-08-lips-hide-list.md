@@ -348,3 +348,18 @@ storage.
   directly turned `onlyActivateFieldTellsTheOverlayAFieldIsActive` red; dropping the web-password variation
   turned `aWebPasswordIsAPasswordBox` red. Full suite on the checkpoint: 2055 tests, 0 failures, 1 skipped
   (`scripts/measure-tests.sh`).
+
+## Real-phone validation (Firebase Test Lab, personal project, 2026-11-08)
+
+New `BubbleVisibilityDeviceTest` (Product Outcome) with the `BubbleFieldsActivity` rig (an ordinary and a
+password editor in the test package; showWhenLocked). Every hidden check is a transition from shown.
+
+- Final run `matrix-61xhkc3qtr2sa`, HEAD `336dc771`: Galaxy S24 Ultra (e3q, Android 16) 3/3 pass, Pixel 9 Pro
+  (caiman, Android 15) 3/3 pass; JUnit 3 tests, 0 failures, 0 errors, 0 skipped on each. S24 logcat: lips
+  `reason=SHOW` 25 ms after `KeyguardViewMediator: keyguardGone`.
+- Defects the phones found, fixed on this branch: (1) after unlock over a shown-over-lock app the lips stayed
+  hidden until a re-tap (S24; no window event); fixed by re-checking on SCREEN_ON/SCREEN_OFF/USER_PRESENT with
+  the existing retry sequence; (2) that receiver was registered NOT_EXPORTED and never heard USER_PRESENT,
+  which SystemUI sends (S24 logcat: no app log after `keyguardGone`); now EXPORTED (protected broadcasts).
+- Earlier runs, kept for the record: `matrix-2gp7sel5yug6b`, `matrix-32skk5u4yv4i0`, `matrix-17ihfy4fh57pt`.
+- Not covered: the founder's S26 itself; OEM lock screens beyond Samsung One UI 8 and Pixel.

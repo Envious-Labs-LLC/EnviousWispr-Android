@@ -92,7 +92,13 @@ class BubbleVisibilityDeviceTest {
             }
         }
         step("lock screen disabled state") {
-            lockWasDisabled?.let { if (it == "true" || it == "false") shell("locksettings set-disabled $it") }
+            lockWasDisabled?.let {
+                if (it == "true" || it == "false") {
+                    shell("locksettings set-disabled $it")
+                    val now = shell("locksettings get-disabled").trim()
+                    check(now == it) { "lock screen disabled reads '$now', expected '$it'" }
+                }
+            }
             lockWasDisabled = null
         }
         step("accessibility settings") {
@@ -115,6 +121,9 @@ class BubbleVisibilityDeviceTest {
     /** `settings get` prints "null" for an absent key; an absent key is deleted, never invented. */
     private fun restoreSecure(key: String, value: String) {
         if (value == "null" || value.isEmpty()) shell("settings delete secure $key") else shell("settings put secure $key $value")
+        val expected = if (value.isEmpty()) "null" else value
+        val now = shell("settings get secure $key").trim()
+        check(now == expected) { "$key reads '$now', expected '$expected'" }
     }
 
     @Test

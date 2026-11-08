@@ -220,6 +220,14 @@ class BubbleVisibilityDeviceTest {
     private fun unlock(): Boolean {
         shell("wm dismiss-keyguard")
         if (awaitLocked(locked = false, millis = 4_000)) return true
+        // The rig occludes the keyguard; it asks the system to dismiss it, leaving focus alone.
+        context.startActivity(
+            Intent()
+                .setClassName(TEST_PACKAGE, "com.envi.wispr.BubbleFieldsActivity")
+                .putExtra(BubbleFieldsActivity.EXTRA_DISMISS_KEYGUARD, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        )
+        if (awaitLocked(locked = false, millis = 4_000)) return true
         shell("input keyevent KEYCODE_MENU")
         if (awaitLocked(locked = false, millis = 3_000)) return true
         val size = Regex("""(\d+)x(\d+)""").find(shell("wm size"))?.destructured

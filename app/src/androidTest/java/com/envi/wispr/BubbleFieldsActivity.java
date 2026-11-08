@@ -58,9 +58,21 @@ public final class BubbleFieldsActivity extends Activity {
         apply(getIntent());
     }
 
+    /**
+     * Asks the system to dismiss a credential-free keyguard this activity is shown over, WITHOUT touching
+     * focus, so a test can unlock and still claim "same field, no re-tap". A swipe cannot do it here: this
+     * activity occludes the keyguard, so the swipe lands on the activity (Pixel 9 Pro, Test Lab 2026-11-08).
+     */
+    public static final String EXTRA_DISMISS_KEYGUARD = "dismiss_keyguard";
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (intent != null && intent.getBooleanExtra(EXTRA_DISMISS_KEYGUARD, false)) {
+            android.app.KeyguardManager keyguard = getSystemService(android.app.KeyguardManager.class);
+            if (keyguard != null) keyguard.requestDismissKeyguard(this, null);
+            return;
+        }
         setIntent(intent);
         apply(intent);
     }

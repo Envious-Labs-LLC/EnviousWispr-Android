@@ -64,7 +64,11 @@ internal class AccessibilityBubbleHost(
      */
     private val lockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (recordingOverlay != null) discoverFieldWithRetry()
+            if (recordingOverlay == null) return
+            // A fresh sequence per broadcast: coalescing into a screen-on sequence near its end would leave
+            // the unlock one short attempt (Codex code round 6). Three bounded system events, not a loop.
+            cancelDiscoveryRetries()
+            discoverFieldWithRetry()
         }
     }
 

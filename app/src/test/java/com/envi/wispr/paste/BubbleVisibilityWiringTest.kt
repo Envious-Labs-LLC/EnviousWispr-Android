@@ -62,6 +62,7 @@ class BubbleVisibilityWiringTest {
         // The retrying discovery, not a single refresh: the unlock broadcast can beat the window's focus back.
         val receiver = PasteSources.slice(host, "private val lockReceiver", "\n    }\n")
         assertTrue(receiver, receiver.contains("discoverFieldWithRetry()"))
+        assertTrue("each broadcast starts a fresh sequence", receiver.indexOf("cancelDiscoveryRetries()") in 0 until receiver.indexOf("discoverFieldWithRetry()"))
         assertFalse(receiver.contains("refresh()"))
         assertTrue("registered with the main handler", host.contains("}, null, mainHandler, Context.RECEIVER_NOT_EXPORTED)"))
         assertTrue("unregistered at close", PasteSources.slice(host, "fun close()", "\n    }").contains("unregisterReceiver(lockReceiver)"))

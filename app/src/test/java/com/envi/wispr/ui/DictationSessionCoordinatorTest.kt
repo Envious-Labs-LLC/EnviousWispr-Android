@@ -215,6 +215,13 @@ class DictationSessionCoordinatorTest {
         assertEquals(listOf("cue:whisperTick:START", "cue:whisperTick:STOP"), rig.host.events.filter { it.startsWith("cue:") })
     }
 
+    @Test fun theTakePreparesItsChimesOnTheVolumeTheUserChose() {
+        rig.preferenceStates.value = AppPreferencesState(recordingSoundsEnabled = true, recordingSoundVolume = com.envi.wispr.audio.RecordingSoundVolume.RINGER)
+        val coordinator = rig.coordinator()
+        startAndGoLive(coordinator)
+        rig.onMain { assertEquals(listOf("cue-prepare:whisperTick:ringer"), rig.host.events.filter { it.startsWith("cue-prepare:") }) }
+    }
+
     @Test fun aManualStopCannotSoundUntilTheCaptureCloseEvent() {
         rig.preferenceStates.value = AppPreferencesState(recordingSoundsEnabled = true)
         val closed = java.util.concurrent.CountDownLatch(1)

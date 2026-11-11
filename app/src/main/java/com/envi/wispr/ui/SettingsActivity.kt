@@ -181,6 +181,7 @@ class SettingsActivity : ComponentActivity() {
                         sounds = SoundsActions(
                             onRecordingSoundsChanged = shellViewModel::setRecordingSoundsEnabled,
                             onRecordingSoundPairingChanged = shellViewModel::setRecordingSoundPairing,
+                            onRecordingSoundVolumeChanged = shellViewModel::setRecordingSoundVolume,
                             onRecordingVibrationChanged = shellViewModel::setRecordingVibrationEnabled,
                         ),
                         appearance = AppearanceActions(

@@ -14,6 +14,13 @@ class AppPreferencesStateTest {
         org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundPairing.WHISPER_TICK, com.envi.wispr.audio.RecordingSoundPairing.fromStorage("foreign"))
     }
 
+    @Test fun chimesFollowTheMediaVolumeUnlessTheUserChoseTheRinger() {
+        org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundVolume.MEDIA, AppPreferencesState().recordingSoundVolume)
+        org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundVolume.MEDIA, com.envi.wispr.audio.RecordingSoundVolume.fromStorage(null))
+        org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundVolume.MEDIA, com.envi.wispr.audio.RecordingSoundVolume.fromStorage("foreign"))
+        org.junit.Assert.assertEquals(com.envi.wispr.audio.RecordingSoundVolume.RINGER, com.envi.wispr.audio.RecordingSoundVolume.fromStorage("ringer"))
+    }
+
     @Test
     fun cleanupDefaultsMatchMacRelease() {
         val options = AppPreferencesState().cleanupOptions()

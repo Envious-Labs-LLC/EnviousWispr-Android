@@ -3,6 +3,7 @@ package com.envi.wispr.settings
 import android.content.Context
 import com.envi.wispr.processing.ProcessingPreference
 import com.envi.wispr.audio.RecordingSoundPairing
+import com.envi.wispr.audio.RecordingSoundVolume
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -27,6 +28,7 @@ private val Context.enviousWisprDataStore by preferencesDataStore(name = "enviou
 internal data class AppPreferencesState(
     val recordingSoundsEnabled: Boolean = false,
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
+    val recordingSoundVolume: RecordingSoundVolume = RecordingSoundVolume.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val onboardingStep: Int = 0,
     /**
@@ -118,6 +120,7 @@ internal class AppPreferences(context: Context) {
     private fun mapState(preferences: Preferences, strictProcessing: Boolean = true): AppPreferencesState = AppPreferencesState(
         recordingSoundsEnabled = preferences[Keys.RECORDING_SOUNDS] ?: false,
         recordingSoundPairing = RecordingSoundPairing.fromStorage(preferences[Keys.RECORDING_SOUND_PAIRING]),
+        recordingSoundVolume = RecordingSoundVolume.fromStorage(preferences[Keys.RECORDING_SOUND_VOLUME]),
         recordingVibrationEnabled = preferences[Keys.RECORDING_VIBRATION] ?: true,
         onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,
         modelDownloadsOnMobileData = preferences[Keys.MODEL_DOWNLOADS_ON_MOBILE_DATA] ?: false,
@@ -153,6 +156,8 @@ internal class AppPreferences(context: Context) {
     suspend fun setRecordingSoundsEnabled(enabled: Boolean) { dataStore.edit { it[Keys.RECORDING_SOUNDS] = enabled } }
 
     suspend fun setRecordingSoundPairing(pairing: RecordingSoundPairing) { dataStore.edit { it[Keys.RECORDING_SOUND_PAIRING] = pairing.storageKey } }
+
+    suspend fun setRecordingSoundVolume(volume: RecordingSoundVolume) { dataStore.edit { it[Keys.RECORDING_SOUND_VOLUME] = volume.storageKey } }
 
     suspend fun setRecordingVibrationEnabled(enabled: Boolean) { dataStore.edit { it[Keys.RECORDING_VIBRATION] = enabled } }
 
@@ -334,6 +339,7 @@ internal class AppPreferences(context: Context) {
         val BUBBLE_SHOW_ON_PASSWORDS = booleanPreferencesKey("bubble_show_on_passwords")
         val RECORDING_SOUNDS = booleanPreferencesKey("recording_sounds_enabled")
         val RECORDING_SOUND_PAIRING = stringPreferencesKey("recording_sound_pairing")
+        val RECORDING_SOUND_VOLUME = stringPreferencesKey("recording_sound_volume")
         val RECORDING_VIBRATION = booleanPreferencesKey("recording_vibration_enabled")
         val ONBOARDING_VERSION = intPreferencesKey("onboarding_version")
         // The setup-only key since before #108; its stored value is the setting's, so it keeps its name on disk.

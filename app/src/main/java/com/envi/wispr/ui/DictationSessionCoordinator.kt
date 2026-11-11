@@ -504,7 +504,7 @@ internal class DictationSessionCoordinator(
                     }
                 }
                 feedbackPreferencesReady = true
-                if (sessionPreferences.recordingSoundsEnabled) runCatching { host.prepareRecordingSound(takeId, sessionPreferences.recordingSoundPairing) {
+                if (sessionPreferences.recordingSoundsEnabled) runCatching { host.prepareRecordingSound(takeId, sessionPreferences.recordingSoundPairing, sessionPreferences.recordingSoundVolume) {
                     if (take.takeId == takeId && !destroyed.get() && state.get() == SessionState.RECORDING) soundCue.prepared()
                 } }
                 outcome.bindRequested(sinceAccepted())

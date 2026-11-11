@@ -128,5 +128,6 @@ internal class AppearanceActions(
 internal class SoundsActions(
     val onRecordingSoundsChanged: (Boolean) -> Unit,
     val onRecordingSoundPairingChanged: (com.envi.wispr.audio.RecordingSoundPairing) -> Unit,
+    val onRecordingSoundVolumeChanged: (com.envi.wispr.audio.RecordingSoundVolume) -> Unit,
     val onRecordingVibrationChanged: (Boolean) -> Unit,
 )

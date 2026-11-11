@@ -20,7 +20,7 @@ internal interface SessionHost {
     fun updateSurfacePhase(phase: DictationSurfaceState.Phase)
 
     fun beginRecordingFeedback(takeId: String)
-    fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, onReady: () -> Unit)
+    fun prepareRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, volume: com.envi.wispr.audio.RecordingSoundVolume, onReady: () -> Unit)
     fun playRecordingSound(takeId: String, pairing: com.envi.wispr.audio.RecordingSoundPairing, moment: com.envi.wispr.audio.RecordingSoundMoment): Boolean
     fun finishRecordingFeedback(takeId: String)
 

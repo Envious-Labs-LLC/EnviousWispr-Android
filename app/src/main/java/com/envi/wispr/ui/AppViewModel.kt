@@ -113,6 +113,7 @@ internal class EnviousWisprViewModel(
 
     fun setRecordingSoundsEnabled(enabled: Boolean) { viewModelScope.launch { appPreferences.setRecordingSoundsEnabled(enabled) } }
     fun setRecordingSoundPairing(pairing: com.envi.wispr.audio.RecordingSoundPairing) { viewModelScope.launch { appPreferences.setRecordingSoundPairing(pairing) } }
+    fun setRecordingSoundVolume(volume: com.envi.wispr.audio.RecordingSoundVolume) { viewModelScope.launch { appPreferences.setRecordingSoundVolume(volume) } }
     fun setRecordingVibrationEnabled(enabled: Boolean) { viewModelScope.launch { appPreferences.setRecordingVibrationEnabled(enabled) } }
 
     fun setDynamicColorEnabled(enabled: Boolean) =

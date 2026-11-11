@@ -43,11 +43,11 @@ internal object RecordingSoundOutput {
         busyState.value = true
     }
 
-    fun prepare(context: Context, token: String, pairing: RecordingSoundPairing, onReady: () -> Unit) {
+    fun prepare(context: Context, token: String, pairing: RecordingSoundPairing, volume: RecordingSoundVolume, onReady: () -> Unit) {
         main()
         if (takeToken != token) return
         takePlayers?.close()
-        val pair = PairPlayers(context.applicationContext, pairing)
+        val pair = PairPlayers(context.applicationContext, pairing, volume)
         takePlayers = pair
         pair.whenReady = { if (takeToken == token && takePlayers === pair) onReady() }
     }
@@ -88,11 +88,11 @@ internal object RecordingSoundOutput {
     }
 
     /** Explicit preview works with the recording-sounds switch off and never writes selection. */
-    fun preview(context: Context, pairing: RecordingSoundPairing) {
+    fun preview(context: Context, pairing: RecordingSoundPairing, volume: RecordingSoundVolume) {
         main()
         if (busyState.value) return
         cancelPreview()
-        val pair = PairPlayers(context.applicationContext, pairing)
+        val pair = PairPlayers(context.applicationContext, pairing, volume)
         previewPlayers = pair
         previewState.value = pairing
         pair.whenReady = {
@@ -127,11 +127,11 @@ internal object RecordingSoundOutput {
     private const val PREPARATION_BOUND_MS = 2_000L
     private const val COMPLETION_MARGIN_MS = 500L
 
-    private class PairPlayers(context: Context, val pairing: RecordingSoundPairing) {
+    private class PairPlayers(context: Context, val pairing: RecordingSoundPairing, volume: RecordingSoundVolume) {
         var whenReady: (() -> Unit)? = null
         private var closed = false
-        val start = Clip(context, pairing.startResource, ::loaded, ::failed, ::interrupted) {}
-        val stop = Clip(context, pairing.stopResource, ::loaded, ::failed, ::interrupted) {
+        val start = Clip(context, pairing.startResource, volume, ::loaded, ::failed, ::interrupted) {}
+        val stop = Clip(context, pairing.stopResource, volume, ::loaded, ::failed, ::interrupted) {
             if (previewPlayers === this) cancelPreview()
         }
         val ready: Boolean get() = !closed && start.ready && stop.ready
@@ -171,6 +171,7 @@ internal object RecordingSoundOutput {
     private class Clip(
         context: Context,
         resource: Int,
+        volume: RecordingSoundVolume,
         private val onReady: () -> Unit,
         private val onFailure: () -> Unit,
         private val onInterruption: () -> Unit,
@@ -187,7 +188,8 @@ internal object RecordingSoundOutput {
             private set
         private val lifetime = Runnable { close(); onCompletion() }
         private val attributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            // The usage picks the phone volume the chime follows (#526).
+            .setUsage(volume.usage)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 

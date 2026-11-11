@@ -31,7 +31,7 @@ class RecordingSoundOutputDeviceTest {
                     RecordingSoundOutput.previewStarted.first { it == pair }
                     action()
                 }
-                RecordingSoundOutput.preview(context, pair)
+                RecordingSoundOutput.preview(context, pair, RecordingSoundVolume.DEFAULT)
                 observed.await()
             }
         }
@@ -52,7 +52,7 @@ class RecordingSoundOutputDeviceTest {
                         withContext(Dispatchers.Main.immediate) {
                             val prepared = kotlinx.coroutines.CompletableDeferred<Unit>()
                             RecordingSoundOutput.admit(token)
-                            RecordingSoundOutput.prepare(context, token, RecordingSoundPairing.WHISPER_TICK) {
+                            RecordingSoundOutput.prepare(context, token, RecordingSoundPairing.WHISPER_TICK, RecordingSoundVolume.DEFAULT) {
                                 runCatching {
                                     assertTrue(RecordingSoundOutput.play(token, RecordingSoundPairing.WHISPER_TICK, RecordingSoundMoment.START))
                                     startedFocusListener().onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
@@ -92,7 +92,7 @@ class RecordingSoundOutputDeviceTest {
             try {
                 onPreviewStart(RecordingSoundPairing.WHISPER_TICK) {
                     val oldListener = startedFocusListener()
-                    RecordingSoundOutput.preview(context, RecordingSoundPairing.DUST_MOTE)
+                    RecordingSoundOutput.preview(context, RecordingSoundPairing.DUST_MOTE, RecordingSoundVolume.DEFAULT)
                     oldListener.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
                     assertEquals(RecordingSoundPairing.DUST_MOTE, RecordingSoundOutput.previewing.value)
                 }

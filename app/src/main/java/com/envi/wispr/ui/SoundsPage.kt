@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.envi.wispr.audio.RecordingSoundOutput
 import com.envi.wispr.audio.RecordingSoundPairing
+import com.envi.wispr.audio.RecordingSoundVolume
 import com.envi.wispr.settings.AppPreferencesState
 
 @Composable
@@ -61,6 +62,27 @@ internal fun SoundsPage(preferences: AppPreferencesState, actions: SoundsActions
                 checked = preferences.recordingVibrationEnabled,
                 onCheckedChange = actions.onRecordingVibrationChanged,
             )
+        }
+        SettingsGroup("Chime volume follows") {
+            RecordingSoundVolume.entries.forEach { volume ->
+                val selected = preferences.recordingSoundVolume == volume
+                Row(
+                    Modifier.fillMaxWidth()
+                        .selectable(selected = selected, role = Role.RadioButton) {
+                            RecordingSoundOutput.cancelPreview()
+                            actions.onRecordingSoundVolumeChanged(volume)
+                        }
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    RadioButton(selected = selected, onClick = null)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(volume.title, style = MaterialTheme.typography.titleMedium)
+                        Text(volume.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
         }
         Text(
             if (busy) "Finish dictating to preview sounds." else "Preview a chime without changing your choice.",
@@ -94,7 +116,7 @@ internal fun SoundsPage(preferences: AppPreferencesState, actions: SoundsActions
                         }
                     }
                     TextButton(
-                        onClick = { RecordingSoundOutput.preview(context, pairing) },
+                        onClick = { RecordingSoundOutput.preview(context, pairing, preferences.recordingSoundVolume) },
                         enabled = !busy,
                         modifier = Modifier.padding(end = 8.dp).semantics { contentDescription = "Preview ${pairing.title}" },
                     ) { Text(if (previewStarted == pairing) "Playing" else if (previewing == pairing) "Loading" else "Preview") }

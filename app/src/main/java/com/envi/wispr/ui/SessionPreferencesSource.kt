@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference
 internal data class SessionPreferences(
     val recordingSoundsEnabled: Boolean = false,
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
+    val recordingSoundVolume: com.envi.wispr.audio.RecordingSoundVolume = com.envi.wispr.audio.RecordingSoundVolume.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val cleanup: CleanupOptions = CleanupOptions(),
     val matcher: StructuredTermRestorer.Matcher = StructuredTermRestorer.compile(emptyList()),
@@ -84,6 +85,7 @@ internal sealed interface PreferenceRead {
 internal data class SettingsSnapshot(
     val recordingSoundsEnabled: Boolean = false,
     val recordingSoundPairing: RecordingSoundPairing = RecordingSoundPairing.DEFAULT,
+    val recordingSoundVolume: com.envi.wispr.audio.RecordingSoundVolume = com.envi.wispr.audio.RecordingSoundVolume.DEFAULT,
     val recordingVibrationEnabled: Boolean = true,
     val read: PreferenceRead = PreferenceRead.Pending,
     val cleanupOptions: CleanupOptions = CleanupOptions(),
@@ -203,6 +205,7 @@ internal class SessionPreferencesSource(
                             read = PreferenceRead.Fresh,
                             recordingSoundsEnabled = preferences.recordingSoundsEnabled,
                             recordingSoundPairing = preferences.recordingSoundPairing,
+                            recordingSoundVolume = preferences.recordingSoundVolume,
                             recordingVibrationEnabled = preferences.recordingVibrationEnabled,
                             cleanupOptions = preferences.cleanupOptions(),
                             clipboardPolicy = preferences.clipboardInsertionPolicy(),
@@ -266,6 +269,7 @@ internal class SessionPreferencesSource(
         SessionPreferences(
             recordingSoundsEnabled = start.settings.recordingSoundsEnabled,
             recordingSoundPairing = start.settings.recordingSoundPairing,
+            recordingSoundVolume = start.settings.recordingSoundVolume,
             recordingVibrationEnabled = start.settings.recordingVibrationEnabled,
             cleanup = start.settings.cleanupOptions.copy(spellingProtectedWords = com.envi.wispr.cleanup.BritishSpelling.protectedWords(start.terms.userSpellings)),
             matcher = matcher,

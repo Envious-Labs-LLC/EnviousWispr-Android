@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.S1ControlSettings
@@ -130,6 +131,16 @@ internal fun PolishScreen(
         target = write()
     }
 
+    var viewedLocal by rememberSaveable { mutableStateOf<LocalPolishModel?>(null) }
+    fun modelState(model: LocalPolishModel): ModelUiState = when (model) {
+        LocalPolishModel.S1_MINI -> s1State
+        LocalPolishModel.EG1_MICRO -> eg1State
+    }
+    val savedLocal = settings.localPolishModel
+    val viewed = viewedLocal ?: savedLocal
+    val viewedState = modelState(viewed)
+    val activeLocal = savedLocal.takeIf { modelState(it).health == ModelHealth.READY }
+
     val rungOne = PolishLadder.rungOne(settings.mode, cloudSetup)
 
     ScreenContainer(subtitle = "Clean up and rewrite your dictation with AI.") {
@@ -162,19 +173,30 @@ internal fun PolishScreen(
             when (rungOne) {
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
                 RungOne.THIS_PHONE -> {
-                    if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.MID) QuietCard(UnsupportedPhoneCopy.MID_TIER_NOTICE)
                     LocalPolishModelSelector(
-                        selected = settings.localPolishModel,
+                        viewed = viewed,
+                        active = activeLocal,
                         s1State = s1State,
                         eg1State = eg1State,
                         enabled = !saving,
-                        error = writeError?.takeIf { errorKind == WriteKind.LOCAL_MODEL },
-                        onSelect = { picked -> start(WriteKind.LOCAL_MODEL) { onSetLocalModel(picked) } },
+                        onSelect = { picked ->
+                            if (modelState(picked).health == ModelHealth.READY) {
+                                viewedLocal = null
+                                start(WriteKind.LOCAL_MODEL) { onSetLocalModel(picked) }
+                            } else {
+                                viewedLocal = picked
+                            }
+                        },
                     )
-                    S1Card(s1State, onRefreshReadiness)
-                    Eg1Card(eg1State, onRefreshReadiness)
-                    when (settings.localPolishModel) {
+                    writeError?.takeIf { errorKind == WriteKind.LOCAL_MODEL }?.let { ErrorLine(it) }
+                    if (viewedState.health == ModelHealth.READY) when (viewed) {
                         LocalPolishModel.S1_MINI -> {
+                            S1ControlCard(
+                                control = settings.s1Control,
+                                enabled = !saving,
+                                error = writeError?.takeIf { errorKind == WriteKind.S1_CONTROL },
+                                onPick = { next -> start(WriteKind.S1_CONTROL) { onSetS1Control(next) } },
+                            )
                             val selectedLocalModel = LocalPolishModel.S1_MINI
                             val selectedRuntime = com.envi.wispr.polish.S1RuntimeKind.runtimeKindFor(selectedLocalModel)
                             val selectedContextId = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(selectedLocalModel.descriptor(), selectedRuntime)
@@ -194,18 +216,14 @@ internal fun PolishScreen(
                                     { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } }
                                 } else null,
                                 onCloseChecks = onCancelProcessingChecks,
-                            )
-                            S1ControlCard(
-                                control = settings.s1Control,
-                                enabled = !saving,
-                                error = writeError?.takeIf { errorKind == WriteKind.S1_CONTROL },
-                                onPick = { next -> start(WriteKind.S1_CONTROL) { onSetS1Control(next) } },
+                                inline = true,
                             )
                         }
-                        LocalPolishModel.EG1_MICRO -> {
-                            Eg1ProcessingCard(latestResult = latestPolishResult)
-                            Eg1ControlNoticeCard()
-                        }
+                        LocalPolishModel.EG1_MICRO -> Eg1Strengths()
+                    }
+                    val fallback = LocalPolishModel.entries.firstOrNull { it != viewed && modelState(it).health == ModelHealth.READY }
+                    LocalPolishDeliveryActions(viewed, viewedState, !saving, fallback) {
+                        if (viewed == savedLocal) viewedLocal = null
                     }
                     DevelopmentModelCard()
                 }

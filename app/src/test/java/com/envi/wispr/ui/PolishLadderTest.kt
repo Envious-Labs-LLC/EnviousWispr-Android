@@ -3,10 +3,6 @@ package com.envi.wispr.ui
 import com.envi.wispr.providers.ModelId
 import com.envi.wispr.providers.ui.ProviderDiscoveryUiState
 import com.envi.wispr.providers.ui.ProviderSettingsUiState
-import com.envi.wispr.models.ModelHealth
-import com.envi.wispr.models.ModelManifest
-import com.envi.wispr.models.ModelUiAction
-import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.providers.DiscoveredModel
 import com.envi.wispr.providers.ModelAccess
 import com.envi.wispr.providers.ModelListRules
@@ -452,57 +448,6 @@ class PolishLadderTest {
         assertNull(keyPortal(Provider.SELF_HOSTED_POLISH))
     }
 
-    @Test fun theS1LineIsExhaustiveOverHealth() {
-        fun state(health: ModelHealth, action: ModelUiAction) = ModelUiState("x", health, 0L, 0L, null, action)
-        assertNull("a ready model is described by its facts row, not by a sentence repeating it", PolishLadder.s1Line(state(ModelHealth.READY, ModelUiAction.REMOVE)))
-        assertTrue(PolishLadder.s1Line(state(ModelHealth.BROKEN, ModelUiAction.REPAIR))!!.startsWith("S1-mini is not working"))
-        assertEquals("Download S1-mini to polish on this phone.", PolishLadder.s1Line(state(ModelHealth.NOT_READY, ModelUiAction.DOWNLOAD)))
-        assertEquals("Download S1-mini to polish on this phone.", PolishLadder.s1Line(state(ModelHealth.NOT_READY, ModelUiAction.RETRY)))
-        assertEquals("Getting S1-mini ready.", PolishLadder.s1Line(state(ModelHealth.NOT_READY, ModelUiAction.PAUSE)))
-        assertEquals("Getting S1-mini ready.", PolishLadder.s1Line(state(ModelHealth.UNKNOWN, ModelUiAction.NONE)))
-        // READY is the ONLY health allowed to say nothing; every other one names what the user does next,
-        // and a blank string would render as an empty gap rather than as no row at all.
-        ModelHealth.entries.forEach { health ->
-            val line = PolishLadder.s1Line(state(health, ModelUiAction.NONE))
-            if (health == ModelHealth.READY) assertNull(line) else assertTrue(health.name, line?.isNotBlank() == true)
-        }
-    }
-
-    @Test fun theS1FactsNameThePublisherTheSizeAndTheOfflinePromise() {
-        // The independent oracle is the manifest's own byte total, written here as a literal, because the
-        // formatted string cannot be one: formatModelBytes formats in the DEFAULT locale on purpose, so a
-        // German phone reads 461,8 MB and an English-literal assertion goes red under
-        // JAVA_TOOL_OPTIONS='-Duser.language=de -Duser.country=DE' while the app is behaving correctly.
-        val bytes = ModelManifest.s1.files.sumOf { it.expectedBytes }
-        assertEquals(484_219_808L, bytes)
-        val facts = PolishLadder.s1Facts()
-        assertEquals(listOf("Superwhisper", formatModelBytes(bytes), "Offline"), facts)
-        assertTrue(facts[1], facts[1].matches(Regex("""484[.,]2 MB""")))
-    }
-
-    @Test fun theEg1LineIsExhaustiveOverHealthAndHonestAboutTradeoffs() {
-        fun state(health: ModelHealth, action: ModelUiAction) = ModelUiState("x", health, 0L, 0L, null, action)
-        assertTrue(PolishLadder.eg1Line(state(ModelHealth.READY, ModelUiAction.REMOVE))!!.contains("Slower on mid-range processors"))
-        assertTrue(PolishLadder.eg1Line(state(ModelHealth.BROKEN, ModelUiAction.REPAIR))!!.startsWith("EG-1 Micro is not working"))
-        assertTrue(PolishLadder.eg1Line(state(ModelHealth.NOT_READY, ModelUiAction.DOWNLOAD))!!.contains("Download EG-1 Micro"))
-        assertEquals("Getting EG-1 Micro ready.", PolishLadder.eg1Line(state(ModelHealth.NOT_READY, ModelUiAction.PAUSE)))
-        assertEquals("Getting EG-1 Micro ready.", PolishLadder.eg1Line(state(ModelHealth.UNKNOWN, ModelUiAction.NONE)))
-        ModelHealth.entries.forEach { health ->
-            assertTrue(health.name, PolishLadder.eg1Line(state(health, ModelUiAction.NONE))?.isNotBlank() == true)
-        }
-    }
-
-    @Test fun theEg1FactsNamePublisherDecimalSizeOfflineLanguagesAndCpu() {
-        val bytes = ModelManifest.eg1Micro.files.sumOf { it.expectedBytes }
-        assertEquals(541_898_240L, bytes)
-        val facts = PolishLadder.eg1Facts()
-        assertEquals(
-            listOf("Envious Labs", formatModelBytes(bytes), "Offline", "17 languages", "Processor (CPU)"),
-            facts,
-        )
-        assertTrue(facts[1], facts[1].matches(Regex("""541[.,]9 MB""")))
-    }
-
     /**
      * The unit is the claim. Android's own Formatter and the Play listing both divide by 1000, so a
      * binary divisor under a decimal label would print a number 5% smaller than every other size on the
@@ -521,8 +466,7 @@ class PolishLadderTest {
      * Drift Guard, not product coverage. Every dot in this app is hand-written decoration, so no test can
      * say a value is RIGHT. What it can say is that every value renders: `ScoreDots` fills levels 3 down
      * to 1, so a 0 draws an empty meter and a 4 draws one that never fills, and both look like a working
-     * meter reporting something false. The sweep runs over the producer — the S1 row and every
-     * `ModelNotes` row together — rather than over the row this change happened to add.
+     * meter reporting something false. The sweep runs over every `ModelNotes` row.
      */
     @Test fun everyScoreInTheAppRendersAsAMeter() {
         val rows = ModelNotes.all
@@ -530,8 +474,7 @@ class PolishLadderTest {
         // ordinary catalog maintenance and not a defect in any score; the predicate has to be the thing
         // the reason names, which is that a sweep over nothing must not read as a pass.
         assertTrue("a sweep over an empty catalog is not a pass", rows.isNotEmpty())
-        val scores = rows.map { Triple(it.name, listOf(it.cost, it.speed, it.accuracy), "catalog") } +
-            listOf(Triple("S1-mini", with(PolishLadder.S1_SCORES) { listOf(speed, accuracy) }, "on-phone"))
+        val scores = rows.map { Triple(it.name, listOf(it.cost, it.speed, it.accuracy), "catalog") }
         scores.forEach { (name, values, source) ->
             values.forEach { assertTrue("$source row $name has $it, outside 1..3", it in 1..3) }
         }

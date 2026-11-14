@@ -156,8 +156,36 @@ internal class ProviderConfigurationRepository internal constructor(
     }
 
     fun setLocalPolishModel(model: LocalPolishModel) = synchronized(PROCESSING_LOCK) {
-        writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to model.wire))
+        writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to model.wire, KEY_LOCAL_POLISH_DOWNLOAD to ""))
     }
+
+    /** The download worker owns completion. Persist only the choice it is allowed to apply. */
+    fun requestLocalPolishDownload(model: LocalPolishModel) = synchronized(PROCESSING_LOCK) {
+        if (decodeMode(preferences.all) == PolishMode.OFFLINE_S1) {
+            writeProcessing(mapOf(KEY_LOCAL_POLISH_DOWNLOAD to model.wire))
+        }
+    }
+
+    fun cancelLocalPolishDownload(model: LocalPolishModel) = synchronized(PROCESSING_LOCK) {
+        if (preferences.all[KEY_LOCAL_POLISH_DOWNLOAD] == model.wire) {
+            writeProcessing(mapOf(KEY_LOCAL_POLISH_DOWNLOAD to ""))
+        }
+    }
+
+    fun completeLocalPolishDownload(model: LocalPolishModel): Boolean = synchronized(PROCESSING_LOCK) {
+        val values = preferences.all
+        if (decodeMode(values) != PolishMode.OFFLINE_S1 || values[KEY_LOCAL_POLISH_DOWNLOAD] != model.wire) {
+            return@synchronized false
+        }
+        writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to model.wire, KEY_LOCAL_POLISH_DOWNLOAD to ""))
+    }
+
+    fun fallbackAfterLocalPolishRemoval(removed: LocalPolishModel, fallback: LocalPolishModel): Boolean =
+        synchronized(PROCESSING_LOCK) {
+            val values = preferences.all
+            if (decodeLocalPolishModel(values) != removed) return@synchronized false
+            writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to fallback.wire))
+        }
 
     fun loadS1Processing(): ProcessingPreference = synchronized(PROCESSING_LOCK) { ProcessingPreference.decode(storedProcessingString(preferences.all, KEY_S1_PROCESSING)) }
 
@@ -346,7 +374,7 @@ internal class ProviderConfigurationRepository internal constructor(
             .putString(KEY_PROTOCOL, selfHostedProtocol.name)
         if (provider.capabilities().requiresEndpoint) values.putString(KEY_ENDPOINT, endpoint)
         else values.remove(KEY_ENDPOINT)
-        if (!values.commit()) {
+        if (!synchronized(PROCESSING_LOCK) { values.remove(KEY_LOCAL_POLISH_DOWNLOAD).commit() }) {
             // Compensation: the metadata did not change, so the key must not have either. A compensation
             // that fails is reported as what it is; "nothing changed" would be a lie the UI repeats.
             if (suppliedKey != null) {
@@ -366,8 +394,10 @@ internal class ProviderConfigurationRepository internal constructor(
         selfHostedProtocol: SelfHostedProtocol = SelfHostedProtocol.OPENAI_COMPATIBLE,
     ) = saveProvider(provider, model, endpoint, apiKey, selfHostedProtocol)
 
-    fun setMode(mode: PolishMode) {
-        check(preferences.edit().putString(KEY_MODE, mode.name).commit()) {
+    fun setMode(mode: PolishMode) = synchronized(PROCESSING_LOCK) {
+        val editor = preferences.edit().putString(KEY_MODE, mode.name)
+        if (mode != PolishMode.OFFLINE_S1) editor.remove(KEY_LOCAL_POLISH_DOWNLOAD)
+        check(editor.commit()) {
             "could not persist polish mode"
         }
     }
@@ -506,6 +536,7 @@ internal class ProviderConfigurationRepository internal constructor(
         private const val KEY_PROCESSING_RESULT = "latest_processing_result"
         private const val KEY_S1_PROCESSING = "s1_processing"
         private const val KEY_S1_QUALIFICATION = "s1_processing_qualification"
+        private const val KEY_LOCAL_POLISH_DOWNLOAD = "local_polish_download"
         private const val KEY_LOCAL_POLISH_MODEL = "local_polish_model"
         private const val KEY_EG1_QUALIFICATION = "eg1_processing_qualification"
         private const val KEY_S1_STYLING = "s1_styling"

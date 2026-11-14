@@ -183,10 +183,10 @@ internal class PolishSettingsViewModel(
                     read.onSuccess { details ->
                         val qualification = details.qualification.getOrElse { providerSettings.value.s1Qualification }
                         val observation = details.observation.getOrElse { providerSettings.value.latestProcessingResult }
-                        val activeModel = providerSettings.value.localPolishModel
+                        val activeModel = details.localPolishModel
                         val activeRuntime = com.envi.wispr.polish.S1RuntimeKind.runtimeKindFor(activeModel)
                         val activeContextId = ProcessingEnvironment.s1ContextId(activeModel.descriptor(), activeRuntime)
-                        var checks = providerSettings.value.processingChecks
+                        var checks = if (activeModel == providerSettings.value.localPolishModel) providerSettings.value.processingChecks else emptyMap()
                         if (observation != providerSettings.value.latestProcessingResult) observation?.local?.let { usage ->
                             val usageModel = LocalPolishModel.fromWire(usage.modelId)
                             if (usageModel == activeModel && usage.contextId == activeContextId) {
@@ -196,7 +196,7 @@ internal class PolishSettingsViewModel(
                                 }
                             }
                         }
-                        providerSettings.value = providerSettings.value.copy(s1Qualification = qualification, latestProcessingResult = observation, processingChecks = checks,
+                        providerSettings.value = providerSettings.value.copy(localPolishModel = activeModel, s1Qualification = qualification, latestProcessingResult = observation, processingChecks = checks,
                             s1Processing = details.preference.getOrElse { providerSettings.value.s1Processing },
                             processingReadError = if (details.preference.isFailure || details.qualification.isFailure || details.observation.isFailure) "Processing details could not be read. Previous details retained." else null)
                     }.onFailure { providerSettings.value = providerSettings.value.copy(processingReadError = "Processing details could not be read. Previous details retained.") }

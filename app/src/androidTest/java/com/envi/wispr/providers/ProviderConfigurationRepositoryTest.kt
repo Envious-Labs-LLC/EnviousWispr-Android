@@ -3,6 +3,7 @@ package com.envi.wispr.providers
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1Context
 import com.envi.wispr.polish.S1ControlSettings
@@ -30,6 +31,31 @@ class ProviderConfigurationRepositoryTest {
         secrets = MemorySecrets()
         checker = RecordingChecker()
         repository = ProviderConfigurationRepository(context, secrets, checker)
+    }
+
+    @Test fun verifiedDownloadHonorsTheLatestPolishChoiceEvenAfterSettingsReopens() {
+        val micro = LocalPolishModel.EG1_MICRO
+        val mini = LocalPolishModel.S1_MINI
+        repository.requestLocalPolishDownload(micro)
+        assertEquals(mini, repository.loadLocalPolishModel())
+
+        val reopened = ProviderConfigurationRepository(context, secrets, checker)
+        assertTrue(reopened.completeLocalPolishDownload(micro))
+        assertEquals(micro, repository.loadLocalPolishModel())
+
+        repository.requestLocalPolishDownload(mini)
+        repository.setLocalPolishModel(micro)
+        assertFalse(reopened.completeLocalPolishDownload(mini))
+
+        repository.requestLocalPolishDownload(mini)
+        repository.setMode(PolishMode.OFF)
+        repository.setMode(PolishMode.OFFLINE_S1)
+        assertFalse(reopened.completeLocalPolishDownload(mini))
+
+        repository.requestLocalPolishDownload(mini)
+        repository.cancelLocalPolishDownload(mini)
+        assertFalse(reopened.completeLocalPolishDownload(mini))
+        assertEquals(micro, reopened.loadLocalPolishModel())
     }
 
     @Test fun delayedSuccessfulTakeCannotOverwriteANewerFailedCanary() {

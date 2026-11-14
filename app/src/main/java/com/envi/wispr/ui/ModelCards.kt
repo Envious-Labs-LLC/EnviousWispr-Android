@@ -36,16 +36,6 @@ import com.envi.wispr.models.modelUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * A card's meters, on the 1-3 scale the cloud model rows use, so a card and a row can be compared. More
- * dots is more of the named thing.
- *
- * There is no cost here. A card describes ONE model, and every model that has a card is free, so a cost
- * meter would encode a constant; the cloud rows keep theirs because their prices differ from each other.
- * Adding one back means answering what it would vary with.
- */
-internal data class ModelScores(val speed: Int, val accuracy: Int)
-
 @Composable
 internal fun ModelCard(
     eyebrow: String,
@@ -53,7 +43,6 @@ internal fun ModelCard(
     description: String?,
     state: ModelUiState,
     facts: List<String>,
-    scores: ModelScores? = null,
     /** The model this card is about, so the card can say what it costs in storage. */
     model: com.envi.wispr.models.ModelDescriptor? = null,
     onAction: () -> Unit = {},
@@ -84,17 +73,6 @@ internal fun ModelCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 facts.forEach { fact -> FactPill(fact) }
-            }
-            if (scores != null) {
-                Row(
-                    // Scrollable for the same reason the facts row above it is: these labels are words,
-                    // and at a large system font scale two of them are wider than a narrow phone.
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                ) {
-                    ScoreBar("Speed", scores.speed)
-                    ScoreBar("Accuracy", scores.accuracy)
-                }
             }
             if (state.total > 0L && (state.action == ModelUiAction.PAUSE || state.action == ModelUiAction.RESUME)) {
                 LinearProgressIndicator(

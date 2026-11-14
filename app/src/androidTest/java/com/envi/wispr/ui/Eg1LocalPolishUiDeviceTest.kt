@@ -2,7 +2,7 @@ package com.envi.wispr.ui
 
 import android.content.Context
 import androidx.activity.ComponentActivity
-import androidx.compose.material3.MaterialTheme
+import com.envi.wispr.ui.theme.EnviousWisprTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -39,18 +39,17 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Product Outcome: switching local polish models updates radio semantics, hides S1-only writing style
- * controls behind explicit notice and CPU processing cards, and keeps EG-1 Micro actions reachable.
+ * Product Outcome: browsing an uninstalled model leaves the installed model active and makes download reachable.
  */
 @RunWith(AndroidJUnit4::class)
 class Eg1LocalPolishUiDeviceTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
-    private val isRadio = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton)
-    private fun modelRadio(label: String) = hasText(label) and isRadio
+    private val isTab = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)
+    private fun modelTile(label: String) = hasText(label) and isTab
 
     @Test
-    fun selectingEg1MicroUpdatesRadiosHidesS1ControlsShowsNoticeAndEnqueuesDownload() {
+    fun browsingEg1MicroKeepsS1ActiveAndOffersDownload() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val s1State = ModelUiState("Ready", ModelHealth.READY, action = ModelUiAction.REMOVE)
         val eg1State = ModelUiState("Missing", ModelHealth.NOT_READY, action = ModelUiAction.DOWNLOAD)
@@ -64,7 +63,7 @@ class Eg1LocalPolishUiDeviceTest {
         )
 
         compose.setContent {
-            MaterialTheme {
+            EnviousWisprTheme {
                 PolishScreen(
                     settings = settingsState.value,
                     s1State = s1State,
@@ -95,14 +94,14 @@ class Eg1LocalPolishUiDeviceTest {
             }
         }
 
-        val s1Radio = compose.onNode(modelRadio("S1-mini")).performScrollTo()
-        val eg1Radio = compose.onNode(modelRadio("EG-1 Micro")).performScrollTo()
-        s1Radio.assertIsSelected()
-        eg1Radio.assertIsNotSelected()
-        val s1Height = with(compose.density) { s1Radio.fetchSemanticsNode().boundsInRoot.height.toDp() }
-        val eg1Height = with(compose.density) { eg1Radio.fetchSemanticsNode().boundsInRoot.height.toDp() }
-        assertTrue("Expected S1-mini radio touch target >= 48.dp, got $s1Height", s1Height >= 48.dp)
-        assertTrue("Expected EG-1 Micro radio touch target >= 48.dp, got $eg1Height", eg1Height >= 48.dp)
+        val s1Tile = compose.onNode(modelTile("S1-mini")).performScrollTo()
+        val eg1Tile = compose.onNode(modelTile("EG-1 Micro")).performScrollTo()
+        s1Tile.assertIsSelected()
+        eg1Tile.assertIsNotSelected()
+        val s1Height = with(compose.density) { s1Tile.fetchSemanticsNode().boundsInRoot.height.toDp() }
+        val eg1Height = with(compose.density) { eg1Tile.fetchSemanticsNode().boundsInRoot.height.toDp() }
+        assertTrue("Expected S1-mini tile touch target >= 48.dp, got $s1Height", s1Height >= 48.dp)
+        assertTrue("Expected EG-1 Micro tile touch target >= 48.dp, got $eg1Height", eg1Height >= 48.dp)
 
         compose.onNodeWithText("484.2 MB").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Casual").performScrollTo().assertIsDisplayed()
@@ -114,36 +113,18 @@ class Eg1LocalPolishUiDeviceTest {
         compose.onNodeWithText("General").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Email").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Automatic").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Change").performScrollTo().assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText(
-            "EG-1 Micro uses built-in formatting and language adaptation automatically. Switch back to S1-mini to customize casual/formal style.",
-        ).assertDoesNotExist()
-        compose.onNodeWithText("EG-1 Micro runs on your phone's processor (CPU).").assertDoesNotExist()
-
-        eg1Radio.performScrollTo().performClick()
-        compose.waitForIdle()
-
-        compose.onNode(modelRadio("EG-1 Micro")).assertIsSelected()
-        compose.onNode(modelRadio("S1-mini")).assertIsNotSelected()
-
-        compose.onNodeWithText("Casual").assertDoesNotExist()
-        compose.onNodeWithText("Semi-casual").assertDoesNotExist()
-        compose.onNodeWithText("Semi-formal").assertDoesNotExist()
-        compose.onNodeWithText("Formal").assertDoesNotExist()
-        compose.onNodeWithText("Prose").assertDoesNotExist()
-        compose.onNodeWithText("Lists").assertDoesNotExist()
-        compose.onNodeWithText("General").assertDoesNotExist()
-        compose.onNodeWithText("Email").assertDoesNotExist()
         compose.onNodeWithText("Change").assertDoesNotExist()
+        compose.onNodeWithText("Turn spoken thoughts into finished text").assertDoesNotExist()
 
-        compose.onNodeWithText("541.9 MB").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("17 languages").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Processor (CPU)").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("WRITING STYLE").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText(
-            "EG-1 Micro uses built-in formatting and language adaptation automatically. Switch back to S1-mini to customize casual/formal style.",
-        ).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("EG-1 Micro runs on your phone's processor (CPU).").performScrollTo().assertIsDisplayed()
+        eg1Tile.performScrollTo().performClick()
+
+        compose.onNode(modelTile("EG-1 Micro")).assertIsSelected()
+        compose.onNode(modelTile("S1-mini") and hasText("Active")).assertIsNotSelected()
+        compose.onNodeWithText("Casual").assertDoesNotExist()
+        compose.onNodeWithText("Turn spoken thoughts into finished text").assertDoesNotExist()
+        compose.onNodeWithText("541.9 MB").assertIsDisplayed()
+        compose.onNodeWithText("Envious Labs").assertIsDisplayed()
+        compose.onNodeWithText("Not downloaded").assertIsDisplayed()
 
         val workName = ModelDeliveryWorker.downloadWorkName(ModelManifest.eg1Micro)
         val workManager = WorkManager.getInstance(context)
@@ -153,7 +134,7 @@ class Eg1LocalPolishUiDeviceTest {
             val downloadButton = compose.onNodeWithText("Download").performScrollTo()
             downloadButton.assertIsDisplayed().assertIsEnabled().assertHasClickAction()
             downloadButton.performClick()
-            compose.waitUntil("Eg1Card Download click did not enqueue a new work item for $workName", 5_000L) {
+            compose.waitUntil("EG-1 Micro Download click did not enqueue a new work item for $workName", 5_000L) {
                 workManager.getWorkInfosForUniqueWork(workName).get(10, TimeUnit.SECONDS).any { it.id !in beforeIds }
             }
         } finally {

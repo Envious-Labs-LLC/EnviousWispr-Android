@@ -8,6 +8,8 @@ import androidx.work.WorkerParameters
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.polish.LocalPolishModel
+import com.envi.wispr.providers.ProviderConfigurationRepository
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import com.envi.wispr.telemetry.AnalyticsEvent
@@ -34,6 +36,19 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         if (inputData.getBoolean(KEY_REMOVE, false)) {
             // With dictation paused and the engines stopped (#108); a take in progress finishes first.
             val removed = whenIdle { ModelSwap.exclusive(applicationContext) { store.remove(model) } } ?: return@withContext Result.retry()
+            val removedPolish = localPolishModel(model)
+            if (removedPolish != null && ModelStorage.usable(applicationContext, model) == null) {
+                val fallback = LocalPolishModel.entries.firstOrNull {
+                    it != removedPolish && ModelStorage.usable(applicationContext, it.descriptor()) != null
+                }
+                if (fallback != null) {
+                    try {
+                        ProviderConfigurationRepository(applicationContext).fallbackAfterLocalPolishRemoval(removedPolish, fallback)
+                    } catch (_: IllegalStateException) {
+                        return@withContext Result.retry()
+                    }
+                }
+            }
             controls.clear(model)
             // #458: removing the speech model also frees the retired one, so the upgrade check stops fetching Ultra.
             SpeechModelUpgrade.afterRemove(root, model)
@@ -61,6 +76,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         setProgressAsync(Data.Builder().putString(KEY_STATE, DownloadState.VERIFYING.name).build())
         if (store.isVerified(model)) {
+            if (!completePolishDownload(model, controls)) return@withContext Result.retry()
             controls.clear(model)
             ModelDeliveryNotification.clear(applicationContext, model)
             return@withContext Result.success()
@@ -160,6 +176,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), reportedBytes, startedAtMs, firstRun)
         when (result.state) {
             DownloadState.READY -> {
+                if (!completePolishDownload(model, controls)) return@withContext Result.retry()
                 controls.clear(model)
                 ModelDeliveryNotification.notify(applicationContext, model, totalBytes, totalBytes, DownloadState.READY)
                 Result.success(
@@ -273,6 +290,20 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 firstRun = firstRun,
             ),
         )
+    }
+
+    private fun completePolishDownload(model: ModelDescriptor, controls: ModelDeliveryControlStore): Boolean {
+        val local = localPolishModel(model) ?: return true
+        if (inputData.getBoolean(KEY_ADOPT_ONLY, false) || isStopped ||
+            controls.read(model) != ModelDeliveryControlState.ACTIVE
+        ) return true
+        return try {
+            ProviderConfigurationRepository(applicationContext).completeLocalPolishDownload(local)
+            true
+        } catch (_: IllegalStateException) {
+            // The files are already verified. Retrying returns through the verified-file fast path.
+            false
+        }
     }
 
     private fun failure(
@@ -391,8 +422,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
          * Every download, setup, update and repair takes its network from `ModelDownloadPolicy` (#108), so no path
          * can choose its own. Each request carries its kind as a tag, so a changed setting can re-queue it as itself.
          */
-        internal suspend fun enqueue(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, KIND_DOWNLOAD)
+        internal suspend fun enqueue(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueueDownload(context, model, KIND_DOWNLOAD, activateForPolish)
         }
 
         /** Explicit setup action. KEEP makes recreation/repeated Get Started idempotent. */
@@ -401,8 +432,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             submit(context, model, KIND_SETUP, if (restart) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP)
         }
 
-        internal suspend fun enqueueUpdate(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, KIND_UPDATE)
+        internal suspend fun enqueueUpdate(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueueDownload(context, model, KIND_UPDATE, activateForPolish)
         }
 
         /**
@@ -413,26 +444,40 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             submit(context, model, KIND_UPDATE, ExistingWorkPolicy.KEEP)
         }
 
-        internal suspend fun enqueueRepair(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, KIND_REPAIR)
+        internal suspend fun enqueueRepair(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueueDownload(context, model, KIND_REPAIR, activateForPolish)
         }
 
         private val requests = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
         /** For callers with no coroutine (card buttons, the notification's Resume): the policy read suspends. */
-        internal fun launch(block: suspend () -> Unit): kotlinx.coroutines.Job = requests.launch {
+        internal fun launch(
+            onFailure: suspend () -> Unit = {},
+            block: suspend () -> Unit,
+        ): kotlinx.coroutines.Job = requests.launch {
             try { block() } catch (error: kotlinx.coroutines.CancellationException) { throw error } catch (error: Exception) {
                 DebugLogger.warn(TAG, "Model request failed: ${error.javaClass.simpleName}")
+                onFailure()
             }
         }
 
-        private suspend fun enqueueDownload(context: Context, model: ModelDescriptor, kind: String) {
+        private fun localPolishModel(model: ModelDescriptor): LocalPolishModel? =
+            LocalPolishModel.entries.firstOrNull { it.descriptorId == model.id }
+
+        private suspend fun enqueueDownload(context: Context, model: ModelDescriptor, kind: String, activateForPolish: Boolean) {
+            if (activateForPolish) localPolishModel(model)?.let {
+                ProviderConfigurationRepository(context).requestLocalPolishDownload(it)
+            }
             ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
             submit(context, model, kind, ExistingWorkPolicy.REPLACE)
         }
 
         private suspend fun submit(context: Context, model: ModelDescriptor, kind: String, policy: ExistingWorkPolicy) {
-            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), policy, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)))
+            withContext(Dispatchers.IO) {
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    downloadWorkName(model), policy, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)),
+                ).result.get()
+            }
         }
 
         private fun request(model: ModelDescriptor, kind: String, anyNetwork: Boolean, id: java.util.UUID = java.util.UUID.randomUUID()) = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
@@ -474,19 +519,21 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.CANCELLED)
             val manager = WorkManager.getInstance(context)
             // Explicit cancellation makes removal win over a queued or running transfer.
-            manager.cancelUniqueWork(downloadWorkName(model))
-            manager.cancelUniqueWork(adoptionWorkName(model))
+            manager.cancelUniqueWork(downloadWorkName(model)).result.get()
+            manager.cancelUniqueWork(adoptionWorkName(model)).result.get()
             val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
                 .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_REMOVE, true).build())
                 .build()
-            manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
+            manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request).result.get()
+            localPolishModel(model)?.let { ProviderConfigurationRepository(context).cancelLocalPolishDownload(it) }
         }
 
         internal fun cancel(context: Context, model: ModelDescriptor) {
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.CANCELLED)
             val manager = WorkManager.getInstance(context)
-            manager.cancelUniqueWork(downloadWorkName(model))
-            manager.cancelUniqueWork(adoptionWorkName(model))
+            manager.cancelUniqueWork(downloadWorkName(model)).result.get()
+            manager.cancelUniqueWork(adoptionWorkName(model)).result.get()
+            localPolishModel(model)?.let { ProviderConfigurationRepository(context).cancelLocalPolishDownload(it) }
         }
 
         internal fun pause(context: Context, model: ModelDescriptor) {
@@ -496,8 +543,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             manager.cancelUniqueWork(adoptionWorkName(model))
         }
 
-        internal suspend fun resume(context: Context, model: ModelDescriptor) {
-            enqueue(context, model)
+        internal suspend fun resume(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueue(context, model, activateForPolish)
         }
 
         internal fun hasStaleInstallation(context: Context, model: ModelDescriptor): Boolean =

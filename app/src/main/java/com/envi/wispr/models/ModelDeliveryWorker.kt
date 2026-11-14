@@ -67,10 +67,12 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         when (controls.read(model)) {
             ModelDeliveryControlState.PAUSED -> {
-                val status = DownloadStatus(DownloadState.PAUSED, 0L, model.files.sumOf { it.expectedBytes })
-                setProgressAsync(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_TOTAL, status.total).build())
-                ModelDeliveryNotification.notify(applicationContext, model, 0L, status.total, status.state)
-                return@withContext Result.success(Data.Builder().putString(KEY_STATE, status.state.name).build())
+                val total = model.files.sumOf { it.expectedBytes }
+                val staged = store.stagedBytes(model).coerceAtMost(total)
+                val status = DownloadStatus(DownloadState.PAUSED, staged, total)
+                setProgressAsync(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_BYTES, status.bytes).putLong(KEY_TOTAL, status.total).build())
+                ModelDeliveryNotification.notify(applicationContext, model, status.bytes, status.total, status.state)
+                return@withContext Result.success(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_BYTES, status.bytes).putLong(KEY_TOTAL, status.total).build())
             }
             ModelDeliveryControlState.CANCELLED -> {
                 return@withContext failure("cancelled", DownloadState.CANCELLED)
@@ -109,7 +111,6 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         var lastProgress = 0L
         var lastProgressTime = 0L
-        var completedBytes = 0L
         var lastHost: String? = null
         // Through the network WorkManager assigned (#108): a Wi-Fi-only download never falls over to mobile data.
         // WorkManager's in-process scheduler can start work without naming a network; a Wi-Fi-only download then
@@ -129,9 +130,9 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             override fun isCancelled() = controls.read(model) == ModelDeliveryControlState.CANCELLED
         }, onProgress = { status ->
             val now = System.currentTimeMillis()
-            if (status.state != DownloadState.DOWNLOADING || status.bytes - lastProgress >= 1024L * 1024L || now - lastProgressTime >= 500L) {
-                val progressBytes = (completedBytes + status.bytes).coerceAtMost(totalBytes)
-                lastProgress = status.bytes
+            val progressBytes = status.bytes.coerceAtMost(totalBytes)
+            if (status.state != DownloadState.DOWNLOADING || progressBytes - lastProgress >= 1024L * 1024L || now - lastProgressTime >= 500L) {
+                lastProgress = progressBytes
                 lastProgressTime = now
                 setProgressAsync(
                     Data.Builder()
@@ -143,7 +144,6 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 )
                 ModelDeliveryNotification.notify(applicationContext, model, progressBytes, totalBytes, status.state, status.message)
             }
-            if (status.state == DownloadState.VERIFYING) completedBytes += status.bytes
         }, onSource = { file, host ->
             // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
             DebugLogger.log(TAG, "Model source: ${model.id}/$file from ${ModelSourceHost.of(host).wire}")
@@ -156,30 +156,44 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             ModelDeliveryNotification.clear(applicationContext, model)
             return@withContext Result.retry()
         }
-        reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), completedBytes + result.bytes, startedAtMs, firstRun)
+        val reportedBytes = result.bytes.coerceIn(0L, totalBytes)
+        reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), reportedBytes, startedAtMs, firstRun)
         when (result.state) {
             DownloadState.READY -> {
                 controls.clear(model)
                 ModelDeliveryNotification.notify(applicationContext, model, totalBytes, totalBytes, DownloadState.READY)
-                Result.success(Data.Builder().putString(KEY_STATE, result.state.name).build())
+                Result.success(
+                    Data.Builder()
+                        .putString(KEY_STATE, result.state.name)
+                        .putLong(KEY_BYTES, totalBytes)
+                        .putLong(KEY_TOTAL, totalBytes)
+                        .build(),
+                )
             }
             DownloadState.PAUSED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state)
-                Result.success(Data.Builder().putString(KEY_STATE, result.state.name).build())
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state)
+                Result.success(
+                    Data.Builder()
+                        .putString(KEY_STATE, result.state.name)
+                        .putLong(KEY_BYTES, reportedBytes)
+                        .putLong(KEY_TOTAL, totalBytes)
+                        .build(),
+                )
             }
             DownloadState.CANCELLED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, "cancelled")
-                failure("cancelled", result.state)
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state, "cancelled")
+                failure("cancelled", result.state, reportedBytes, totalBytes)
             }
             DownloadState.REPAIR_NEEDED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, result.message)
-                failure(result.message ?: "model integrity check failed", result.state)
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state, result.message)
+                failure(result.message ?: "model integrity check failed", result.state, reportedBytes, totalBytes)
             }
             DownloadState.FAILED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, result.message)
-                failure(result.message ?: "model download failed", result.state)
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state, result.message)
+                failure(result.message ?: "model download failed", result.state, reportedBytes, totalBytes)
             }
-            DownloadState.DOWNLOADING, DownloadState.VERIFYING, DownloadState.STAGED -> failure(result.state.name, result.state)
+            DownloadState.DOWNLOADING, DownloadState.VERIFYING, DownloadState.STAGED ->
+                failure(result.state.name, result.state, reportedBytes, totalBytes)
         }
     }
 
@@ -261,10 +275,19 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         )
     }
 
-    private fun failure(reason: String, state: DownloadState? = null): Result = Result.failure(
+    private fun failure(
+        reason: String,
+        state: DownloadState? = null,
+        bytes: Long? = null,
+        total: Long? = null,
+    ): Result = Result.failure(
         Data.Builder()
             .putString(KEY_STATE, state?.name ?: DownloadState.FAILED.name)
             .putString(KEY_REASON, reason)
+            .apply {
+                if (bytes != null) putLong(KEY_BYTES, bytes)
+                if (total != null) putLong(KEY_TOTAL, total)
+            }
             .build(),
     )
 

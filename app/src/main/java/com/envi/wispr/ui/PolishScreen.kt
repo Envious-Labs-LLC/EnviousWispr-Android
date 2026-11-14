@@ -34,12 +34,13 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.models.ModelUiState
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 
 /** Which write the tab is waiting on, so its failure lands under the rung that started it. */
-internal enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL, S1_PROCESSING }
+internal enum class WriteKind { MODE, LOCAL_MODEL, KEY, MODEL, REMOVE, S1_CONTROL, S1_PROCESSING }
 
 /**
  * The AI Polish tab as the founder's Ladder (#81): four numbered rungs on one page, each unlocking the
@@ -55,8 +56,10 @@ internal enum class WriteKind { MODE, KEY, MODEL, REMOVE, S1_CONTROL, S1_PROCESS
 internal fun PolishScreen(
     settings: ProviderSettingsUiState,
     s1State: ModelUiState,
+    eg1State: ModelUiState = ModelWorkViewModel.CHECKING,
     discovery: ProviderDiscoveryUiState,
     onSetMode: (PolishMode) -> Int,
+    onSetLocalModel: (LocalPolishModel) -> Int = { 0 },
     onSetS1Control: (S1ControlSettings) -> Int,
     onSetProcessing: (com.envi.wispr.processing.ProcessingPreference) -> Int = { 0 },
     onCheckProcessing: (com.envi.wispr.processing.ProcessingBackend) -> Unit = {},
@@ -160,29 +163,50 @@ internal fun PolishScreen(
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
                 RungOne.THIS_PHONE -> {
                     if (com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.MID) QuietCard(UnsupportedPhoneCopy.MID_TIER_NOTICE)
-                    S1Card(s1State, onRefreshReadiness)
-                    ProcessingPreferenceCard(
-                        model = "S1-mini", preference = settings.s1Processing,
-                        modelReady = s1State.health == com.envi.wispr.models.ModelHealth.READY,
-                        implemented = com.envi.wispr.processing.ProcessingEnvironment.standardPolishBackends,
-                        qualified = settings.s1Qualification.takeIf { it.contextId == com.envi.wispr.processing.ProcessingEnvironment.s1ContextId() }?.backends ?: emptySet(),
-                        checks = settings.processingChecks, enabled = !saving,
-                        error = settings.processingReadError ?: writeError?.takeIf { errorKind == WriteKind.S1_PROCESSING },
-                        onSave = { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } },
-                        onCheck = onCheckProcessing, latestResult = latestPolishResult,
-                        onRetry = if (s1State.health == com.envi.wispr.models.ModelHealth.READY &&
-                            (settings.s1Processing.automatic || settings.s1Qualification.contextId == com.envi.wispr.processing.ProcessingEnvironment.s1ContextId() &&
-                                (settings.s1Qualification.backends + settings.s1Qualification.failedAtRevision.keys).any { it in com.envi.wispr.processing.ProcessingEnvironment.standardPolishBackends })) {
-                            { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } }
-                        } else null,
-                        onCloseChecks = onCancelProcessingChecks,
-                    )
-                    S1ControlCard(
-                        control = settings.s1Control,
+                    LocalPolishModelSelector(
+                        selected = settings.localPolishModel,
+                        s1State = s1State,
+                        eg1State = eg1State,
                         enabled = !saving,
-                        error = writeError?.takeIf { errorKind == WriteKind.S1_CONTROL },
-                        onPick = { next -> start(WriteKind.S1_CONTROL) { onSetS1Control(next) } },
+                        error = writeError?.takeIf { errorKind == WriteKind.LOCAL_MODEL },
+                        onSelect = { picked -> start(WriteKind.LOCAL_MODEL) { onSetLocalModel(picked) } },
                     )
+                    S1Card(s1State, onRefreshReadiness)
+                    Eg1Card(eg1State, onRefreshReadiness)
+                    when (settings.localPolishModel) {
+                        LocalPolishModel.S1_MINI -> {
+                            val selectedLocalModel = LocalPolishModel.S1_MINI
+                            val selectedRuntime = com.envi.wispr.polish.S1RuntimeKind.runtimeKindFor(selectedLocalModel)
+                            val selectedContextId = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(selectedLocalModel.descriptor(), selectedRuntime)
+                            val selectedImplemented = com.envi.wispr.processing.ProcessingEnvironment.implementedBackends(selectedRuntime, selectedLocalModel)
+                            ProcessingPreferenceCard(
+                                model = "S1-mini", preference = settings.s1Processing,
+                                modelReady = s1State.health == com.envi.wispr.models.ModelHealth.READY,
+                                implemented = selectedImplemented,
+                                qualified = settings.s1Qualification.takeIf { it.contextId == selectedContextId }?.backends ?: emptySet(),
+                                checks = settings.processingChecks, enabled = !saving,
+                                error = settings.processingReadError ?: writeError?.takeIf { errorKind == WriteKind.S1_PROCESSING },
+                                onSave = { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } },
+                                onCheck = onCheckProcessing, latestResult = latestPolishResult,
+                                onRetry = if (s1State.health == com.envi.wispr.models.ModelHealth.READY &&
+                                    (settings.s1Processing.automatic || settings.s1Qualification.contextId == selectedContextId &&
+                                        (settings.s1Qualification.backends + settings.s1Qualification.failedAtRevision.keys).any { it in selectedImplemented })) {
+                                    { next -> start(WriteKind.S1_PROCESSING) { onSetProcessing(next) } }
+                                } else null,
+                                onCloseChecks = onCancelProcessingChecks,
+                            )
+                            S1ControlCard(
+                                control = settings.s1Control,
+                                enabled = !saving,
+                                error = writeError?.takeIf { errorKind == WriteKind.S1_CONTROL },
+                                onPick = { next -> start(WriteKind.S1_CONTROL) { onSetS1Control(next) } },
+                            )
+                        }
+                        LocalPolishModel.EG1_MICRO -> {
+                            Eg1ProcessingCard(latestResult = latestPolishResult)
+                            Eg1ControlNoticeCard()
+                        }
+                    }
                     DevelopmentModelCard()
                 }
                 RungOne.CLOUD -> CloudRungs(

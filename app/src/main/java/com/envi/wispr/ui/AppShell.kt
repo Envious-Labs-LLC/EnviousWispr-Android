@@ -33,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.LifecycleStartEffect
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.providers.SelfHostedProtocol
 import kotlinx.coroutines.launch
 
@@ -128,6 +129,8 @@ internal fun EnviousWisprApp(
         onStopOrDispose { actions.shell.onShowModels(null) }
     }
     val polishS1State = state.models.polish
+    val polishEg1State = state.models.eg1Micro
+    val activePolishState = if (providerSettings.localPolishModel == LocalPolishModel.EG1_MICRO) polishEg1State else polishS1State
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -170,7 +173,7 @@ internal fun EnviousWisprApp(
             // contradicting its own persisted-state contract (real bug caught in code review,
             // 2026-09-01, the badge-side twin of the same gate `PolishScreen` uses for its own body).
             topBarBadge = if (destination == AppDestination.Polish && !providerSettings.loading) {
-                { PolishStatusBadge(polishStatusChip(providerSettings, polishS1State)) }
+                { PolishStatusBadge(polishStatusChip(providerSettings, activePolishState)) }
             } else null,
         ) { contentModifier ->
             AnimatedContent(
@@ -226,8 +229,10 @@ internal fun EnviousWisprApp(
                         AppDestination.Polish -> PolishScreen(
                             settings = providerSettings,
                             s1State = polishS1State,
+                            eg1State = polishEg1State,
                             discovery = state.discovery,
                             onSetMode = actions.polish.onSetMode,
+                            onSetLocalModel = actions.polish.onSetLocalModel,
                             onSetS1Control = actions.polish.onSetS1Control,
                             onSetProcessing = actions.polish.onSetProcessing,
                             onCheckProcessing = actions.polish.onCheckProcessing,

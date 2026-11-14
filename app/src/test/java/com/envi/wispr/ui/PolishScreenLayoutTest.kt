@@ -19,7 +19,17 @@ class PolishScreenLayoutTest {
     private val home = mapOf(
         "PolishScreen.kt" to listOf("PolishScreen", "QuietCard", "RungOneButton", "OffGlyph", "PhoneGlyph", "CloudGlyph", "RungHeader", "ErrorLine"),
         "PolishCloudRungs.kt" to listOf("CloudRungs", "ModelRung", "GetKeyLink", "keyPlaceholder", "ProviderTileButton", "CheckGlyph"),
-        "PolishLocalControls.kt" to listOf("S1Card", "S1ControlCard", "ControlAxis", "DevelopmentModelCard"),
+        "PolishLocalControls.kt" to listOf(
+            "LocalPolishModelSelector",
+            "S1Card",
+            "Eg1Card",
+            "LocalModelDeliveryCard",
+            "S1ControlCard",
+            "Eg1ControlNoticeCard",
+            "Eg1ProcessingCard",
+            "ControlAxis",
+            "DevelopmentModelCard",
+        ),
     )
 
     private fun declares(text: String, name: String) =

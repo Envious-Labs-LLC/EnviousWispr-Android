@@ -13,9 +13,10 @@ object S1Native {
     /** Loads the best CPU variant for this processor; returns "<variant> | <system info>" or "ERROR: ...". */
     external fun initialize(nativeLibraryDir: String): String
     external fun loadModel(modelPath: String, contextSize: Int, threadCount: Int): String
+    external fun warmPrefix(systemPrompt: String): Boolean
     external fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int): String
 
-    /** How the last [generate] ended: [end code (0 eos, 1 length, 2 aborted), generated tokens, prompt tokens]. */
+    /** How the last [generate] ended: [end code (0 eos, 1 length, 2 aborted), generated tokens, prompt tokens, seq-0 prefix cache used (1 or 0)]. */
     external fun lastEnd(): IntArray
 
     /** Clears the abort flag; call before arming a deadline. */

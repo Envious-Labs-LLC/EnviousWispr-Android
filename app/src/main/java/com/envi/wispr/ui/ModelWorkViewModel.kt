@@ -30,10 +30,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** The settings shell's two model cards (#255): Parakeet on Transcription, S1-mini on AI Polish. */
+/** The settings shell's model cards (#255, #528): Parakeet on Transcription, S1-mini and EG-1 Micro on AI Polish. */
 internal data class ModelWorkUiState(
     val speech: ModelUiState = ModelWorkViewModel.CHECKING,
     val polish: ModelUiState = ModelWorkViewModel.CHECKING,
+    val eg1Micro: ModelUiState = ModelWorkViewModel.CHECKING,
 )
 
 /**
@@ -59,12 +60,14 @@ internal class ModelWorkViewModel(
         /** The neutral card before a fresh projection lands: no model action. */
         val CHECKING = ModelUiState("Checking", ModelHealth.UNKNOWN)
 
-        /** The four works whose finish can change what is installed. */
+        /** The six works whose finish can change what is installed. */
         private val WATCHED = listOf(
             ModelDeliveryWorker.downloadWorkName(ModelManifest.parakeet),
             ModelDeliveryWorker.downloadWorkName(ModelManifest.s1),
+            ModelDeliveryWorker.downloadWorkName(ModelManifest.eg1Micro),
             ModelDeliveryWorker.adoptionWorkName(ModelManifest.parakeet),
             ModelDeliveryWorker.adoptionWorkName(ModelManifest.s1),
+            ModelDeliveryWorker.adoptionWorkName(ModelManifest.eg1Micro),
         )
     }
 
@@ -80,32 +83,49 @@ internal class ModelWorkViewModel(
     fun show(destination: AppDestination?) {
         activation?.cancel()
         activation = null
-        val model = when (destination) {
-            AppDestination.Polish -> ModelManifest.s1
-            AppDestination.Transcription -> ModelManifest.parakeet
+        val observedModels = when (destination) {
+            AppDestination.Polish -> listOf(ModelManifest.s1, ModelManifest.eg1Micro)
+            AppDestination.Transcription -> listOf(ModelManifest.parakeet)
             AppDestination.History, AppDestination.Dictionary, null -> return
         }
-        // Only the ARRIVING card restarts at Checking. The tab being left is still on screen while it fades
+        // Only the ARRIVING cards restart at Checking. The tab being left is still on screen while it fades
         // out, and resetting its card there flashed a red "Checking" on every tab switch (S26, build 245,
         // 2026-10-01). It is never shown again without passing through this reset first.
-        publish(model, CHECKING)
+        observedModels.forEach { publish(it, CHECKING) }
         activation = viewModelScope.launch {
-            observe(model)
-                // A failed observation shows the neutral card; the next activation retries.
-                .catch { error -> if (error is CancellationException) throw error else emit(CHECKING) }
-                .collect { state -> publish(model, state) }
+            observedModels.forEach { model ->
+                launch {
+                    observe(model)
+                        // A failed observation shows the neutral card; the next activation retries.
+                        .catch { error -> if (error is CancellationException) throw error else emit(CHECKING) }
+                        .collect { state -> publish(model, state) }
+                }
+            }
         }
     }
 
     private fun observe(model: ModelDescriptor): Flow<ModelUiState> = combine(
         work(ModelDeliveryWorker.downloadWorkName(model)),
         work(ModelDeliveryWorker.adoptionWorkName(model)),
-        readiness.filter { it.loaded }.map { if (model == ModelManifest.s1) it.readiness.polishModelReady else it.readiness.speechModelReady }.distinctUntilChanged(),
+        readiness.filter { it.loaded }.map {
+            when (model.id) {
+                ModelManifest.parakeet.id -> it.readiness.speechModelReady
+                ModelManifest.s1.id -> it.readiness.onboardingPolishModelReady
+                ModelManifest.eg1Micro.id -> it.readiness.eg1PolishModelReady
+                else -> it.readiness.polishModelReady
+            }
+        }.distinctUntilChanged(),
     ) { download, adoption, ready -> preferredModelWork(download, adoption) to ready }
         .mapLatest { (info, ready) -> withContext(io) { project(info, ready, model) } }
 
     private fun publish(model: ModelDescriptor, state: ModelUiState) {
-        published.update { if (model == ModelManifest.s1) it.copy(polish = state) else it.copy(speech = state) }
+        published.update {
+            when (model.id) {
+                ModelManifest.s1.id -> it.copy(polish = state)
+                ModelManifest.eg1Micro.id -> it.copy(eg1Micro = state)
+                else -> it.copy(speech = state)
+            }
+        }
     }
 
     /**

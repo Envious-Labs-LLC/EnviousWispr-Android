@@ -4,6 +4,7 @@ import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelUiState
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import org.junit.Assert.assertEquals
@@ -123,5 +124,20 @@ class PolishStatusChipTest {
             configured = true,
         )
         assertEquals(polishStatusChip(settings, readyS1), polishStatusChip(settings, failedS1))
+    }
+
+    @Test fun thisPhoneUsesSelectedLocalPolishModelNameAndDot() {
+        val base = ProviderSettingsUiState(
+            mode = PolishMode.OFFLINE_S1,
+            localPolishModel = LocalPolishModel.EG1_MICRO,
+        )
+        val readyChip = polishStatusChip(base, readyS1)
+        assertEquals("EG-1 Micro", readyChip.label)
+        assertEquals(PolishStatusKind.LOCAL, readyChip.kind)
+        assertEquals(PolishStatusDot.GREEN, readyChip.dot)
+
+        assertEquals(PolishStatusDot.RED, polishStatusChip(base, failedS1).dot)
+        assertEquals("EG-1 Micro", polishStatusChip(base, downloadingS1).label)
+        assertEquals(PolishStatusDot.NEUTRAL, polishStatusChip(base, downloadingS1).dot)
     }
 }

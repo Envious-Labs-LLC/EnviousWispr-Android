@@ -84,7 +84,11 @@ class ModelWorkViewModelTest {
     @Volatile private var heldModel = ModelManifest.s1
     private val projectionEntered = CountDownLatch(1)
     private val project: (WorkInfo?, Boolean, ModelDescriptor) -> ModelUiState = { info, ready, model ->
-        val name = if (model == ModelManifest.s1) "s1" else "parakeet"
+        val name = when (model) {
+            ModelManifest.s1 -> "s1"
+            ModelManifest.eg1Micro -> "eg1"
+            else -> "parakeet"
+        }
         projected += "$name:${info?.state}:$ready on ${Thread.currentThread().name.substringBefore(" @")}"
         if (model == heldModel) {
             projectionEntered.countDown()
@@ -110,6 +114,8 @@ class ModelWorkViewModelTest {
 
     private val s1Download = ModelDeliveryWorker.downloadWorkName(ModelManifest.s1)
     private val s1Adoption = ModelDeliveryWorker.adoptionWorkName(ModelManifest.s1)
+    private val eg1Download = ModelDeliveryWorker.downloadWorkName(ModelManifest.eg1Micro)
+    private val eg1Adoption = ModelDeliveryWorker.adoptionWorkName(ModelManifest.eg1Micro)
     private val parakeetDownload = ModelDeliveryWorker.downloadWorkName(ModelManifest.parakeet)
     private val parakeetAdoption = ModelDeliveryWorker.adoptionWorkName(ModelManifest.parakeet)
 
@@ -153,13 +159,32 @@ class ModelWorkViewModelTest {
 
     /** Row 2: AI Polish projects S1 with S1 readiness, and only S1. MUTATION: project Parakeet for Polish. */
     @Test fun aiPolishProjectsS1Only() {
-        seed(s1Download, s1Adoption, parakeetDownload, parakeetAdoption)
+        seed(s1Download, s1Adoption, eg1Download, eg1Adoption, parakeetDownload, parakeetAdoption)
         val vm = viewModel()
         onMain { vm.show(AppDestination.Polish) }
-        val shown = awaitModels(vm) { it.polish != ModelWorkViewModel.CHECKING }
+        val shown = awaitModels(vm) { it.polish != ModelWorkViewModel.CHECKING && it.eg1Micro != ModelWorkViewModel.CHECKING }
         assertEquals("s1 RUNNING false", shown.polish.label)
+        assertEquals("eg1 RUNNING false", shown.eg1Micro.label)
         assertEquals(ModelWorkViewModel.CHECKING, shown.speech)
         assertEquals(0, subscribed(parakeetDownload) + subscribed(parakeetAdoption))
+    }
+
+    @Test fun aiPolishProjectsIndependentReadinessForS1AndEg1Micro() {
+        readiness.value = ReadinessUiState(
+            loaded = true,
+            readiness = AppReadiness(
+                speechModelReady = true,
+                polishModelReady = false,
+                onboardingPolishModelReady = true,
+                eg1PolishModelReady = false,
+            ),
+        )
+        seed(s1Download, s1Adoption, eg1Download, eg1Adoption)
+        val vm = viewModel()
+        onMain { vm.show(AppDestination.Polish) }
+        val shown = awaitModels(vm) { it.polish != ModelWorkViewModel.CHECKING && it.eg1Micro != ModelWorkViewModel.CHECKING }
+        assertEquals("s1 RUNNING true", shown.polish.label)
+        assertEquals("eg1 RUNNING false", shown.eg1Micro.label)
     }
 
     /** Row 3: an active adoption beats a finished download. MUTATION: pass the download only. */
@@ -192,7 +217,12 @@ class ModelWorkViewModelTest {
         onMain { vm.show(null) }
         check(stream(s1Download).tryEmit(listOf(info(WorkInfo.State.SUCCEEDED))))
         check(stream(s1Adoption).tryEmit(listOf(info(WorkInfo.State.SUCCEEDED))))
-        readiness.value = readiness.value.copy(readiness = readiness.value.readiness.copy(polishModelReady = true))
+        readiness.value = readiness.value.copy(
+            readiness = readiness.value.readiness.copy(
+                polishModelReady = true,
+                onboardingPolishModelReady = true,
+            ),
+        )
         // Hold the arriving projection so the first-frame assertion tests the reset, even when IO finishes inline.
         holdProjection = CountDownLatch(1)
         var firstFrame: ModelWorkUiState? = null
@@ -253,7 +283,7 @@ class ModelWorkViewModelTest {
 
     /** Row 6: one refresh per new finished snapshot; the same snapshot twice gives one. MUTATION: drop `distinctUntilChanged`. */
     @Test fun oneRefreshPerNewFinishedSnapshot() = runTest {
-        listOf(s1Download, s1Adoption, parakeetDownload, parakeetAdoption).forEach { check(stream(it).tryEmit(emptyList())) }
+        listOf(s1Download, s1Adoption, eg1Download, eg1Adoption, parakeetDownload, parakeetAdoption).forEach { check(stream(it).tryEmit(emptyList())) }
         val vm = viewModel()
         var signals = 0
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.finished.collect { signals++ } }
@@ -272,7 +302,7 @@ class ModelWorkViewModelTest {
 
     /** Row 6d: a finish later in a work chain signals, not only its first item. MUTATION: read only the first item. */
     @Test fun aFinishLaterInAChainSignals() = runTest {
-        listOf(s1Download, s1Adoption, parakeetDownload, parakeetAdoption).forEach { check(stream(it).tryEmit(emptyList())) }
+        listOf(s1Download, s1Adoption, eg1Download, eg1Adoption, parakeetDownload, parakeetAdoption).forEach { check(stream(it).tryEmit(emptyList())) }
         val vm = viewModel()
         var signals = 0
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.finished.collect { signals++ } }

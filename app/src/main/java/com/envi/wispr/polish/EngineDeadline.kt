@@ -9,13 +9,21 @@ internal data class LocalPolishBudget(val cooperativeMs: Long, val hardMs: Long)
     companion object {
         const val COOPERATIVE_MS = 10_000L
         const val HARD_MS = 12_000L
+        const val EG1_COOPERATIVE_MS = 18_000L
+        const val EG1_HARD_MS = 20_000L
         const val GRACE_MS = 2_000L
         const val MAX_OVERRIDE_MS = 60_000L
         val SHIPPED = LocalPolishBudget(COOPERATIVE_MS, HARD_MS)
+        val EG1_SHIPPED = LocalPolishBudget(EG1_COOPERATIVE_MS, EG1_HARD_MS)
 
-        fun fromOverride(value: String?): LocalPolishBudget {
-            val ms = value?.trim()?.toLongOrNull() ?: return SHIPPED
-            if (ms < 1L || ms > MAX_OVERRIDE_MS) return SHIPPED
+        fun forModel(model: LocalPolishModel): LocalPolishBudget = when (model) {
+            LocalPolishModel.S1_MINI -> SHIPPED
+            LocalPolishModel.EG1_MICRO -> EG1_SHIPPED
+        }
+
+        fun fromOverride(value: String?, fallback: LocalPolishBudget = SHIPPED): LocalPolishBudget {
+            val ms = value?.trim()?.toLongOrNull() ?: return fallback
+            if (ms < 1L || ms > MAX_OVERRIDE_MS) return fallback
             return LocalPolishBudget(ms, ms + GRACE_MS)
         }
     }

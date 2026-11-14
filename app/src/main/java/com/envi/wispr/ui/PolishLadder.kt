@@ -257,6 +257,31 @@ internal object PolishLadder {
     )
 
     /**
+     * The sentence under the EG-1 Micro title (#528). Exhaustive over [ModelHealth], matching [s1Line],
+     * with honest positioning when ready or downloadable rather than invented dot scores.
+     */
+    fun eg1Line(state: ModelUiState): String? = when (state.health) {
+        ModelHealth.READY -> "Structured emails, strong punctuation and names. Slower on mid-range processors than S1-mini."
+        ModelHealth.BROKEN -> "EG-1 Micro is not working right now. Your words come back with basic cleanup only."
+        ModelHealth.NOT_READY -> when (state.action) {
+            ModelUiAction.DOWNLOAD, ModelUiAction.RETRY ->
+                "Download EG-1 Micro to polish on this phone. Strong punctuation and structured emails; slower on mid-range processors than S1-mini."
+            ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.REPAIR, ModelUiAction.REMOVE,
+            ModelUiAction.UPDATE, ModelUiAction.CANCEL, ModelUiAction.NONE -> "Getting EG-1 Micro ready."
+        }
+        ModelHealth.UNKNOWN -> "Getting EG-1 Micro ready."
+    }
+
+    /** Factual capability pills under the EG-1 Micro title (#528); byte total summed from manifest. */
+    fun eg1Facts(): List<String> = listOf(
+        ModelManifest.eg1Micro.creator,
+        formatModelBytes(ModelManifest.eg1Micro.files.sumOf { it.expectedBytes }),
+        "Offline",
+        "17 languages",
+        "Processor (CPU)",
+    )
+
+    /**
      * S1-mini's row on the SAME hand-written 1-3 scale as every cloud model, so the two rungs are read
      * against each other rather than each in its own units. Its sibling is `ModelNotes.CatalogModel`,
      * whose own KDoc calls the whole set DECORATION: no dot anywhere in this app is a benchmark result,

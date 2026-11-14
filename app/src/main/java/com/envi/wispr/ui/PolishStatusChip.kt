@@ -60,7 +60,7 @@ internal fun polishStatusChip(settings: ProviderSettingsUiState, s1State: ModelU
 
     PolishMode.OFFLINE_S1 -> PolishStatusChip(
         kind = PolishStatusKind.LOCAL,
-        label = "S1-mini",
+        label = settings.localPolishModel.displayName,
         dot = when (s1State.health) {
             ModelHealth.READY -> PolishStatusDot.GREEN
             ModelHealth.BROKEN -> PolishStatusDot.RED

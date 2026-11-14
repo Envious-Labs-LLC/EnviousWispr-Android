@@ -33,6 +33,14 @@ android {
                     "-DGGML_CPU_ALL_VARIANTS=ON",
                     "-DGGML_LLAMAFILE=OFF"
                 )
+                // EXPERIMENT: -PewOpenClDir=<dir with CL/ headers and libOpenCL.so> builds the optional OpenCL module.
+                providers.gradleProperty("ewOpenClDir").orNull?.let { dir ->
+                    arguments += listOf(
+                        "-DGGML_OPENCL=ON",
+                        "-DOpenCL_INCLUDE_DIR=$dir/include",
+                        "-DOpenCL_LIBRARY=$dir/libOpenCL.so",
+                    )
+                }
             }
         }
     }

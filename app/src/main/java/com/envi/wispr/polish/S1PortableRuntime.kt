@@ -41,18 +41,59 @@ internal class S1PortableRuntime(
                 initializationFailed = true
                 throw S1RuntimeInitializationException(IllegalStateException(status))
             }
+            android.util.Log.i(BENCH_TAG, "init $status")
             initialized = true
         }
         val loaded = try {
             loadFirstS1Backend(computeUnits) { unit ->
                 check(unit == CPU) { "The portable runtime runs on the processor only" }
-                val status = S1Native.loadModel(modelPath, S1Config.CONTEXT_SIZE, S1Config.THREAD_COUNT)
-                check(!status.startsWith("ERROR:")) { status }
+                loadWithExperimentalRoute(modelPath)
             }
         } catch (error: S1BackendLoadException) { failedComputeUnits = error.failedCodes; throw error }
         activeComputeUnit = loaded.backend; failedComputeUnits = loaded.failedCodes
         return "llama.cpp portable on ${loaded.backend}"
     }
+
+    /**
+     * EXPERIMENT (exp/eg1-micro-opencl-bench, debuggable builds only): `files/debug/eg1-backend` containing `opencl`
+     * loads the same model fully offloaded to the OpenCL GPU and falls back to the processor on any failure. The
+     * compute unit stays `cpu` for the policy machinery; the real route is [lastRoute] and the `EgBench` log line.
+     */
+    private fun loadWithExperimentalRoute(modelPath: String) {
+        val debuggable = context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val wantsOpenCl = debuggable && runCatching {
+            java.io.File(context.filesDir, "debug/eg1-backend").takeIf { it.isFile }?.readText()?.trim()
+        }.getOrNull() == "opencl"
+        val flashAttention = if (debuggable) runCatching {
+            java.io.File(context.filesDir, "debug/eg1-fa").takeIf { it.isFile }?.readText()?.trim()
+        }.getOrNull() else null
+        if (flashAttention == "on" || flashAttention == "off") android.system.Os.setenv("EW_FA", flashAttention, true)
+        else android.system.Os.unsetenv("EW_FA")
+        android.util.Log.i(BENCH_TAG, "flashAttention=${flashAttention ?: "auto"}")
+        if (wantsOpenCl) {
+            val started = android.os.SystemClock.elapsedRealtime()
+            val status = S1Native.loadModel(modelPath, S1Config.CONTEXT_SIZE, S1Config.THREAD_COUNT, 99)
+            val elapsed = android.os.SystemClock.elapsedRealtime() - started
+            if (!status.startsWith("ERROR:")) {
+                lastRoute = "opencl"
+                android.util.Log.i(BENCH_TAG, "route=opencl nativeLoadMs=$elapsed status=$status")
+                return
+            }
+            android.util.Log.w(BENCH_TAG, "route=opencl-failed nativeLoadMs=$elapsed status=$status; falling back to cpu")
+        }
+        val started = android.os.SystemClock.elapsedRealtime()
+        val status = S1Native.loadModel(modelPath, S1Config.CONTEXT_SIZE, S1Config.THREAD_COUNT, 0)
+        check(!status.startsWith("ERROR:")) { status }
+        lastRoute = if (wantsOpenCl) "cpu-fallback" else "cpu"
+        android.util.Log.i(
+            BENCH_TAG,
+            "route=$lastRoute nativeLoadMs=${android.os.SystemClock.elapsedRealtime() - started} status=$status",
+        )
+    }
+
+    @Volatile
+    var lastRoute: String = "unloaded"
+        private set
 
     override fun warmPrefix(systemPrompt: String, timeoutMs: Long): Boolean {
         if (activeComputeUnit != CPU) return false
@@ -98,6 +139,7 @@ internal class S1PortableRuntime(
 
     private companion object {
         const val CPU = "cpu"
+        const val BENCH_TAG = "EgBench"
         // `s1_jni.cpp` END_* codes.
         const val END_EOS = 0
         const val END_LENGTH = 1

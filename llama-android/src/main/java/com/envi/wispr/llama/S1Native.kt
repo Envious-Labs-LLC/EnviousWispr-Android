@@ -12,7 +12,7 @@ object S1Native {
 
     /** Loads the best CPU variant for this processor; returns "<variant> | <system info>" or "ERROR: ...". */
     external fun initialize(nativeLibraryDir: String): String
-    external fun loadModel(modelPath: String, contextSize: Int, threadCount: Int): String
+    external fun loadModel(modelPath: String, contextSize: Int, threadCount: Int, gpuLayers: Int): String
     external fun warmPrefix(systemPrompt: String): Boolean
     external fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int): String
 

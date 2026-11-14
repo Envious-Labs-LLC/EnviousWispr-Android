@@ -81,6 +81,9 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // EXPERIMENT: the OpenCL module links against a build-time copy of libOpenCL.so; the phone's own
+            // vendor library must be the one loaded, so never package that copy.
+            excludes += "**/libOpenCL.so"
         }
     }
 

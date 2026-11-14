@@ -50,6 +50,11 @@ std::vector<uint8_t> g_cached_prefix_state;
 // before the deadline is armed. Checked between steps and, through the llama abort callback, inside a decode.
 std::atomic<bool> g_abort{false};
 int g_last_end[4] = {END_NONE, 0, 0, 0};
+// EXPERIMENT (exp/eg1-micro-opencl-bench): optional OpenCL module and the offload line of the last load.
+constexpr const char * OPENCL_MODULE = "libew-ggml-opencl.so";
+std::string g_opencl_status = "absent";
+std::string g_offload_line;
+std::string g_load_device = "cpu";
 
 void log_info(const std::string & message) {
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", message.c_str());
@@ -58,7 +63,12 @@ void log_info(const std::string & message) {
 // llama.cpp's log text is vendor text this app does not control (model paths and tensor names today,
 // whatever a later version adds); none of it reaches logcat (#194, the same silence the GenieX runtime keeps). A failed load still reports
 // through the fixed JNI error strings below and a healthy one through log_info's summary line.
-void llama_log_callback(ggml_log_level, const char *, void *) {
+void llama_log_callback(ggml_log_level, const char * text, void *) {
+    // EXPERIMENT: keep only llama.cpp's fixed "offloaded N/M layers to GPU" summary (numbers, no user content).
+    if (text != nullptr && std::strstr(text, "offloaded ") != nullptr && std::strstr(text, " layers to GPU") != nullptr) {
+        g_offload_line = text;
+        while (!g_offload_line.empty() && g_offload_line.back() == '\n') g_offload_line.pop_back();
+    }
 }
 
 bool abort_requested(void *) {
@@ -354,15 +364,21 @@ Java_com_envi_wispr_llama_S1Native_initialize(
         if (!load_cpu_backend(from_jstring(env, native_library_dir))) {
             return to_jstring(env, "ERROR: No CPU backend could load");
         }
+        const std::string opencl_path = from_jstring(env, native_library_dir) + "/" + OPENCL_MODULE;
+        if (access(opencl_path.c_str(), R_OK) == 0) {
+            ggml_backend_reg_t reg = ggml_backend_load(opencl_path.c_str());
+            g_opencl_status = reg == nullptr ? "load-failed"
+                : ("loaded devices=" + std::to_string(ggml_backend_reg_dev_count(reg)));
+        }
         llama_backend_init();
         g_backend_initialized = true;
     }
-    return to_jstring(env, g_cpu_variant + " | " + llama_print_system_info());
+    return to_jstring(env, g_cpu_variant + " | opencl " + g_opencl_status + " | " + llama_print_system_info());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_envi_wispr_llama_S1Native_loadModel(
-    JNIEnv * env, jobject, jstring model_path, jint context_size, jint thread_count) {
+    JNIEnv * env, jobject, jstring model_path, jint context_size, jint thread_count, jint gpu_layers) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_backend_initialized) return to_jstring(env, "ERROR: Runtime is not initialized");
 
@@ -372,6 +388,20 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     const int threads = std::clamp(static_cast<int>(thread_count), 2, available_threads);
 
     llama_model_params model_params = llama_model_default_params();
+    // EXPERIMENT: gpu_layers > 0 pins the model to the one OpenCL GPU device; 0 pins it to the CPU (an empty device
+    // list, so no op offload either).
+    ggml_backend_dev_t gpu_devices[2] = {nullptr, nullptr};
+    g_offload_line.clear();
+    g_load_device = "cpu";
+    if (gpu_layers > 0) {
+        gpu_devices[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        if (gpu_devices[0] == nullptr) return to_jstring(env, "ERROR: No GPU device registered");
+        model_params.n_gpu_layers = gpu_layers;
+        g_load_device = std::string(ggml_backend_dev_name(gpu_devices[0])) + " (" + ggml_backend_dev_description(gpu_devices[0]) + ")";
+    } else {
+        model_params.n_gpu_layers = 0;
+    }
+    model_params.devices = gpu_devices;
     const std::string path = from_jstring(env, model_path);
     g_model = llama_model_load_from_file(path.c_str(), model_params);
     if (g_model == nullptr) return to_jstring(env, "ERROR: Unable to load S1-mini model");
@@ -384,6 +414,11 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     context_params.n_threads_batch = threads;
     context_params.abort_callback = abort_requested;
     context_params.abort_callback_data = nullptr;
+    // EXPERIMENT: EW_FA=on|off overrides llama.cpp's automatic flash-attention choice; unset keeps AUTO.
+    if (const char * fa = getenv("EW_FA")) {
+        if (std::strcmp(fa, "on") == 0) context_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+        if (std::strcmp(fa, "off") == 0) context_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
     g_context = llama_init_from_model(g_model, context_params);
     if (g_context == nullptr) {
         free_model();
@@ -400,7 +435,8 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     char description[256];
     llama_model_desc(g_model, description, sizeof(description));
     std::ostringstream status;
-    status << description << " | context " << g_context_size << " | threads " << threads;
+    status << description << " | context " << g_context_size << " | threads " << threads
+           << " | device " << g_load_device << " | " << (g_offload_line.empty() ? "no offload line" : g_offload_line);
     log_info(status.str());
     return to_jstring(env, status.str());
 }

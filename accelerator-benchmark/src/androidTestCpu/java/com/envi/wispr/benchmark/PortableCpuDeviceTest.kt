@@ -72,7 +72,7 @@ class PortableCpuDeviceTest {
         val threads = args.getString("threads")?.toIntOrNull() ?: 2
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         com.envi.wispr.llama.S1Native.initialize(context.applicationInfo.nativeLibraryDir)
-        val status = com.envi.wispr.llama.S1Native.loadModel(FIXTURE, 2048, threads)
+        val status = com.envi.wispr.llama.S1Native.loadModel(FIXTURE, 2048, threads, 0)
         report("threads$threads.load", status)
         assertTrue(status, !status.startsWith("ERROR:"))
         try {

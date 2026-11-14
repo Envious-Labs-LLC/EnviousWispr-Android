@@ -318,7 +318,7 @@ class Eg1MicroHardwareDeviceTest {
         val initStatus = S1Native.initialize(context.applicationInfo.nativeLibraryDir)
         assertFalse("S1Native initialize failed for $tag: $initStatus", initStatus.startsWith("ERROR:"))
         try {
-            val loadStatus = S1Native.loadModel(selection.file.path, S1Config.CONTEXT_SIZE, S1Config.THREAD_COUNT)
+            val loadStatus = S1Native.loadModel(selection.file.path, S1Config.CONTEXT_SIZE, S1Config.THREAD_COUNT, 0)
             assertFalse("S1Native loadModel failed for $tag: $loadStatus", loadStatus.startsWith("ERROR:"))
 
             val uncached = S1Native.generate(systemPrompt, userPrompt, 128)

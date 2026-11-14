@@ -27,6 +27,10 @@ set_target_properties(llama PROPERTIES OUTPUT_NAME "ew-llama")
 set_target_properties(llama-common PROPERTIES OUTPUT_NAME "ew-llama-common")
 set_target_properties(ggml PROPERTIES OUTPUT_NAME "ew-ggml")
 set_target_properties(ggml-base PROPERTIES OUTPUT_NAME "ew-ggml-base")
+# EXPERIMENT: GenieX ships libggml-opencl.so too; ours loads by this name only, from s1_jni.cpp.
+if(TARGET ggml-opencl)
+    set_target_properties(ggml-opencl PROPERTIES OUTPUT_NAME "ew-ggml-opencl")
+endif()
 
 add_library(${CMAKE_PROJECT_NAME} SHARED s1_jni.cpp)
 

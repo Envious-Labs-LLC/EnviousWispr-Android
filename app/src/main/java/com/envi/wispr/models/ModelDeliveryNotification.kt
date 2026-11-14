@@ -54,7 +54,7 @@ internal object ModelDeliveryNotification {
             DownloadState.REPAIR_NEEDED -> reason ?: "Model needs repair"
             DownloadState.FAILED -> reason ?: "Model download failed"
             DownloadState.CANCELLED -> "Download cancelled"
-            DownloadState.DOWNLOADING, DownloadState.PAUSED -> if (total > 0) "${formatBytes(bytes)} of ${formatBytes(total)}" else "Preparing download"
+            DownloadState.DOWNLOADING, DownloadState.PAUSED -> reason ?: if (total > 0) "${formatBytes(bytes)} of ${formatBytes(total)}" else "Preparing download"
         }
         fun actionIntent(action: String) = Intent(context, ModelDeliveryCancelReceiver::class.java)
             .setAction(action)
@@ -121,14 +121,30 @@ class ModelDeliveryCancelReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val modelId = intent.getStringExtra(ModelDeliveryNotification.EXTRA_MODEL_ID)
         val model = ModelManifest.all.firstOrNull { it.id == modelId } ?: return
-        when (intent.action) {
-            ModelDeliveryNotification.ACTION_PAUSE -> ModelDeliveryWorker.pause(context, model)
-            ModelDeliveryNotification.ACTION_RESUME -> {
-                // The network rule is a preference read (#108); the receiver stays alive until the request is queued.
-                val pending = goAsync()
-                ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, model) }.invokeOnCompletion { pending.finish() }
-            }
-            ModelDeliveryNotification.ACTION_CANCEL -> ModelDeliveryWorker.cancel(context, model)
+        val action = intent.action
+        val failure = when (action) {
+            ModelDeliveryNotification.ACTION_PAUSE -> "Could not pause the download."
+            ModelDeliveryNotification.ACTION_RESUME -> "Could not resume the download."
+            ModelDeliveryNotification.ACTION_CANCEL -> "Could not cancel the download."
+            else -> return
         }
+        val pending = goAsync()
+        ModelDeliveryWorker.launch(
+            onFailure = {
+                val status = ModelDeliveryControlStore(ModelStorage.root(context)).read(model)
+                val state = if (action == ModelDeliveryNotification.ACTION_RESUME || status == ModelDeliveryControlState.PAUSED) {
+                    DownloadState.PAUSED
+                } else {
+                    DownloadState.FAILED
+                }
+                ModelDeliveryNotification.notify(context, model, 0, 0, state, failure)
+            },
+        ) {
+            when (action) {
+                ModelDeliveryNotification.ACTION_PAUSE -> ModelDeliveryWorker.pause(context, model)
+                ModelDeliveryNotification.ACTION_RESUME -> ModelDeliveryWorker.resume(context, model)
+                ModelDeliveryNotification.ACTION_CANCEL -> ModelDeliveryWorker.cancel(context, model)
+            }
+        }.invokeOnCompletion { pending.finish() }
     }
 }

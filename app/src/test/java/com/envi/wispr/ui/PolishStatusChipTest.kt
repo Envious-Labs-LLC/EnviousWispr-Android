@@ -137,7 +137,7 @@ class PolishStatusChipTest {
         assertEquals(PolishStatusDot.GREEN, readyChip.dot)
 
         assertEquals(PolishStatusDot.RED, polishStatusChip(base, failedS1).dot)
-        assertEquals("EG-1 Micro", polishStatusChip(base, downloadingS1).label)
+        assertEquals("Basic cleanup", polishStatusChip(base, downloadingS1).label)
         assertEquals(PolishStatusDot.NEUTRAL, polishStatusChip(base, downloadingS1).dot)
     }
 }

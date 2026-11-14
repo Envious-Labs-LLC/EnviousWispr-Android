@@ -1,6 +1,7 @@
 package com.envi.wispr.ui
 
 import android.content.Context
+import android.net.NetworkCapabilities
 import androidx.activity.ComponentActivity
 import com.envi.wispr.ui.theme.EnviousWisprTheme
 import androidx.compose.runtime.mutableStateOf
@@ -137,6 +138,11 @@ class Eg1LocalPolishUiDeviceTest {
             compose.waitUntil("EG-1 Micro Download click did not enqueue a new work item for $workName", 5_000L) {
                 workManager.getWorkInfosForUniqueWork(workName).get(10, TimeUnit.SECONDS).any { it.id !in beforeIds }
             }
+            val queued = workManager.getWorkInfosForUniqueWork(workName).get(10, TimeUnit.SECONDS)
+                .single { it.id !in beforeIds }
+            val request = checkNotNull(queued.constraints.requiredNetworkRequest)
+            assertTrue("Wi-Fi remains required", request.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
+            assertTrue("Wi-Fi via a VPN is eligible", !request.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN))
         } finally {
             workManager.cancelUniqueWork(workName).result.get(10, TimeUnit.SECONDS)
             ModelDeliveryControlStore(ModelStorage.root(context)).clear(ModelManifest.eg1Micro)

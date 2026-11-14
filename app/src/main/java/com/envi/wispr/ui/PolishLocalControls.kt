@@ -176,15 +176,12 @@ internal fun LocalPolishDeliveryActions(
                 onClick = { confirm = true },
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
             ) { Text("Uninstall") }
-            ModelUiAction.PAUSE, ModelUiAction.CANCEL -> TextButton(enabled = enabled, onClick = {
-                request("Could not pause the download.") { ModelDeliveryWorker.pause(context, descriptor) }
-            }) { Text("Pause") }
             ModelUiAction.RESUME -> TextButton(enabled = enabled, onClick = {
                 request("Could not resume the download.") { ModelDeliveryWorker.resume(context, descriptor, activateForPolish = true) }
             }) { Text("Resume") }
-            ModelUiAction.NONE -> Unit
+            ModelUiAction.PAUSE, ModelUiAction.CANCEL, ModelUiAction.NONE -> Unit
         }
-        if (inProgress) {
+        if (inProgress || action == ModelUiAction.CANCEL) {
             TextButton(enabled = enabled, onClick = {
                 request("Could not cancel the download.") { ModelDeliveryWorker.cancel(context, descriptor) }
             }) { Text("Cancel download") }

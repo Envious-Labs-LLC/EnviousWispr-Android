@@ -128,15 +128,12 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         var lastProgress = 0L
         var lastProgressTime = 0L
         var lastHost: String? = null
-        // Through the network WorkManager assigned (#108): a Wi-Fi-only download never falls over to mobile data.
-        // WorkManager's in-process scheduler can start work without naming a network; a Wi-Fi-only download then
-        // finds a validated Wi-Fi network itself, or waits, and never rides the default (possibly mobile) one.
-        val transferNetwork = network ?: if (inputData.getBoolean(KEY_WIFI_ONLY, false)) {
-            ModelDownloadPolicy.wifiNetwork(applicationContext) ?: run {
+        val transferNetwork = if (inputData.getBoolean(KEY_WIFI_ONLY, false)) {
+            ModelDownloadPolicy.wifiNetwork(applicationContext, network) ?: run {
                 ModelDeliveryNotification.clear(applicationContext, model)
                 return@withContext Result.retry()
             }
-        } else null
+        } else network
         val transport = HttpsRangeTransport(transferNetwork)
         // A finished download is applied with dictation paused and the engines stopped (#108). While a take runs it
         // ends STAGED, the complete revision waits in staging, and the next idle moment applies it without a refetch.
@@ -494,13 +491,14 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
          * queued again as itself under the new rule. Its partial files stay on disk and the transfer resumes from them;
          * a running download already has its network, and a paused or cancelled one is left alone.
          */
-        internal suspend fun reapplyNetwork(context: Context) = withContext(Dispatchers.IO) {
+        internal suspend fun reapplyNetwork(context: Context, onlyLegacyWifi: Boolean = false) = withContext(Dispatchers.IO) {
             val manager = WorkManager.getInstance(context)
             val controls = ModelDeliveryControlStore(ModelStorage.root(context))
             ModelManifest.all.forEach { model ->
                 if (controls.read(model) != ModelDeliveryControlState.ACTIVE) return@forEach
                 val waiting = manager.getWorkInfosForUniqueWork(downloadWorkName(model)).get()
                     .firstOrNull { it.state == androidx.work.WorkInfo.State.ENQUEUED } ?: return@forEach
+                if (onlyLegacyWifi && !ModelDownloadPolicy.excludesVpn(waiting.constraints)) return@forEach
                 // Untagged work was queued by a build before #108; it resumes as a download, never repeating a cleanup.
                 val kind = waiting.tags.firstOrNull { it.startsWith(KIND_TAG_PREFIX) }?.removePrefix(KIND_TAG_PREFIX)?.takeIf { it in KINDS } ?: KIND_DOWNLOAD
                 // The captured request, by its id: a Remove or a newer request queued meanwhile is never replaced.

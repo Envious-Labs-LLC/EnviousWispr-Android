@@ -69,7 +69,9 @@ internal object ModelDeliveryNotification {
         val cancelPendingIntent = actionPendingIntent(ACTION_CANCEL, notificationId(model) + 10)
         val transferAction = when (state) {
             DownloadState.PAUSED -> "Resume" to actionPendingIntent(ACTION_RESUME, notificationId(model) + 11)
-            DownloadState.DOWNLOADING, DownloadState.VERIFYING -> "Pause" to actionPendingIntent(ACTION_PAUSE, notificationId(model) + 11)
+            DownloadState.DOWNLOADING, DownloadState.VERIFYING ->
+                if (com.envi.wispr.polish.LocalPolishModel.entries.any { it.descriptorId == model.id }) null
+                else "Pause" to actionPendingIntent(ACTION_PAUSE, notificationId(model) + 11)
             DownloadState.READY, DownloadState.FAILED, DownloadState.CANCELLED, DownloadState.REPAIR_NEEDED, DownloadState.STAGED -> null
         }
         return NotificationCompat.Builder(context, channelId(model))

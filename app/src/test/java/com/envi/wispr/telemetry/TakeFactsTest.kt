@@ -3,6 +3,8 @@ package com.envi.wispr.telemetry
 import com.envi.wispr.asr.AsrFailureReason
 import com.envi.wispr.audio.InputRouteKind
 import com.envi.wispr.audio.InputRouteReason
+import com.envi.wispr.models.ModelManifest
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.settings.AppPreferencesState
 import com.envi.wispr.paste.BubbleLook
@@ -11,6 +13,7 @@ import com.envi.wispr.ui.TriggerSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -125,16 +128,39 @@ class TakeFactsTest {
                 "filler_removal" to "on", "emoji_formatter" to "off", "spoken_punctuation" to "on", "auto_copy_to_clipboard" to "off",
                 "restore_clipboard_after_paste" to "on", "smart_insertion" to "off", "auto_stop_on_silence" to "on", "silence_pause_seconds" to 2.5f,
                 "input_device" to "picked", "show_bluetooth_tips" to "off", "keep_earbuds_ready" to "on", "dynamic_color" to "on",
-                "bubble_look" to BubbleLook.DEFAULT.name.lowercase(), "polish_policy" to "local",
+                "bubble_look" to BubbleLook.DEFAULT.name.lowercase(), "polish_policy" to "local", "local_polish_model" to "s1-mini",
             ),
             AppLaunchFacts.settingsProjection(state, "local"),
+        )
+        assertEquals(
+            "eg1-micro",
+            AppLaunchFacts.settingsProjection(state, "local", "eg1-micro")["local_polish_model"],
         )
     }
 
     @Test
     fun anUnreadablePreferencesStoreProjectsEverySettingAsUnknown() {
         val projection = AppLaunchFacts.settingsProjection(null, "unknown")
-        assertEquals(14, projection.size)
+        assertEquals(15, projection.size)
         assertEquals(setOf("unknown"), projection.values.toSet())
+    }
+
+    @Test
+    fun modelsReadyRequiresSelectedLocalPolishDescriptorNotMerelyAnyInstalledLocalModel() {
+        assertFalse(
+            AppLaunchFacts.isModelsReady(LocalPolishModel.EG1_MICRO) {
+                it == ModelManifest.parakeet || it == ModelManifest.s1
+            },
+        )
+        assertTrue(
+            AppLaunchFacts.isModelsReady(LocalPolishModel.EG1_MICRO) {
+                it == ModelManifest.parakeet || it == ModelManifest.eg1Micro
+            },
+        )
+        assertFalse(
+            AppLaunchFacts.isModelsReady(null) {
+                it == ModelManifest.parakeet || it == ModelManifest.s1
+            },
+        )
     }
 }

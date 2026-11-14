@@ -54,6 +54,17 @@ internal class S1PortableRuntime(
         return "llama.cpp portable on ${loaded.backend}"
     }
 
+    override fun warmPrefix(systemPrompt: String, timeoutMs: Long): Boolean {
+        if (activeComputeUnit != CPU) return false
+        S1Native.resetAbort()
+        val timer = abortTimer.schedule({ S1Native.abort() }, timeoutMs, TimeUnit.MILLISECONDS)
+        return try {
+            S1Native.warmPrefix(systemPrompt)
+        } finally {
+            timer.cancel(false)
+        }
+    }
+
     override fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String? {
         check(activeComputeUnit == CPU) { "S1 runtime is not loaded" }
         lastGeneration = null

@@ -14,6 +14,14 @@ Pinned revision: 3b80a92332b5d34c364a35a880ef049c7fede9f2
 License: CC-BY-4.0
 Changes: exported to ONNX and quantised to int8 (MatMulNBits) by Olicorne, with the <unk> output bias lowered and padded frames masked; used unmodified here.
 
+"EG-1 Micro" by "Envious Labs", fine-tuned from "Qwen3.5-0.8B" by Alibaba Cloud (Apache License 2.0)
+Model ID: eg1-micro
+Model host: https://models.enviouslabs.co/eg1/eg1-micro-1.0-g3d
+Base model: https://huggingface.co/Qwen/Qwen3.5-0.8B
+Pinned revision: eg1-micro-1.0-g3d
+License: Envious Labs proprietary model weights; Apache-2.0 / MIT runtime dependencies
+Notes: Envious Labs fine-tuned Qwen3.5-0.8B (Apache License 2.0, reproduced in full below) and quantised the combined weights to Q4_K_M across two GGUF shards, executed on-device with llama.cpp (MIT License).
+
 onnx-asr audio front end (nemo128.onnx)
 Source repository: https://github.com/istupakov/onnx-asr
 Version: 0.12.0, file taken unmodified from the package

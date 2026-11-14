@@ -1,5 +1,6 @@
 package com.envi.wispr.processing
 
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishReason
 import java.util.Base64
@@ -26,7 +27,8 @@ internal data class ProcessingObservation(
         val route = when (val context = PolishContext.decode(contextToken)) {
             PolishContext.Off -> "AI polish off"
             PolishContext.Local -> if (reason == PolishReason.POLISHED && local?.acceptedLocalText == true && local.backend != null) {
-                "S1-mini used ${local.backend.shortLabel}" + if (local.failedBackends.isNotEmpty()) " after the preferred option failed" else ""
+                val modelName = LocalPolishModel.fromWire(local.modelId).displayName
+                "$modelName used ${local.backend.shortLabel}" + if (local.failedBackends.isNotEmpty()) " after the preferred option failed" else ""
             } else "Text kept on this phone. No local model result used."
             is PolishContext.Cloud -> if (reason == PolishReason.POLISHED) "${context.providerName} used" else "Text kept on this phone. Cloud polish was not used."
             PolishContext.CloudUnconfigured, null -> "Text kept on this phone"

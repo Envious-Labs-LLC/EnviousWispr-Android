@@ -78,13 +78,34 @@ class PolishService : Service() {
     private val resident = S1LoadedConfiguration()
     private var lastLoadStamp: ProcessingEvidenceStamp? = null
     private var lastLoadObservation: Pair<S1LoadConfiguration, Pair<String, Boolean>>? = null
+    @Volatile
     private var selectedRuntime: S1RuntimeKind? = null
-    /** One runtime per process, chosen before any native polish code loads (#449). */
-    private val s1Runtime: S1Runtime by lazy {
-        S1Runtime.create(S1RuntimeKind.current, applicationContext, deadlineScheduler).also {
-            selectedRuntime = S1RuntimeKind.current
-            DebugLogger.log(TAG, "Local S1 runtime: ${S1RuntimeKind.current.identity} (${S1RuntimeKind.reason})")
+    // Owned by the single worker thread (#528). Switching between S1-mini and EG-1 Micro releases
+    // the active native runtime first so at most one heavy model stays resident.
+    private var activeRuntimeKind: S1RuntimeKind? = null
+    private var activeRuntime: S1Runtime? = null
+
+    private fun runtimeFor(kind: S1RuntimeKind, model: LocalPolishModel): S1Runtime {
+        val existing = activeRuntime
+        if (existing != null && activeRuntimeKind == kind) return existing
+        if (existing != null) {
+            DebugLogger.log(TAG, "Releasing ${activeRuntimeKind?.identity} before switching to ${kind.identity}")
+            try { existing.close() } finally {
+                activeRuntime = null
+                activeRuntimeKind = null
+            }
         }
+        val created = S1Runtime.create(kind, applicationContext, deadlineScheduler)
+        activeRuntime = created
+        activeRuntimeKind = kind
+        selectedRuntime = kind
+        val reason = if (model == LocalPolishModel.EG1_MICRO) {
+            "model requires portable llama.cpp CPU"
+        } else {
+            S1RuntimeKind.reason
+        }
+        DebugLogger.log(TAG, "Local S1 runtime: ${kind.identity} ($reason)")
+        return created
     }
 
     /**
@@ -206,7 +227,7 @@ class PolishService : Service() {
                 // The budget's debug override is a file read (#291): it happens on the worker, never on this binder thread.
                 executor.execute {
                     val workerStartedAtMs = SystemClock.elapsedRealtime()
-                    work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(), tracksLocal, log, acceptedAtMs, workerStartedAtMs)
+                    work(entry, callback, requestId, raw, options, effectivePolicy, localBudget(effectivePolicy), tracksLocal, log, acceptedAtMs, workerStartedAtMs)
                 }
             } catch (failure: RuntimeException) {
                 if (tracksLocal) activeLocalRequests.decrementAndGet()
@@ -226,19 +247,29 @@ class PolishService : Service() {
             fallbackLane.cancel(requestId)
         }
 
-        override fun qualifyProcessing(operationId: Long, backend: String?, callback: IProcessingCheckCallback?) {
+        override fun qualifyProcessing(operationId: Long, backend: String?, callback: IProcessingCheckCallback?) =
+            qualifyProcessingForModel(operationId, backend, LocalPolishModel.S1_MINI.wire, callback)
+
+        override fun qualifyProcessingForModel(
+            operationId: Long,
+            backend: String?,
+            modelWire: String?,
+            callback: IProcessingCheckCallback?,
+        ) {
             val selected = runCatching { ProcessingBackend.fromWire(backend.orEmpty()) }.getOrNull() ?: return
+            val model = LocalPolishModel.fromWireOrNull(modelWire) ?: return
+            val fallbackContextId = ProcessingEnvironment.s1ContextId(model.descriptor(), S1RuntimeKind.runtimeKindFor(model))
             synchronized(loadLock) {
                 if (destroyed || poisoned.get()) {
-                    callback?.onChecked(ProcessingCheckResult(operationId, selected, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.RUNTIME_FAILED))
+                    callback?.onChecked(ProcessingCheckResult(operationId, selected, fallbackContextId, ProcessingCheckStatus.RUNTIME_FAILED))
                     return
                 }
                 val entry = qualificationRegistry.register(operationId) ?: run {
-                    callback?.onChecked(ProcessingCheckResult(operationId, selected, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.CANCELLED))
+                    callback?.onChecked(ProcessingCheckResult(operationId, selected, fallbackContextId, ProcessingCheckStatus.CANCELLED))
                     return
                 }
                 activeQualifications.incrementAndGet()
-                try { executor.execute { qualify(entry, selected, callback) } }
+                try { executor.execute { qualify(entry, selected, model, callback) } }
                 catch (error: RuntimeException) {
                     activeQualifications.decrementAndGet(); qualificationRegistry.release(entry)
                     throw error
@@ -277,7 +308,7 @@ class PolishService : Service() {
         }
         val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1 && captured != null) {
             ProcessingUsage(resident.loaded?.takeIf { it.requested == captured }?.backend, captured.contextId, effectivePolicy.processing,
-                false, runtimeFailed = true, artifactStamp = captured.artifactStamp, artifactSha256 = installedS1Sha256())
+                false, runtimeFailed = true, modelId = effectivePolicy.model.wire, artifactStamp = captured.artifactStamp, artifactSha256 = installedS1Sha256(effectivePolicy.model.descriptor()))
         } else null
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {
@@ -366,11 +397,12 @@ class PolishService : Service() {
      * Debug builds only: `files/debug/polish-deadline-ms` stages the timeout that a real wedge would
      * produce (`device-testing.md` FACT: the-staged-polish-timeout). A release build never reads it.
      */
-    private fun localBudget(): LocalPolishBudget {
+    private fun localBudget(policy: PolishPolicy?): LocalPolishBudget {
+        val shipped = if (policy is PolishPolicy.LocalS1) LocalPolishBudget.forModel(policy.model) else LocalPolishBudget.SHIPPED
         val debuggable = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
-        if (!debuggable) return LocalPolishBudget.SHIPPED
+        if (!debuggable) return shipped
         val file = File(filesDir, "debug/polish-deadline-ms")
-        return LocalPolishBudget.fromOverride(runCatching { file.takeIf(File::isFile)?.readText() }.getOrNull())
+        return LocalPolishBudget.fromOverride(runCatching { file.takeIf(File::isFile)?.readText() }.getOrNull(), shipped)
     }
 
     /**
@@ -451,7 +483,7 @@ class PolishService : Service() {
                     null
                 } else {
                     attemptedBackend = resident.loaded?.backend
-                    polishWithS1(cleaned, policy.control, budget.cooperativeMs, log, timing) { reason ->
+                    polishWithS1(cleaned, policy.model, policy.control, language, budget.cooperativeMs, log, timing) { reason ->
                         attempt = reason; generationFailed = reason == PolishReason.LOCAL_FAILED
                     }
                 }
@@ -480,7 +512,12 @@ class PolishService : Service() {
         val engine = when {
             policy == PolishPolicy.Off -> PolishEngineLabels.OFF
             pipeline.usedModel && policy is PolishPolicy.Cloud -> policy.provider.capabilities().displayName
-            pipeline.usedModel -> "${S1Config.MODEL_NAME} by ${S1Config.MODEL_CREATOR} (${s1Runtime.activeComputeUnit.uppercase()})"
+            pipeline.usedModel -> {
+                val localPolicy = policy as PolishPolicy.LocalS1
+                val descriptor = localPolicy.model.descriptor()
+                val unit = (activeRuntime?.activeComputeUnit ?: "unloaded").uppercase()
+                "${descriptor.displayName} by ${descriptor.creator} ($unit)"
+            }
             else -> PolishEngineLabels.DETERMINISTIC
         }
         if (pipeline.refusal != null) log.warn("Polish guard refused: ${pipeline.refusal}")
@@ -497,7 +534,8 @@ class PolishService : Service() {
             if (generationFailed && attemptedBackend != null) failures += attemptedBackend!!.wire
             ProcessingUsage(
                 attemptedBackend, requested.contextId, policy.processing, pipeline.usedModel,
-                failures.joinToString(","), observation?.second == true, artifactStamp = requested.artifactStamp, artifactSha256 = installedS1Sha256(),
+                failures.joinToString(","), observation?.second == true, modelId = policy.model.wire,
+                artifactStamp = requested.artifactStamp, artifactSha256 = installedS1Sha256(policy.model.descriptor()),
                 loadStamp = resident.loaded?.failureStamp ?: lastLoadStamp, generationStamp = if (attemptedBackend != null) ProcessingEvidenceStamp.now(this) else null, generationFailed = generationFailed,
             )
         } else null
@@ -541,8 +579,11 @@ class PolishService : Service() {
         qualificationRegistry.cancelAll()
         deadlineScheduler.shutdownNow()
         executor.execute {
-            s1Runtime.close()
-            modelReady = false
+            try { activeRuntime?.close() } finally {
+                activeRuntime = null
+                activeRuntimeKind = null
+                modelReady = false
+            }
         }
         executor.shutdown()
         // The orderly close waits behind whatever the workers are running (#344 review rounds 2 and 3): a vendor load,
@@ -589,14 +630,34 @@ class PolishService : Service() {
         modelLoading = activeModelLoads.decrementAndGet() > 0
     }
 
-    /** The hash of the S1 revision actually installed (#108), so processing evidence never mixes two revisions. */
-    private fun installedS1Sha256(): String =
-        checkNotNull((S1ModelSelector.installedDescriptor(this) ?: com.envi.wispr.models.ModelManifest.s1).files.single().sha256)
+    /** The hash of the local polish revision actually installed (#108, #528), so processing evidence never mixes revisions. */
+    private fun installedS1Sha256(
+        model: com.envi.wispr.models.ModelDescriptor = com.envi.wispr.models.ModelManifest.s1,
+    ): String {
+        val descriptor = S1ModelSelector.installedDescriptor(this, model) ?: model
+        return if (descriptor.files.size == 1) {
+            checkNotNull(descriptor.files.single().sha256)
+        } else {
+            ProcessingEnvironment.identity(descriptor.files.joinToString { checkNotNull(it.sha256) })
+        }
+    }
 
-    private fun configuration(policy: PolishPolicy.LocalS1) = S1ModelSelector.loadConfiguration(com.envi.wispr.models.ModelStorage.root(this), policy)
+    private fun warmSystemPrompt(model: LocalPolishModel): String = when (model) {
+        LocalPolishModel.S1_MINI -> S1Config.SYSTEM_PROMPT
+        LocalPolishModel.EG1_MICRO -> EGOneNamedLanguagePromptBuilder.SYSTEM_PROMPT
+    }
+
+    private fun configuration(policy: PolishPolicy.LocalS1) = S1ModelSelector.loadConfiguration(
+        com.envi.wispr.models.ModelStorage.root(this),
+        policy,
+        policy.model.descriptor(),
+        S1RuntimeKind.runtimeKindFor(policy.model),
+    )
 
     private fun loadModel(policy: PolishPolicy.LocalS1) {
         if (destroyed || poisoned.get()) { finishWarm(); return }
+        val modelDescriptor = policy.model.descriptor()
+        val runtimeKind = S1RuntimeKind.runtimeKindFor(policy.model)
         val requested = try { configuration(policy) } catch (error: Exception) { finishWarm(); throw error }
         if (requested.artifactStamp.isNotEmpty() && resident.matches(requested)) {
             resident.ensure(requested) { error("Matching runtime must not reload") }
@@ -612,42 +673,51 @@ class PolishService : Service() {
             }
         }.getOrNull()
         try {
-            val selection = S1ModelSelector.resolve(this)
+            val selection = S1ModelSelector.resolve(this, modelDescriptor)
             if (selection == null) {
-                resident.clear(); s1Runtime.close()
-                modelStatus = "${S1Config.MODEL_NAME} is not verified in app-private storage"
+                resident.clear(); activeRuntime?.close()
+                modelStatus = "${modelDescriptor.displayName} is not verified in app-private storage"
                 DebugLogger.warn(TAG, modelStatus)
                 return
             }
             if (stall?.current == EngineDeadline.State.EXPIRED) return
 
-            modelStatus = "Loading ${S1Config.MODEL_NAME}"
+            modelStatus = "Loading ${modelDescriptor.displayName}"
             val started = SystemClock.elapsedRealtime()
             val faultsBefore = MajorFaults.read()
             var loadTiming: S1LoadTiming? = null
             try {
-                val resolved = S1ModelSelector.resolvedConfiguration(requested, selection)
-                val loaded = resident.ensure(resolved, failures = { s1Runtime.failedComputeUnits.split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { s1Runtime.close() }, loadTiming = { loadTiming }) { candidates ->
-                    try { s1Runtime.load(selection.file.path, candidates.map { it.wire }) } finally { lastLoadStamp = ProcessingEvidenceStamp.now(this) }
+                val resolved = S1ModelSelector.resolvedConfiguration(requested, selection, runtimeKind)
+                val loaded = resident.ensure(resolved, failures = { activeRuntime?.failedComputeUnits.orEmpty().split(',').filter(String::isNotEmpty).map(ProcessingBackend::fromWire).toSet() }, failureStamp = { lastLoadStamp }, release = { activeRuntime?.close() }, loadTiming = { loadTiming }) { candidates ->
+                    val runtime = runtimeFor(runtimeKind, policy.model)
+                    try { runtime.load(selection.file.path, candidates.map { it.wire }) } finally { lastLoadStamp = ProcessingEvidenceStamp.now(this) }
+                    val remainingWarmMs = (MODEL_LOAD_DEADLINE_MS - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(1L)
+                    if (runtime.warmPrefix(warmSystemPrompt(policy.model), remainingWarmMs)) {
+                        DebugLogger.log(TAG, "${modelDescriptor.displayName} prefix warm ready")
+                    } else {
+                        DebugLogger.warn(TAG, "${modelDescriptor.displayName} prefix warm skipped; requests will decode full prompt")
+                    }
                     val completedAt = SystemClock.elapsedRealtime()
                     val faults = MajorFaults.read()?.let { after -> faultsBefore?.let { after - it } }
                     loadTiming = S1LoadTiming(completedAt - started, completedAt, faults)
-                    ProcessingBackend.fromWire(s1Runtime.activeComputeUnit)
+                    ProcessingBackend.fromWire(runtime.activeComputeUnit)
                 }
-                lastLoadObservation = loaded.requested to (s1Runtime.failedComputeUnits to s1Runtime.initializationFailed)
-                val result = "${S1RuntimeKind.current.identity} on ${loaded.backend.wire}"
+                val active = checkNotNull(activeRuntime)
+                lastLoadObservation = loaded.requested to (active.failedComputeUnits to active.initializationFailed)
+                val result = "${runtimeKind.identity} on ${loaded.backend.wire}"
                 if (stall != null && !stall.cancel()) return
                 modelReady = true
                 val elapsed = SystemClock.elapsedRealtime() - started
-                modelStatus = "Ready on ${s1Runtime.activeComputeUnit.uppercase()} in ${elapsed}ms (standard model)"
+                modelStatus = "Ready on ${active.activeComputeUnit.uppercase()} in ${elapsed}ms (${modelDescriptor.displayName})"
                 // Major faults during the load (#465): a reload read back from flash shows here, not in the status line.
                 val faults = loaded.loadTiming?.majorFaults
-                DebugLogger.log(TAG, "${S1Config.MODEL_NAME} loaded: $result; $modelStatus; majorFaults=${faults ?: "unknown"}")
+                DebugLogger.log(TAG, "${modelDescriptor.displayName} loaded: $result; $modelStatus; majorFaults=${faults ?: "unknown"}")
             } catch (exception: Throwable) {
-                lastLoadObservation = requested to (s1Runtime.failedComputeUnits to (s1Runtime.initializationFailed || exception is S1RuntimeReleaseException))
+                val active = activeRuntime
+                lastLoadObservation = requested to (active?.failedComputeUnits.orEmpty() to (active?.initializationFailed == true || exception is S1RuntimeReleaseException))
                 if (exception is S1RuntimeReleaseException) { poisoned.set(true); endProcess("model replacement release failed") }
                 modelReady = false
-                modelStatus = "S1 unavailable; deterministic fallback active"
+                modelStatus = "${modelDescriptor.displayName} unavailable; deterministic fallback active"
                 DebugLogger.error(TAG, modelStatus, exception)
             }
         } catch (release: S1RuntimeReleaseException) {
@@ -659,36 +729,55 @@ class PolishService : Service() {
     }
 
     /** A separate operation namespace, sharing only the existing native worker and deadline primitive. */
-    private fun qualify(entry: ProcessingCheckRegistry.Entry, backend: ProcessingBackend, callback: IProcessingCheckCallback?) {
+    private fun qualify(
+        entry: ProcessingCheckRegistry.Entry,
+        backend: ProcessingBackend,
+        model: LocalPolishModel,
+        callback: IProcessingCheckCallback?,
+    ) {
+        val descriptor = model.descriptor()
+        val runtimeKind = S1RuntimeKind.runtimeKindFor(model)
         // The loaded revision's identity once selection has run (#108); the current one before that.
-        var contextId = S1ModelSelector.qualificationContextId(null)
+        var contextId = S1ModelSelector.qualificationContextId(null, descriptor, runtimeKind)
         try {
             ProcessingQualificationTask(
-                deadline, MODEL_LOAD_DEADLINE_MS + LocalPolishBudget.SHIPPED.hardMs, poisoned,
-                destroyed = { destroyed }, close = { s1Runtime.close() },
+                deadline, MODEL_LOAD_DEADLINE_MS + LocalPolishBudget.forModel(model).hardMs, poisoned,
+                destroyed = { destroyed }, close = { activeRuntime?.close() },
                 invalidate = { resident.clear(); modelReady = false },
                 released = { activeQualifications.decrementAndGet() }, endProcess = ::endProcess,
             ).run(entry, load = {
-                if (backend !in ProcessingEnvironment.standardPolishBackends) ProcessingCheckStatus.NOT_IMPLEMENTED
+                if (backend !in ProcessingEnvironment.implementedBackends(runtimeKind, model)) ProcessingCheckStatus.NOT_IMPLEMENTED
                 else {
-                    val selection = S1ModelSelector.resolve(this)
+                    val selection = S1ModelSelector.resolve(this, descriptor)
                     if (selection == null) ProcessingCheckStatus.MODEL_MISSING else {
-                        contextId = S1ModelSelector.qualificationContextId(selection)
-                        s1Runtime.load(selection.file.path, listOf(backend.wire))
+                        contextId = S1ModelSelector.qualificationContextId(selection, descriptor, runtimeKind)
+                        runtimeFor(runtimeKind, model).load(selection.file.path, listOf(backend.wire))
                         ProcessingCheckStatus.AVAILABLE
                     }
                 }
             }, canary = {
                 val input = "um please send the report tomorrow morning"
-                val generated = s1Runtime.generate(
-                    S1Config.SYSTEM_PROMPT, S1PromptBuilder.buildUserPrompt(input, S1ControlSettings.DEFAULT),
-                    S1PromptBuilder.maxOutputTokens(input), LocalPolishBudget.SHIPPED.cooperativeMs,
+                val (systemPrompt, userPrompt, maxTokens) = when (model) {
+                    LocalPolishModel.S1_MINI -> Triple(
+                        S1Config.SYSTEM_PROMPT,
+                        S1PromptBuilder.buildUserPrompt(input, S1ControlSettings.DEFAULT),
+                        S1PromptBuilder.maxOutputTokens(input),
+                    )
+                    LocalPolishModel.EG1_MICRO -> Triple(
+                        EGOneNamedLanguagePromptBuilder.systemPrompt(CleanupLanguage.Unknown),
+                        EGOneNamedLanguagePromptBuilder.buildUserPrompt(input),
+                        EGOneNamedLanguagePromptBuilder.maxOutputTokens(input),
+                    )
+                }
+                val runtime = checkNotNull(activeRuntime)
+                val generated = runtime.generate(
+                    systemPrompt, userPrompt, maxTokens, LocalPolishBudget.forModel(model).cooperativeMs,
                 )
                 if (generated == null) ProcessingCheckStatus.EXPIRED else {
-                    val complete = s1Runtime.lastGeneration
+                    val complete = runtime.lastGeneration
                     val cleaned = generated.substringAfterLast("</think>").trim()
                     val valid = cleaned.isNotBlank() && !generated.startsWith("ERROR:") && TextSafety.refusal(input, cleaned) == null && complete != null && complete.stopReason == "eos" && !complete.reachedCap &&
-                        ProcessingBackend.fromWire(s1Runtime.activeComputeUnit) == backend
+                        ProcessingBackend.fromWire(runtime.activeComputeUnit) == backend
                     if (valid) ProcessingCheckStatus.AVAILABLE else ProcessingCheckStatus.CANARY_FAILED
                 }
             }, answer = { status -> callback?.onChecked(ProcessingCheckResult(entry.operationId, backend, contextId, status, ProcessingEvidenceStamp.now(this))) })
@@ -702,27 +791,42 @@ class PolishService : Service() {
      */
     private fun polishWithS1(
         rawText: String,
+        model: LocalPolishModel,
         control: S1ControlSettings,
+        language: CleanupLanguage,
         cooperativeMs: Long,
         log: TakeLog,
         timing: LocalPolishTiming?,
         record: (PolishReason) -> Unit,
     ): String? {
         debugStall()
-        log.log("S1 control line: ${control.controlLine()}")
-        val userPrompt = S1PromptBuilder.buildUserPrompt(rawText, control)
+        val runtime = checkNotNull(activeRuntime) { "Local polish runtime is not loaded" }
+        val (systemPrompt, userPrompt, maxTokens) = when (model) {
+            LocalPolishModel.S1_MINI -> {
+                log.log("S1 control line: ${control.controlLine()}")
+                Triple(S1Config.SYSTEM_PROMPT, S1PromptBuilder.buildUserPrompt(rawText, control), S1PromptBuilder.maxOutputTokens(rawText))
+            }
+            LocalPolishModel.EG1_MICRO -> {
+                val langTag = (language as? CleanupLanguage.Known)?.code ?: "unknown"
+                log.log("EG-1 prompt language=$langTag")
+                Triple(
+                    EGOneNamedLanguagePromptBuilder.systemPrompt(language),
+                    EGOneNamedLanguagePromptBuilder.buildUserPrompt(rawText),
+                    EGOneNamedLanguagePromptBuilder.maxOutputTokens(rawText),
+                )
+            }
+        }
         log.words("local_prompt") { userPrompt }
         val output = try {
-            val maxTokens = S1PromptBuilder.maxOutputTokens(rawText)
             val generate = {
-                s1Runtime.generate(S1Config.SYSTEM_PROMPT, userPrompt, maxTokens, cooperativeMs)
+                runtime.generate(systemPrompt, userPrompt, maxTokens, cooperativeMs)
             }
             val generated = if (timing == null) generate() else timing.measureGeneration(generate)
             if (generated == null) {
                 record(PolishReason.LOCAL_TIMEOUT)
                 return null
             }
-            s1Runtime.lastGeneration?.let { log.log(it.logLine()) }
+            runtime.lastGeneration?.let { log.log(it.logLine()) }
             generated.trim()
         } catch (exception: Exception) {
             log.error("S1 generation threw", exception)

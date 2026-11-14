@@ -3,6 +3,7 @@ package com.envi.wispr.providers.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.ProcessingCheckClient
 import com.envi.wispr.processing.ProcessingBackend
 import com.envi.wispr.processing.ProcessingCheckStatus
@@ -58,6 +59,7 @@ internal data class ProviderSettingsUiState(
     val storedProviders: Set<Provider> = emptySet(),
     /** The PERSISTED S1-mini picks (#152); the chips never show an unsaved draft. */
     val s1Control: S1ControlSettings = S1ControlSettings.DEFAULT,
+    val localPolishModel: LocalPolishModel = LocalPolishModel.S1_MINI,
     val s1Processing: ProcessingPreference = ProcessingPreference.DEFAULT,
     val s1Qualification: ProcessingQualification = ProcessingQualification.NONE,
     val processingReadError: String? = null,
@@ -117,7 +119,10 @@ internal class PolishSettingsViewModel(
         "Processing preference saved"
     }
     fun checkProcessing(backend: ProcessingBackend) {
-        if (backend !in ProcessingEnvironment.standardPolishBackends || providerSettings.value.processingChecks.containsKey(backend) && providerSettings.value.processingChecks[backend] == null) return
+        val model = providerSettings.value.localPolishModel
+        val runtime = com.envi.wispr.polish.S1RuntimeKind.runtimeKindFor(model)
+        val contextId = ProcessingEnvironment.s1ContextId(model.descriptor(), runtime)
+        if (backend !in ProcessingEnvironment.implementedBackends(runtime, model) || providerSettings.value.processingChecks.containsKey(backend) && providerSettings.value.processingChecks[backend] == null) return
         setChecks(providerSettings.value.processingChecks + (backend to null))
         val client = processingClient
         if (client == null) {
@@ -125,16 +130,16 @@ internal class PolishSettingsViewModel(
             return
         }
         val generation = processingCheckGeneration.get()
-        client.check(backend) { result ->
+        client.check(backend, model) { result ->
             viewModelScope.launch {
-                if (generation != processingCheckGeneration.get() || result.contextId != ProcessingEnvironment.s1ContextId()) return@launch
+                if (generation != processingCheckGeneration.get() || result.contextId != contextId) return@launch
                 providerSettingsMutex.withLock {
                     if (generation != processingCheckGeneration.get()) return@withLock
                     val checked = withContext(Dispatchers.IO) { runCatching {
-                        providerRepository.acceptQualification(result) { generation == processingCheckGeneration.get() && result.contextId == ProcessingEnvironment.s1ContextId() }
+                        providerRepository.acceptQualification(result, model) { generation == processingCheckGeneration.get() && result.contextId == contextId }
                             ?.let { providerRepository.loadProcessingDetails() }
                     } }
-                    if (generation != processingCheckGeneration.get() || result.contextId != ProcessingEnvironment.s1ContextId()) return@withLock
+                    if (generation != processingCheckGeneration.get() || result.contextId != contextId) return@withLock
                     checked.onSuccess { next -> if (next != null) providerSettings.value = providerSettings.value.copy(
                         s1Qualification = next.qualification.getOrElse { providerSettings.value.s1Qualification },
                         s1Processing = next.preference.getOrElse { providerSettings.value.s1Processing },
@@ -178,11 +183,17 @@ internal class PolishSettingsViewModel(
                     read.onSuccess { details ->
                         val qualification = details.qualification.getOrElse { providerSettings.value.s1Qualification }
                         val observation = details.observation.getOrElse { providerSettings.value.latestProcessingResult }
+                        val activeModel = providerSettings.value.localPolishModel
+                        val activeRuntime = com.envi.wispr.polish.S1RuntimeKind.runtimeKindFor(activeModel)
+                        val activeContextId = ProcessingEnvironment.s1ContextId(activeModel.descriptor(), activeRuntime)
                         var checks = providerSettings.value.processingChecks
                         if (observation != providerSettings.value.latestProcessingResult) observation?.local?.let { usage ->
-                            val failures = if (usage.runtimeFailed) ProcessingEnvironment.standardPolishBackends else usage.failedBackends
-                            failures.forEach { backend ->
-                                if (!checks.containsKey(backend) || checks[backend] != null) checks = checks + (backend to if (usage.runtimeFailed) ProcessingCheckStatus.RUNTIME_FAILED else ProcessingCheckStatus.LOAD_FAILED)
+                            val usageModel = LocalPolishModel.fromWire(usage.modelId)
+                            if (usageModel == activeModel && usage.contextId == activeContextId) {
+                                val failures = if (usage.runtimeFailed) ProcessingEnvironment.implementedBackends(activeRuntime, usageModel) else usage.failedBackends
+                                failures.forEach { backend ->
+                                    if (!checks.containsKey(backend) || checks[backend] != null) checks = checks + (backend to if (usage.runtimeFailed) ProcessingCheckStatus.RUNTIME_FAILED else ProcessingCheckStatus.LOAD_FAILED)
+                                }
                             }
                         }
                         providerSettings.value = providerSettings.value.copy(s1Qualification = qualification, latestProcessingResult = observation, processingChecks = checks,
@@ -227,6 +238,34 @@ internal class PolishSettingsViewModel(
                 error("Save provider settings before selecting provider mode")
             }
             providerRepository.setMode(mode)
+            ""
+        }
+    }
+
+    /** A selection tap between S1-mini and EG-1 Micro (#528). Returns the request sequence of the write it queued. */
+    fun setLocalPolishModel(model: LocalPolishModel): Int {
+        processingCheckGeneration.incrementAndGet()
+        processingClient?.cancelAll()
+        var before = AppLaunchFacts.UNKNOWN
+        return updateProviderSettings(
+            beforeWrite = {
+                before = withContext(Dispatchers.IO) {
+                    runCatching { providerRepository.loadLocalPolishModel().wire }.getOrDefault(AppLaunchFacts.UNKNOWN)
+                }
+            },
+            afterWrite = { succeeded ->
+                if (succeeded) {
+                    val after = withContext(Dispatchers.IO) {
+                        runCatching { providerRepository.loadLocalPolishModel().wire }.getOrDefault(model.wire)
+                    }
+                    if (after != before) {
+                        setChecks(emptyMap())
+                        Telemetry.capture(AnalyticsEvent.SettingsChanged(AppLaunchFacts.LOCAL_POLISH_MODEL, before, after))
+                    }
+                }
+            },
+        ) {
+            providerRepository.setLocalPolishModel(model)
             ""
         }
     }
@@ -443,6 +482,7 @@ internal class PolishSettingsViewModel(
     ) {
         val mode = providerRepository.loadMode()
         val processingDetails = runCatching { providerRepository.loadProcessingDetails() }
+        val localPolishModel = processingDetails.mapCatching { it.localPolishModel }.getOrDefault(LocalPolishModel.S1_MINI)
         val processingRead = processingDetails.mapCatching { it.preference.getOrThrow() }
         val qualificationRead = processingDetails.mapCatching { it.qualification.getOrThrow() }
         val observationRead = processingDetails.mapCatching { it.observation.getOrThrow() }
@@ -458,6 +498,7 @@ internal class PolishSettingsViewModel(
             configured = selected != null,
             storedProviders = providerRepository.storedProviders(),
             s1Control = providerRepository.loadS1Control(),
+            localPolishModel = localPolishModel,
             processingChecks = providerSettings.value.processingChecks,
             latestProcessingResult = observationRead.getOrElse { providerSettings.value.latestProcessingResult },
             s1Processing = processingRead.getOrElse { providerSettings.value.s1Processing },

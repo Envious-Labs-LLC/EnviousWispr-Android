@@ -19,7 +19,7 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
     private val app = context.applicationContext
     private val lock = Any()
     private val calls = Executors.newSingleThreadExecutor { Thread(it, "ProcessingCheckCalls").apply { isDaemon = true } }
-    private data class Pending(val backend: ProcessingBackend, val answer: (ProcessingCheckResult) -> Unit)
+    private data class Pending(val backend: ProcessingBackend, val model: LocalPolishModel, val answer: (ProcessingCheckResult) -> Unit)
     private val pending = LinkedHashMap<Long, Pending>()
     private var binding: Binding? = null
     private var closed = false
@@ -41,9 +41,13 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
         override fun onNullBinding(name: ComponentName?) = fail(this)
         override fun onBindingDied(name: ComponentName?) = fail(this)
     }
-    fun check(backend: ProcessingBackend, answer: (ProcessingCheckResult) -> Unit): Long {
+    fun check(
+        backend: ProcessingBackend,
+        model: LocalPolishModel = LocalPolishModel.S1_MINI,
+        answer: (ProcessingCheckResult) -> Unit,
+    ): Long {
         val id = ids.incrementAndGet()
-        val request = Pending(backend, answer)
+        val request = Pending(backend, model, answer)
         var rejected = false
         var updating = false
         val ready = synchronized(lock) {
@@ -63,11 +67,13 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
         if (rejected) answer(if (updating) cancelled(id, request) else failed(id, request)) else if (ready != null) send(ready, id, request)
         return id
     }
+    private fun contextIdFor(model: LocalPolishModel): String =
+        ProcessingEnvironment.s1ContextId(model.descriptor(), S1RuntimeKind.runtimeKindFor(model))
     private fun failed(id: Long, request: Pending) = ProcessingCheckResult(
-        id, request.backend, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.RUNTIME_FAILED,
+        id, request.backend, contextIdFor(request.model), ProcessingCheckStatus.RUNTIME_FAILED,
     )
     private fun cancelled(id: Long, request: Pending) = ProcessingCheckResult(
-        id, request.backend, ProcessingEnvironment.s1ContextId(), ProcessingCheckStatus.CANCELLED,
+        id, request.backend, contextIdFor(request.model), ProcessingCheckStatus.CANCELLED,
     )
     /** A model swap revoked the binding (#108): every check still waiting is cancelled, not failed. */
     private fun revoked(source: Binding) {
@@ -82,7 +88,7 @@ internal class ProcessingCheckClient(context: Context) : Closeable {
         runCatching { calls.execute {
             if (synchronized(lock) { closed || pending[id] !== request }) return@execute
             runCatching {
-                target.qualifyProcessing(id, request.backend.wire, object : IProcessingCheckCallback.Stub() {
+                target.qualifyProcessingForModel(id, request.backend.wire, request.model.wire, object : IProcessingCheckCallback.Stub() {
                     override fun onChecked(result: ProcessingCheckResult?) {
                         finish(id, request, result?.takeIf { it.operationId == id && it.backend == request.backend } ?: failed(id, request))
                     }

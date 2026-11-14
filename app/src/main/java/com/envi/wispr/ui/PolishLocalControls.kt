@@ -1,14 +1,24 @@
 package com.envi.wispr.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,24 +35,92 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.models.ModelDeliveryWorker
+import com.envi.wispr.models.ModelDescriptor
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.S1Config
 import com.envi.wispr.polish.S1Context
 import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.polish.S1Structure
 import com.envi.wispr.polish.S1Styling
 
+/** Decoupled model selector inside This phone (#528): lets the user pick S1-mini or EG-1 Micro any time. */
+@Composable
+internal fun LocalPolishModelSelector(
+    selected: LocalPolishModel,
+    s1State: ModelUiState,
+    eg1State: ModelUiState,
+    enabled: Boolean,
+    error: String?,
+    onSelect: (LocalPolishModel) -> Unit,
+) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(16.dp).selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("ON-PHONE MODEL", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "Pick which model runs when This phone is selected. You can download both or switch at any time.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val rows = listOf(
+                Triple(LocalPolishModel.S1_MINI, "Fast on this phone · ${s1State.label}", "Recommended for older or mid-range phones"),
+                Triple(LocalPolishModel.EG1_MICRO, "Emails, punctuation and names · ${eg1State.label}", "Slower on mid-range processors"),
+            )
+            rows.forEach { (option, statusLine, detailLine) ->
+                val isSelected = selected == option
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .selectable(
+                            selected = isSelected,
+                            enabled = enabled,
+                            role = Role.RadioButton,
+                            onClick = { if (!isSelected) onSelect(option) },
+                        ),
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isSelected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    border = if (isSelected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        RadioButton(selected = isSelected, onClick = null, enabled = enabled)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(option.displayName, style = MaterialTheme.typography.titleSmall)
+                            Text(statusLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(detailLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(
+                            if (isSelected) "Active" else "Use this model",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (error != null) ErrorLine(error)
+        }
+    }
+}
+
 /** The S1-mini card inside This phone, exactly what the old local-model page did (#67), now inline. */
 @Composable
 internal fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
-    val context = LocalContext.current
-    ModelCard(
+    LocalModelDeliveryCard(
         eyebrow = "ON THIS PHONE",
         title = S1Config.MODEL_NAME,
         description = PolishLadder.s1Line(s1State),
@@ -50,23 +128,95 @@ internal fun S1Card(s1State: ModelUiState, onRefreshReadiness: () -> Unit) {
         facts = PolishLadder.s1Facts(),
         scores = PolishLadder.S1_SCORES,
         model = ModelManifest.s1,
+        onRefreshReadiness = onRefreshReadiness,
+    )
+}
+
+/** The EG-1 Micro card inside This phone (#528): factual pills and lifecycle controls, zero invented dots. */
+@Composable
+internal fun Eg1Card(eg1State: ModelUiState, onRefreshReadiness: () -> Unit) {
+    LocalModelDeliveryCard(
+        eyebrow = "ON THIS PHONE",
+        title = ModelManifest.eg1Micro.displayName,
+        description = PolishLadder.eg1Line(eg1State),
+        state = eg1State,
+        facts = PolishLadder.eg1Facts(),
+        scores = null,
+        model = ModelManifest.eg1Micro,
+        onRefreshReadiness = onRefreshReadiness,
+    )
+}
+
+@Composable
+private fun LocalModelDeliveryCard(
+    eyebrow: String,
+    title: String,
+    description: String?,
+    state: ModelUiState,
+    facts: List<String>,
+    scores: ModelScores?,
+    model: ModelDescriptor,
+    onRefreshReadiness: () -> Unit,
+) {
+    val context = LocalContext.current
+    ModelCard(
+        eyebrow = eyebrow,
+        title = title,
+        description = description,
+        state = state,
+        facts = facts,
+        scores = scores,
+        model = model,
         onAction = {
             // Exhaustive with no `else`, for the reason given at the same `when` in `TranscriptionScreen`.
-            val action = s1State.action
+            val action = state.action
             ModelDeliveryWorker.launch {
                 when (action) {
-                    ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, ModelManifest.s1)
-                    ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, ModelManifest.s1)
-                    ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, ModelManifest.s1)
-                    ModelUiAction.DOWNLOAD, ModelUiAction.RETRY -> ModelDeliveryWorker.enqueue(context, ModelManifest.s1)
+                    ModelUiAction.REMOVE -> ModelDeliveryWorker.enqueueRemove(context, model)
+                    ModelUiAction.REPAIR -> ModelDeliveryWorker.enqueueRepair(context, model)
+                    ModelUiAction.UPDATE -> ModelDeliveryWorker.enqueueUpdate(context, model)
+                    ModelUiAction.DOWNLOAD, ModelUiAction.RETRY -> ModelDeliveryWorker.enqueue(context, model)
                     ModelUiAction.PAUSE, ModelUiAction.RESUME, ModelUiAction.CANCEL, ModelUiAction.NONE -> Unit
                 }
             }
             onRefreshReadiness()
         },
-        onPause = { ModelDeliveryWorker.pause(context, ModelManifest.s1) },
-        onResume = { ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, ModelManifest.s1) } },
+        onPause = { ModelDeliveryWorker.pause(context, model) },
+        onResume = { ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, model) } },
     )
+}
+
+/** Muted notice replacing S1-mini's Writing style card while EG-1 Micro is active (#528). */
+@Composable
+internal fun Eg1ControlNoticeCard() {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(S1ControlCopy.EYEBROW, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "EG-1 Micro uses built-in formatting and language adaptation automatically. Switch back to S1-mini to customize casual/formal style.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** CPU-only processing card when EG-1 Micro is active (#528), omitting GPU and NPU choices. */
+@Composable
+internal fun Eg1ProcessingCard(latestResult: String? = null) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Processing preference", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "EG-1 Micro runs on your phone's processor (CPU).",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            latestResult?.takeIf { it.isNotBlank() }?.let {
+                Text("Last result: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
 }
 
 /**

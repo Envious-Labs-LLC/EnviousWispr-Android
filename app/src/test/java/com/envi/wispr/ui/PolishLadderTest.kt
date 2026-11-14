@@ -480,6 +480,29 @@ class PolishLadderTest {
         assertTrue(facts[1], facts[1].matches(Regex("""484[.,]2 MB""")))
     }
 
+    @Test fun theEg1LineIsExhaustiveOverHealthAndHonestAboutTradeoffs() {
+        fun state(health: ModelHealth, action: ModelUiAction) = ModelUiState("x", health, 0L, 0L, null, action)
+        assertTrue(PolishLadder.eg1Line(state(ModelHealth.READY, ModelUiAction.REMOVE))!!.contains("Slower on mid-range processors"))
+        assertTrue(PolishLadder.eg1Line(state(ModelHealth.BROKEN, ModelUiAction.REPAIR))!!.startsWith("EG-1 Micro is not working"))
+        assertTrue(PolishLadder.eg1Line(state(ModelHealth.NOT_READY, ModelUiAction.DOWNLOAD))!!.contains("Download EG-1 Micro"))
+        assertEquals("Getting EG-1 Micro ready.", PolishLadder.eg1Line(state(ModelHealth.NOT_READY, ModelUiAction.PAUSE)))
+        assertEquals("Getting EG-1 Micro ready.", PolishLadder.eg1Line(state(ModelHealth.UNKNOWN, ModelUiAction.NONE)))
+        ModelHealth.entries.forEach { health ->
+            assertTrue(health.name, PolishLadder.eg1Line(state(health, ModelUiAction.NONE))?.isNotBlank() == true)
+        }
+    }
+
+    @Test fun theEg1FactsNamePublisherDecimalSizeOfflineLanguagesAndCpu() {
+        val bytes = ModelManifest.eg1Micro.files.sumOf { it.expectedBytes }
+        assertEquals(541_898_240L, bytes)
+        val facts = PolishLadder.eg1Facts()
+        assertEquals(
+            listOf("Envious Labs", formatModelBytes(bytes), "Offline", "17 languages", "Processor (CPU)"),
+            facts,
+        )
+        assertTrue(facts[1], facts[1].matches(Regex("""541[.,]9 MB""")))
+    }
+
     /**
      * The unit is the claim. Android's own Formatter and the Play listing both divide by 1000, so a
      * binary divisor under a decimal label would print a number 5% smaller than every other size on the

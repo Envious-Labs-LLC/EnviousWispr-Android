@@ -11,6 +11,7 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelSourceHost
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishReason
 import com.envi.wispr.providers.Provider
@@ -71,6 +72,7 @@ internal object PostHogSchema {
             AppLaunchFacts.INPUT_DEVICE to ValueRule.Closed(setOf(TakeFacts.INPUT_AUTO, TakeFacts.INPUT_PICKED, AppLaunchFacts.UNKNOWN)),
             AppLaunchFacts.BUBBLE_LOOK to ValueRule.Closed(lower(BubbleLook.entries) + AppLaunchFacts.UNKNOWN),
             AppLaunchFacts.POLISH_POLICY to ValueRule.Closed(PolishContext.TOKENS + AppLaunchFacts.UNKNOWN),
+            AppLaunchFacts.LOCAL_POLISH_MODEL to ValueRule.Closed(LocalPolishModel.entries.map { it.wire }.toSet() + AppLaunchFacts.UNKNOWN),
         )
 
     /** `settings.changed` `from`/`to`: any setting's value, or the pause length as `Float.toString()`. */

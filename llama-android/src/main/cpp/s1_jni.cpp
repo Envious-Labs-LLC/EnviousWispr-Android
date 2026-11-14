@@ -212,6 +212,99 @@ bool warm_prefix_state(const std::string & system_prompt) {
     }
 }
 
+// EXPERIMENT (exp/polish-copy-ahead): copy-ahead (prompt-lookup) decoding. Polish mostly copies the transcript, so
+// the next tokens are guessed from where the recent output last appeared in the prompt, all guesses are decoded in
+// ONE batch, and the same greedy sampler checks them one by one; the first mismatch is replaced by the sampler's own
+// token and the rest of the guesses are removed from the cache. With greedy sampling the accepted text is what the
+// one-token loop would produce, unless batched math changes a near-tie (the parity check measures that).
+// Stats: [decode calls, drafted tokens, accepted drafted tokens].
+int g_spec_stats[3] = {0, 0, 0};
+
+// EW_COPY_AHEAD=<n> enables it with up to n guesses per step; unset or 0 keeps the one-token loop.
+int copy_ahead_requested() {
+    const char * value = getenv("EW_COPY_AHEAD");
+    if (value == nullptr) return 0;
+    return std::clamp(atoi(value), 0, 32);
+}
+
+int copy_ahead_draft_max() {
+    const int n = copy_ahead_requested();
+    if (n <= 0) return 0;
+    // A recurrent or hybrid model can drop rejected guesses only through the recurrent-state snapshots the context
+    // was created with (EW_COPY_AHEAD_LOAD at load time); without them it never speculates.
+    if (llama_model_is_recurrent(g_model) || llama_model_is_hybrid(g_model)) {
+        const int snapshots = static_cast<int>(llama_n_rs_seq(g_context));
+        return snapshots > 1 ? std::min(n, snapshots - 1) : 0;
+    }
+    return n;
+}
+
+// Longest recent n-gram (3, then 2, then 1 token) found earlier in history; returns the tokens that followed it.
+void lookup_draft(const llama_tokens & history, int n_max, llama_tokens & draft) {
+    draft.clear();
+    const int size = static_cast<int>(history.size());
+    for (int n = 3; n >= 1 && draft.empty(); --n) {
+        if (size <= n) continue;
+        for (int start = size - n - 1; start >= 0; --start) {
+            if (!std::equal(history.end() - n, history.end(), history.begin() + start)) continue;
+            for (int i = start + n; i < size - n && static_cast<int>(draft.size()) < n_max; ++i) {
+                draft.push_back(history[i]);
+            }
+            if (!draft.empty()) break;
+        }
+    }
+}
+
+// Returns END_EOS, END_LENGTH, END_ABORTED or END_NONE (decode failure). `position` is the next KV position.
+int generate_copy_ahead(common_sampler * sampler, const llama_vocab * vocab, const llama_tokens & prompt_tokens,
+                        int max_tokens, int draft_max, int position, std::string & output, int & generated) {
+    llama_tokens history = prompt_tokens;
+    llama_tokens draft;
+    llama_memory_t memory = llama_get_memory(g_context);
+    llama_token next = common_sampler_sample(sampler, g_context, -1);
+    common_sampler_accept(sampler, next, true);
+    while (true) {
+        if (g_abort.load()) return END_ABORTED;
+        if (llama_vocab_is_eog(vocab, next)) return END_EOS;
+        output += common_token_to_piece(g_context, next);
+        history.push_back(next);
+        if (++generated >= max_tokens) return END_LENGTH;
+
+        const int room = std::min(draft_max, std::min(max_tokens - generated, g_context_size - position - 2));
+        lookup_draft(history, std::max(0, std::min(room, BATCH_SIZE - 1)), draft);
+
+        const int base = position;
+        common_batch_clear(g_batch);
+        common_batch_add(g_batch, next, base, {0}, true);
+        for (size_t i = 0; i < draft.size(); ++i) {
+            common_batch_add(g_batch, draft[i], base + 1 + static_cast<int>(i), {0}, true);
+        }
+        const int result = llama_decode(g_context, g_batch);
+        if (g_abort.load()) return END_ABORTED;
+        if (result != 0) return END_NONE;
+        g_spec_stats[0] += 1;
+        g_spec_stats[1] += static_cast<int>(draft.size());
+
+        size_t accepted = 0;
+        while (true) {
+            const llama_token token = common_sampler_sample(sampler, g_context, static_cast<int>(accepted));
+            common_sampler_accept(sampler, token, true);
+            if (accepted < draft.size() && token == draft[accepted] && !llama_vocab_is_eog(vocab, token)) {
+                output += common_token_to_piece(g_context, token);
+                history.push_back(token);
+                ++accepted;
+                g_spec_stats[2] += 1;
+                if (++generated >= max_tokens) return END_LENGTH;
+                continue;
+            }
+            next = token;
+            break;
+        }
+        position = base + 1 + static_cast<int>(accepted);
+        if (accepted < draft.size() && !llama_memory_seq_rm(memory, 0, position, -1)) return END_NONE;
+    }
+}
+
 std::string aborted(int prompt_tokens, int generated) {
     g_last_end[0] = END_ABORTED;
     g_last_end[1] = generated;
@@ -224,6 +317,11 @@ std::string generate_text(const std::string & system_prompt,
                           const std::string & user_prompt,
                           int requested_tokens) {
     g_last_end[0] = END_NONE; g_last_end[1] = 0; g_last_end[2] = 0; g_last_end[3] = 0;
+    // EXPERIMENT: EW_THREADS=<n> switches the loaded context's thread count for this generation (paired thread study).
+    if (const char * threads = getenv("EW_THREADS"); threads != nullptr && g_context != nullptr) {
+        const int n = std::clamp(atoi(threads), 1, 8);
+        llama_set_n_threads(g_context, n, n);
+    }
     if (g_model == nullptr || g_context == nullptr || !g_templates) {
         return "ERROR: S1-mini is not loaded";
     }
@@ -305,6 +403,20 @@ std::string generate_text(const std::string & system_prompt,
         int end = END_LENGTH;
         int generated = 0;
 
+        g_spec_stats[0] = g_spec_stats[1] = g_spec_stats[2] = 0;
+        const int draft_max = copy_ahead_draft_max();
+        if (draft_max > 0) {
+            const int spec_end = generate_copy_ahead(
+                sampler.sampler, vocab, prompt_tokens, max_tokens, draft_max, position, output, generated);
+            if (spec_end == END_ABORTED) return aborted(prompt_count, generated);
+            if (spec_end == END_NONE) return "ERROR: S1 generation decode failed";
+            g_last_end[0] = spec_end;
+            g_last_end[1] = spec_end == END_EOS ? generated : max_tokens;
+            g_last_end[2] = prompt_count;
+            g_last_end[3] = used_prefix_cache ? 1 : 0;
+            return output;
+        }
+
         for (; generated < max_tokens; ++generated) {
             if (g_abort.load()) {
                 return aborted(prompt_count, generated);
@@ -384,6 +496,12 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     context_params.n_threads_batch = threads;
     context_params.abort_callback = abort_requested;
     context_params.abort_callback_data = nullptr;
+    // EXPERIMENT: EW_COPY_AHEAD_LOAD=<n> keeps n+1 recurrent-state snapshots so a hybrid model can roll back up to n
+    // rejected guesses (llama.cpp clamps it to 0 for families that cannot).
+    if (const char * load = getenv("EW_COPY_AHEAD_LOAD")) {
+        const int n = std::clamp(atoi(load), 0, 32);
+        if (n > 0) context_params.n_rs_seq = static_cast<uint32_t>(n + 1);
+    }
     g_context = llama_init_from_model(g_model, context_params);
     if (g_context == nullptr) {
         free_model();
@@ -400,7 +518,8 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     char description[256];
     llama_model_desc(g_model, description, sizeof(description));
     std::ostringstream status;
-    status << description << " | context " << g_context_size << " | threads " << threads;
+    status << description << " | context " << g_context_size << " | threads " << threads
+           << " | rs snapshots " << llama_n_rs_seq(g_context);
     log_info(status.str());
     return to_jstring(env, status.str());
 }
@@ -437,6 +556,14 @@ Java_com_envi_wispr_llama_S1Native_lastEnd(JNIEnv * env, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
     jintArray result = env->NewIntArray(4);
     if (result != nullptr) env->SetIntArrayRegion(result, 0, 4, g_last_end);
+    return result;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_envi_wispr_llama_S1Native_lastCopyAheadStats(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    jintArray result = env->NewIntArray(3);
+    if (result != nullptr) env->SetIntArrayRegion(result, 0, 3, g_spec_stats);
     return result;
 }
 

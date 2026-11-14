@@ -19,6 +19,9 @@ object S1Native {
     /** How the last [generate] ended: [end code (0 eos, 1 length, 2 aborted), generated tokens, prompt tokens, seq-0 prefix cache used (1 or 0)]. */
     external fun lastEnd(): IntArray
 
+    /** EXPERIMENT: copy-ahead stats of the last [generate]: [decode calls, drafted tokens, accepted drafted tokens]. */
+    external fun lastCopyAheadStats(): IntArray
+
     /** Clears the abort flag; call before arming a deadline. */
     external fun resetAbort()
 

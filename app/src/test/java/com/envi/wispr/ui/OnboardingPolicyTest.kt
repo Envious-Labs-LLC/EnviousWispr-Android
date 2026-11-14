@@ -10,16 +10,25 @@ import org.junit.Test
 
 /** Product Outcome: setup cannot skip missing requirements, and practice is judged by what really landed. */
 class OnboardingPolicyTest {
-    private val ready = AppReadiness(microphoneGranted = true, speechModelReady = true, polishModelReady = true)
+    private val ready = AppReadiness(
+        microphoneGranted = true,
+        speechModelReady = true,
+        polishModelReady = true,
+        onboardingPolishModelReady = true,
+    )
 
     @Test fun restoredPracticeReturnsToDownloadsWhenAModelIsMissing() {
-        assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(4, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
+        assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(4, ready.copy(onboardingPolishModelReady = false), AutoPasteAvailability.LIVE))
+    }
+
+    @Test fun setUpLaterUserSwitchingToMissingEg1MicroDoesNotBlockBaselineOnboarding() {
+        assertEquals(OnboardingStage.PRACTICE, onboardingStage(4, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
     }
 
     @Test fun bothRequiredModelsBlockBothRestoredDemoAndPractice() {
         for (step in listOf(OnboardingStage.DEMO.ordinal, OnboardingStage.PRACTICE.ordinal)) {
             assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(step, ready.copy(speechModelReady = false), AutoPasteAvailability.LIVE))
-            assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(step, ready.copy(polishModelReady = false), AutoPasteAvailability.LIVE))
+            assertEquals(OnboardingStage.DOWNLOADS, onboardingStage(step, ready.copy(onboardingPolishModelReady = false), AutoPasteAvailability.LIVE))
         }
     }
 
@@ -60,9 +69,21 @@ class OnboardingPolicyTest {
 
     @Test fun anOlderModelCheckCannotRevokeANewerPermissionAnswer() {
         val granted = AppReadiness(microphoneGranted = true, notificationsGranted = true, accessibility = AccessibilityPermissionCheck.GRANTED)
-        val checkedBeforeGrant = AppReadiness(speechModelReady = true, polishModelReady = true, modelsChecked = true)
+        val checkedBeforeGrant = AppReadiness(
+            speechModelReady = true,
+            polishModelReady = true,
+            onboardingPolishModelReady = true,
+            eg1PolishModelReady = true,
+            modelsChecked = true,
+        )
         assertEquals(
-            granted.copy(speechModelReady = true, polishModelReady = true, modelsChecked = true),
+            granted.copy(
+                speechModelReady = true,
+                polishModelReady = true,
+                onboardingPolishModelReady = true,
+                eg1PolishModelReady = true,
+                modelsChecked = true,
+            ),
             granted.withVerifiedModels(checkedBeforeGrant),
         )
     }

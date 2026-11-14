@@ -134,4 +134,51 @@ class PolishPolicyTest {
             decode("mode" to PolishMode.OFF.name, "provider" to Provider.OPENAI.name, "model" to "gpt-test"),
         )
     }
+
+    @Test fun egOneMicroForcesAutomaticCpuProcessingWhilePreservingCustomS1PreferenceAndSeparateQualification() {
+        val customS1 = com.envi.wispr.processing.ProcessingPreference.DEFAULT
+            .custom(listOf(com.envi.wispr.processing.ProcessingBackend.GPU))
+            .encode()
+        val s1Qual = com.envi.wispr.processing.ProcessingQualification
+            .of("1".repeat(64), setOf(com.envi.wispr.processing.ProcessingBackend.GPU))
+        val eg1Qual = com.envi.wispr.processing.ProcessingQualification
+            .of("2".repeat(64), setOf(com.envi.wispr.processing.ProcessingBackend.CPU))
+
+        val eg1Policy = decode(
+            "mode" to PolishMode.OFFLINE_S1.name,
+            "local_polish_model" to "eg1-micro",
+            "s1_processing" to customS1,
+            "s1_processing_qualification" to s1Qual.encode(),
+            "eg1_processing_qualification" to eg1Qual.encode(),
+        ) as PolishPolicy.LocalS1
+        assertEquals(LocalPolishModel.EG1_MICRO, eg1Policy.model)
+        assertEquals(com.envi.wispr.processing.ProcessingPreference.DEFAULT, eg1Policy.processing)
+        assertEquals(eg1Qual, eg1Policy.qualification)
+
+        val s1Policy = decode(
+            "mode" to PolishMode.OFFLINE_S1.name,
+            "local_polish_model" to "s1-mini",
+            "s1_processing" to customS1,
+            "s1_processing_qualification" to s1Qual.encode(),
+            "eg1_processing_qualification" to eg1Qual.encode(),
+        ) as PolishPolicy.LocalS1
+        assertEquals(LocalPolishModel.S1_MINI, s1Policy.model)
+        assertEquals(com.envi.wispr.processing.ProcessingPreference.decode(customS1), s1Policy.processing)
+        assertEquals(s1Qual, s1Policy.qualification)
+    }
+
+    @Test fun egOneMicroSelectsPortableCpuWithoutEvaluatingHardwareProbeOrGpuBackends() {
+        assertEquals(
+            S1RuntimeKind.PORTABLE_CPU,
+            S1RuntimeKind.runtimeKindFor(LocalPolishModel.EG1_MICRO) { error("hardware probe must not run for EG-1 Micro") },
+        )
+        assertEquals(
+            S1RuntimeKind.GENIEX,
+            S1RuntimeKind.runtimeKindFor(LocalPolishModel.S1_MINI) { S1RuntimeKind.GENIEX },
+        )
+        assertEquals(
+            setOf(com.envi.wispr.processing.ProcessingBackend.CPU),
+            com.envi.wispr.processing.ProcessingEnvironment.implementedBackends(S1RuntimeKind.GENIEX, LocalPolishModel.EG1_MICRO),
+        )
+    }
 }

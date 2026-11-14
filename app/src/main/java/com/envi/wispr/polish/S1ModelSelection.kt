@@ -20,11 +20,14 @@ internal object S1ModelSelector {
      * build loads (#108). It names identity for resident reuse and qualification records; it never authorizes a first
      * load, which `resolve` verifies in full.
      */
-    fun installedDescriptor(context: Context): ModelDescriptor? = installedDescriptor(ModelStorage.root(context))
+    fun installedDescriptor(context: Context, model: ModelDescriptor = ModelManifest.s1): ModelDescriptor? =
+        installedDescriptor(ModelStorage.root(context), model)
 
-    fun installationStamp(context: Context): String? = installationStamp(ModelStorage.root(context))
+    fun installationStamp(context: Context, model: ModelDescriptor = ModelManifest.s1): String? =
+        installationStamp(ModelStorage.root(context), model)
 
-    fun resolve(context: Context): S1ModelSelection? = resolve(ModelStorage.root(context))
+    fun resolve(context: Context, model: ModelDescriptor = ModelManifest.s1): S1ModelSelection? =
+        resolve(ModelStorage.root(context), model)
 
     internal fun installedDescriptor(root: File, model: ModelDescriptor = ModelManifest.s1): ModelDescriptor? = runCatching {
         val store = ModelDeliveryStore(root)
@@ -40,27 +43,40 @@ internal object S1ModelSelector {
      * The configuration a load or a resident check asks for: the identity of the revision INSTALLED (#108), so a
      * resident engine on a previous revision keeps matching until the swap, then reloads once.
      */
-    internal fun loadConfiguration(root: File, policy: PolishPolicy.LocalS1, model: ModelDescriptor = ModelManifest.s1) = S1LoadConfiguration(
-        com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(installedDescriptor(root, model) ?: model),
-        com.envi.wispr.processing.ProcessingEnvironment.standardPolishBackends, policy.processing, policy.qualification,
+    internal fun loadConfiguration(
+        root: File,
+        policy: PolishPolicy.LocalS1,
+        model: ModelDescriptor,
+        runtime: S1RuntimeKind,
+    ) = S1LoadConfiguration(
+        com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(installedDescriptor(root, model) ?: model, runtime),
+        com.envi.wispr.processing.ProcessingEnvironment.implementedBackends(runtime, policy.model), policy.processing, policy.qualification,
         installationStamp(root, model).orEmpty(),
     )
 
     /** What a load that verified [selection] records: that revision's stamp and identity. */
-    internal fun resolvedConfiguration(requested: S1LoadConfiguration, selection: S1ModelSelection) = requested.copy(
+    internal fun resolvedConfiguration(
+        requested: S1LoadConfiguration,
+        selection: S1ModelSelection,
+        runtime: S1RuntimeKind,
+    ) = requested.copy(
         artifactStamp = selection.installationStamp,
-        contextId = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(selection.descriptor),
+        contextId = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(selection.descriptor, runtime),
     )
 
     /** The identity a qualification result is filed under: the revision it loaded, the current one before selection. */
-    internal fun qualificationContextId(selection: S1ModelSelection?): String =
-        com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(selection?.descriptor ?: ModelManifest.s1)
+    internal fun qualificationContextId(
+        selection: S1ModelSelection?,
+        model: ModelDescriptor,
+        runtime: S1RuntimeKind,
+    ): String =
+        com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(selection?.descriptor ?: model, runtime)
 
     internal fun resolve(root: File, model: ModelDescriptor = ModelManifest.s1): S1ModelSelection? {
         val before = installationStamp(root, model) ?: return null
         val descriptor = ModelDeliveryStore(root).usableDescriptor(model) ?: return null
         val after = installationStamp(root, model)
         if (before != after) return null
-        return S1ModelSelection(File(File(root, model.id), S1Config.MODEL_FILENAME), installationStamp = before, descriptor = descriptor)
+        return S1ModelSelection(File(File(root, descriptor.id), descriptor.files.first().name), installationStamp = before, descriptor = descriptor)
     }
 }

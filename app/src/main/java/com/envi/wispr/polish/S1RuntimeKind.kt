@@ -26,6 +26,14 @@ internal enum class S1RuntimeKind(val identity: String, val backends: Set<Proces
             decide(CpuFeatures.read(), { OpenClProbe.openError().also { openClError = it } == null })
         }
 
+        fun runtimeKindFor(
+            model: LocalPolishModel,
+            hardware: () -> S1RuntimeKind = { current },
+        ): S1RuntimeKind = when (model) {
+            LocalPolishModel.S1_MINI -> hardware()
+            LocalPolishModel.EG1_MICRO -> PORTABLE_CPU
+        }
+
         /**
          * Why [current] is what it is, for the one local log line `PolishService` writes (#449: on one S26 the choice
          * was the portable runtime although its processor passes, and nothing said why). Library and bit names only.

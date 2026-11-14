@@ -233,17 +233,17 @@ internal class ModelDeliveryStore(private val root: File) {
     fun download(model: ModelDescriptor, transport: ModelTransport, control: DownloadControl = object : DownloadControl {}, now: () -> Long = { System.currentTimeMillis() }, onProgress: (DownloadStatus) -> Unit = {}, onSource: (file: String, host: String) -> Unit = { _, _ -> }, admission: (mutation: () -> Boolean) -> Boolean? = { it() }): DownloadStatus = synchronized(lock(model)) {
         if (!model.isAvailable) return DownloadStatus(DownloadState.FAILED, message = "model manifest is unavailable", reason = DeliveryFailureReason.MANIFEST_UNAVAILABLE)
         root.mkdirs()
+        val total = model.files.sumOf { it.expectedBytes }
         // An interrupted admission is settled before anything below deletes `.old` or the staging folder (#492);
         // when that completed the current model there is nothing left to fetch.
         if (reconcileLocked(model, admitFinished = false) && verifies(finalDirectory(model), model)) {
-            val total = model.files.sumOf { it.expectedBytes }
             return DownloadStatus(DownloadState.READY, total, total)
         }
         val staging = File(root, ".${model.id}.download")
         // A revision an earlier attempt finished but could not apply (#108): nothing to fetch, only the admission.
         if (verifies(staging, model)) {
             return try { admitStaged(model, staging, admission) } catch (e: IOException) {
-                DownloadStatus(DownloadState.FAILED, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
+                DownloadStatus(DownloadState.FAILED, total, total, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
             }
         }
         // A revision bump keeps the model id and every staging file name, so the PREVIOUS revision's
@@ -256,28 +256,35 @@ internal class ModelDeliveryStore(private val root: File) {
         if (staging.exists() && runCatching { stamp.readText() }.getOrNull() != model.pinnedRevision) {
             ModelTree.delete(staging)
         }
+        var verifiedBytes = 0L
+        var activePartial: File? = null
         try {
             staging.mkdirs()
             stamp.writeText(model.pinnedRevision)
             for (entry in model.files) {
+                val part = File(staging, entry.name + ".part")
+                activePartial = part
+                val stagedSoFar = if (Files.isRegularFile(part.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                    part.length().coerceAtMost(entry.expectedBytes)
+                } else {
+                    0L
+                }
                 if (control.isCancelled()) {
-                    val bytes = File(staging, entry.name + ".part").length()
-                    val status = DownloadStatus(DownloadState.CANCELLED, bytes, entry.expectedBytes, reason = DeliveryFailureReason.CANCELLED)
+                    val status = DownloadStatus(DownloadState.CANCELLED, verifiedBytes + stagedSoFar, total, reason = DeliveryFailureReason.CANCELLED)
                     onProgress(status)
                     return status
                 }
                 if (control.isPaused()) {
-                    val bytes = File(staging, entry.name + ".part").length()
-                    val status = DownloadStatus(DownloadState.PAUSED, bytes, entry.expectedBytes, reason = DeliveryFailureReason.PAUSED)
+                    val status = DownloadStatus(DownloadState.PAUSED, verifiedBytes + stagedSoFar, total, reason = DeliveryFailureReason.PAUSED)
                     onProgress(status)
                     return status
                 }
-                val part = File(staging, entry.name + ".part")
                 val completed = File(staging, entry.name)
                 // An earlier attempt may have finished file one before file two was interrupted (#493).
                 if (verifiedFile(completed, entry)) {
                     if (!ModelTree.delete(part)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not remove redundant partial")
-                    onProgress(DownloadStatus(DownloadState.VERIFYING, entry.expectedBytes, entry.expectedBytes))
+                    verifiedBytes += entry.expectedBytes
+                    onProgress(DownloadStatus(DownloadState.VERIFYING, verifiedBytes, total))
                     continue
                 }
                 if (Files.isSymbolicLink(part.toPath()) && !part.delete()) {
@@ -286,7 +293,8 @@ internal class ModelDeliveryStore(private val root: File) {
                 // A death after the last write but before rename must not refetch a verified full part.
                 if (verifiedFile(part, entry)) {
                     if (!part.renameTo(completed)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not finalize model file")
-                    onProgress(DownloadStatus(DownloadState.VERIFYING, entry.expectedBytes, entry.expectedBytes))
+                    verifiedBytes += entry.expectedBytes
+                    onProgress(DownloadStatus(DownloadState.VERIFYING, verifiedBytes, total))
                     continue
                 }
                 part.parentFile?.mkdirs()
@@ -311,18 +319,18 @@ internal class ModelDeliveryStore(private val root: File) {
                     response = opened.response
                 }
                 onSource(entry.name, opened.host)
-                onProgress(DownloadStatus(DownloadState.DOWNLOADING, offset, entry.expectedBytes))
+                onProgress(DownloadStatus(DownloadState.DOWNLOADING, verifiedBytes + offset, total))
                 response.stream.use { input ->
                     FileOutputStream(part, offset > 0).use { output ->
                         val buffer = ByteArray(64 * 1024)
                         while (true) {
                             if (control.isStopped() || control.isCancelled()) {
-                                val status = DownloadStatus(DownloadState.CANCELLED, offset, entry.expectedBytes, reason = DeliveryFailureReason.CANCELLED)
+                                val status = DownloadStatus(DownloadState.CANCELLED, verifiedBytes + offset, total, reason = DeliveryFailureReason.CANCELLED)
                                 onProgress(status)
                                 return status
                             }
                             if (control.isPaused()) {
-                                val status = DownloadStatus(DownloadState.PAUSED, offset, entry.expectedBytes, reason = DeliveryFailureReason.PAUSED)
+                                val status = DownloadStatus(DownloadState.PAUSED, verifiedBytes + offset, total, reason = DeliveryFailureReason.PAUSED)
                                 onProgress(status)
                                 return status
                             }
@@ -330,18 +338,20 @@ internal class ModelDeliveryStore(private val root: File) {
                             if (count < 0) break
                             output.write(buffer, 0, count)
                             offset += count
-                            onProgress(DownloadStatus(DownloadState.DOWNLOADING, offset, entry.expectedBytes))
+                            onProgress(DownloadStatus(DownloadState.DOWNLOADING, verifiedBytes + offset, total))
                         }
                     }
                 }
-                onProgress(DownloadStatus(DownloadState.VERIFYING, offset, entry.expectedBytes))
+                onProgress(DownloadStatus(DownloadState.VERIFYING, verifiedBytes + offset, total))
                 if (offset != entry.expectedBytes || sha256(part) != entry.sha256!!.lowercase()) {
                     quarantine(staging, now())
-                    return DownloadStatus(DownloadState.REPAIR_NEEDED, offset, entry.expectedBytes, "model integrity check failed", DeliveryFailureReason.INTEGRITY_MISMATCH)
+                    return DownloadStatus(DownloadState.REPAIR_NEEDED, verifiedBytes + offset, total, "model integrity check failed", DeliveryFailureReason.INTEGRITY_MISMATCH)
                 }
                 val admittedFile = File(staging, entry.name)
                 if (!part.renameTo(admittedFile)) throw ModelDeliveryException(DeliveryFailureReason.STAGING_FAILED, "could not finalize model file")
+                verifiedBytes += entry.expectedBytes
             }
+            activePartial = null
             // The stamp is staging-only bookkeeping and must not be admitted: `isVerified` requires the
             // directory to hold EXACTLY the manifest's files plus the receipt, so one extra file makes an
             // otherwise perfect model read as not ready.
@@ -353,7 +363,8 @@ internal class ModelDeliveryStore(private val root: File) {
         } catch (e: IOException) {
             // Transport and storage interruptions keep the .part file for a later range resume. The
             // reason is read off the exception, which was typed where the cause was decided (#176).
-            DownloadStatus(DownloadState.FAILED, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
+            val partialBytes = activePartial?.takeIf { Files.isRegularFile(it.toPath(), LinkOption.NOFOLLOW_LINKS) }?.length() ?: 0L
+            DownloadStatus(DownloadState.FAILED, verifiedBytes + partialBytes, total, message = "model download interrupted", reason = DeliveryFailureReason.of(e))
         }
     }
 
@@ -528,6 +539,9 @@ internal const val MODEL_HOST_HUGGING_FACE = "huggingface.co"
 /** A pinned revision: a full 40-character lowercase commit hash, never a branch, a tag or a short hash (#284). */
 private val REVISION = Regex("\\A[0-9a-f]{40}\\z")
 
+/** Versioned first-party artifact revision under our `eg1/` prefix (e.g. `eg1-micro-1.0-g3d`). */
+private val EG1_ARTIFACT_REVISION = Regex("\\Aeg1-[a-z0-9][a-z0-9._-]*\\z")
+
 /** One path segment of a model address: no separator, no escape, no dot segment. */
 private val SEGMENT = Regex("\\A[A-Za-z0-9][A-Za-z0-9._-]*\\z")
 
@@ -536,20 +550,22 @@ private val SEGMENT = Regex("\\A[A-Za-z0-9][A-Za-z0-9._-]*\\z")
  * fragment, on one of the two hosts, and in that host's exact path shape, where the revision is one whole segment in
  * its place and the last segment is the file's own name. Our bucket is `/<prefix>/<revision>/<file>` with no query;
  * Hugging Face is `/<owner>/<repo>/resolve/<revision>/<file>` with no query or `download=true`. A revision that is
- * not a full commit hash admits nothing. The byte count and SHA-256 checks still judge what arrives.
+ * not a full commit hash admits nothing, except `eg1/` artifacts hosted on our own domain under [EG1_ARTIFACT_REVISION].
+ * The byte count and SHA-256 checks still judge what arrives.
  */
 internal fun validateModelSource(url: String, revision: String, fileName: String): Boolean = runCatching {
-    if (!REVISION.matches(revision)) return@runCatching false
     val uri = URI(url)
     // The raw path equal to the decoded one: an escaped separator or dot cannot hide inside a segment.
     val rawPath = uri.rawPath ?: return@runCatching false
     if (rawPath != uri.path || !rawPath.startsWith("/")) return@runCatching false
     val segments = rawPath.removePrefix("/").split("/")
     if (segments.any { !SEGMENT.matches(it) }) return@runCatching false
+    val validOwnRevision = REVISION.matches(revision) ||
+        (segments.size == 3 && segments[0] == "eg1" && EG1_ARTIFACT_REVISION.matches(revision))
     uri.scheme == "https" && uri.userInfo == null && uri.fragment == null && (uri.port == -1 || uri.port == 443) &&
         when (uri.host) {
-            MODEL_HOST_OWN -> uri.rawQuery == null && segments.size == 3 && segments[1] == revision && segments[2] == fileName
-            MODEL_HOST_HUGGING_FACE -> (uri.rawQuery == null || uri.rawQuery == "download=true") && segments.size == 5 &&
+            MODEL_HOST_OWN -> validOwnRevision && uri.rawQuery == null && segments.size == 3 && segments[1] == revision && segments[2] == fileName
+            MODEL_HOST_HUGGING_FACE -> REVISION.matches(revision) && (uri.rawQuery == null || uri.rawQuery == "download=true") && segments.size == 5 &&
                 segments[2] == "resolve" && segments[3] == revision && segments[4] == fileName
             else -> false
         }

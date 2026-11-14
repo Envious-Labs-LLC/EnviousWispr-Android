@@ -29,6 +29,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.resetMain
@@ -137,6 +138,71 @@ class PolishSettingsViewModelTest {
         assertEquals("old", ui.latestProcessingResult!!.takeId)
         assertTrue(gpu in ui.s1Qualification.backends)
         assertFalse("The world changed, so an old result/new qualification pair would be torn", gpu in repository.loadS1Qualification().backends)
+    }
+
+    @Test fun switchingLocalPolishModelPersistsSelectionPreservesS1PreferenceAndClearsChecks() {
+        val customOrder = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(
+            listOf(com.envi.wispr.processing.ProcessingBackend.GPU, com.envi.wispr.processing.ProcessingBackend.CPU),
+        )
+        val s1Ctx = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(
+            com.envi.wispr.polish.LocalPolishModel.S1_MINI.descriptor(),
+            com.envi.wispr.polish.S1RuntimeKind.PORTABLE_CPU,
+        )
+        val eg1Ctx = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(
+            com.envi.wispr.polish.LocalPolishModel.EG1_MICRO.descriptor(),
+            com.envi.wispr.polish.S1RuntimeKind.PORTABLE_CPU,
+        )
+        settingsPrefs.values["s1_processing"] = customOrder.encode()
+        settingsPrefs.values["s1_processing_qualification"] = com.envi.wispr.processing.ProcessingQualification.of(
+            s1Ctx,
+            setOf(com.envi.wispr.processing.ProcessingBackend.CPU),
+        ).encode()
+        settingsPrefs.values["eg1_processing_qualification"] = com.envi.wispr.processing.ProcessingQualification.of(
+            eg1Ctx,
+            setOf(com.envi.wispr.processing.ProcessingBackend.CPU),
+        ).encode()
+        awaitDone(build())
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.S1_MINI, viewModel.settings.value.localPolishModel)
+        assertEquals(customOrder, viewModel.settings.value.s1Processing)
+
+        // Start a CPU check (null client transitions immediately to RUNTIME_FAILED in processingChecks).
+        onMain { viewModel.checkProcessing(com.envi.wispr.processing.ProcessingBackend.CPU) }
+        assertTrue(viewModel.settings.value.processingChecks.containsKey(com.envi.wispr.processing.ProcessingBackend.CPU))
+
+        val (switchSeq, switchJob) = tap { viewModel.setLocalPolishModel(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO) }
+        awaitDone(switchJob)
+        val eg1Ui = awaitSettings { it.writeSequence == switchSeq }
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO, eg1Ui.localPolishModel)
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO.wire, settingsPrefs.values["local_polish_model"])
+        assertEquals(com.envi.wispr.processing.ProcessingPreference.DEFAULT, eg1Ui.s1Processing)
+        assertEquals(eg1Ctx, eg1Ui.s1Qualification.contextId)
+        assertTrue("switching models clears stale processing check badges", eg1Ui.processingChecks.isEmpty())
+
+        // Delayed S1 processing observation while EG-1 Micro is active must not stamp failure badges onto EG-1.
+        val repository = ProviderConfigurationRepository(settingsPrefs, secrets) { _, _ -> ProviderKeyCheck.Accepted }
+        val obsJob = viewModel.viewModelScope.launch { viewModel.observeProcessingUpdates() }
+        val s1Failure = com.envi.wispr.processing.ProcessingUsage(
+            com.envi.wispr.processing.ProcessingBackend.CPU,
+            s1Ctx,
+            customOrder,
+            false,
+            "gpu",
+            runtimeFailed = true,
+            modelId = com.envi.wispr.polish.LocalPolishModel.S1_MINI.wire,
+        )
+        repository.recordProcessing(
+            com.envi.wispr.processing.ProcessingObservation("delayed-s1", 3, 300, "local", com.envi.wispr.polish.PolishReason.LOCAL_FAILED, customOrder, s1Failure, 3),
+        )
+        val observed = awaitSettings { it.latestProcessingResult?.takeId == "delayed-s1" }
+        assertTrue("delayed S1 observation must not populate EG-1 checks", observed.processingChecks.isEmpty())
+        obsJob.cancel()
+
+        // Switching back to S1-mini restores the intact custom preference untouched.
+        val (backSeq, backJob) = tap { viewModel.setLocalPolishModel(com.envi.wispr.polish.LocalPolishModel.S1_MINI) }
+        awaitDone(backJob)
+        val backUi = awaitSettings { it.writeSequence == backSeq }
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.S1_MINI, backUi.localPolishModel)
+        assertEquals(customOrder, backUi.s1Processing)
     }
     @Test fun theInitialLoadPublishesBeforeTheFirstWriteItRacedWith() {
         val read = settingsPrefs.holdNextRead()

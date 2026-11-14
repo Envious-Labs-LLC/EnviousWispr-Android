@@ -55,7 +55,7 @@ class PostHogSchemaTest {
         assertEquals("the two lists are disjoint", emptySet<String>(), numberOrBooleanKeys intersect ruled)
         assertEquals("every rule is for an allowed key", emptySet<String>(), ruled - PayloadSanitizer.allowedKeys)
         assertEquals("every allowed key is one or the other", PayloadSanitizer.allowedKeys, numberOrBooleanKeys + ruled)
-        assertEquals(106, PayloadSanitizer.allowedKeys.size)
+        assertEquals(107, PayloadSanitizer.allowedKeys.size)
         assertEquals(38, numberOrBooleanKeys.size)
     }
 
@@ -236,6 +236,7 @@ class PostHogSchemaTest {
     fun aSettingsChangeLeavesWithEveryValueASettingCanHold() {
         for (name in AppLaunchFacts.SETTING_NAMES) assertKept("setting", name)
         val values = AppLaunchFacts.settingsProjection(AppPreferencesState(), "local").values.filterIsInstance<String>() +
+            AppLaunchFacts.settingsProjection(AppPreferencesState(), "local", "eg1-micro").values.filterIsInstance<String>() +
             AppLaunchFacts.settingsProjection(null, AppLaunchFacts.UNKNOWN).values.filterIsInstance<String>() +
             listOf("on", "off", "picked") + PolishContext.TOKENS +
             listOf(0.5f, 1.25f, 3.0f).map { it.toString() }
@@ -243,6 +244,10 @@ class PostHogSchemaTest {
             assertKept("from", value)
             assertKept("to", value)
         }
+        assertKept(AppLaunchFacts.LOCAL_POLISH_MODEL, "s1-mini")
+        assertKept(AppLaunchFacts.LOCAL_POLISH_MODEL, "eg1-micro")
+        assertKept(AppLaunchFacts.LOCAL_POLISH_MODEL, AppLaunchFacts.UNKNOWN)
+        assertNull(PayloadSanitizer.sanitizeValue(AppLaunchFacts.LOCAL_POLISH_MODEL, "hello"))
         assertNull(PayloadSanitizer.sanitizeValue("to", "hello"))
         assertNull(PayloadSanitizer.sanitizeValue("from", "1.25 seconds"))
     }

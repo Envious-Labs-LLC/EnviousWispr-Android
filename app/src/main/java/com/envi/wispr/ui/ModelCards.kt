@@ -36,16 +36,6 @@ import com.envi.wispr.models.modelUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * A card's meters, on the 1-3 scale the cloud model rows use, so a card and a row can be compared. More
- * dots is more of the named thing.
- *
- * There is no cost here. A card describes ONE model, and every model that has a card is free, so a cost
- * meter would encode a constant; the cloud rows keep theirs because their prices differ from each other.
- * Adding one back means answering what it would vary with.
- */
-internal data class ModelScores(val speed: Int, val accuracy: Int)
-
 @Composable
 internal fun ModelCard(
     eyebrow: String,
@@ -53,7 +43,6 @@ internal fun ModelCard(
     description: String?,
     state: ModelUiState,
     facts: List<String>,
-    scores: ModelScores? = null,
     /** The model this card is about, so the card can say what it costs in storage. */
     model: com.envi.wispr.models.ModelDescriptor? = null,
     onAction: () -> Unit = {},
@@ -84,17 +73,6 @@ internal fun ModelCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 facts.forEach { fact -> FactPill(fact) }
-            }
-            if (scores != null) {
-                Row(
-                    // Scrollable for the same reason the facts row above it is: these labels are words,
-                    // and at a large system font scale two of them are wider than a narrow phone.
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
-                ) {
-                    ScoreBar("Speed", scores.speed)
-                    ScoreBar("Accuracy", scores.accuracy)
-                }
             }
             if (state.total > 0L && (state.action == ModelUiAction.PAUSE || state.action == ModelUiAction.RESUME)) {
                 LinearProgressIndicator(
@@ -135,18 +113,40 @@ internal fun ModelCard(
 }
 
 internal fun workUiState(info: WorkInfo?, ready: Boolean, model: com.envi.wispr.models.ModelDescriptor, context: android.content.Context): ModelUiState {
-    val progressState = info?.progress?.getString(ModelDeliveryWorker.KEY_STATE)
-    val bytes = info?.progress?.getLong(ModelDeliveryWorker.KEY_BYTES, 0L) ?: 0L
-    val total = info?.progress?.getLong(ModelDeliveryWorker.KEY_TOTAL, 0L) ?: 0L
-    val reason = info?.outputData?.getString(ModelDeliveryWorker.KEY_REASON).orEmpty()
-        .ifBlank { info?.progress?.getString(ModelDeliveryWorker.KEY_REASON).orEmpty() }
+    val root = com.envi.wispr.models.ModelStorage.root(context)
+    val store = com.envi.wispr.models.ModelDeliveryStore(root)
+    val controls = ModelDeliveryControlStore(root).read(model)
+    val progress = info?.progress
+    val output = info?.outputData
+    val progressState = progress?.getString(ModelDeliveryWorker.KEY_STATE)?.takeIf { it.isNotBlank() }
+        ?: output?.getString(ModelDeliveryWorker.KEY_STATE)?.takeIf { it.isNotBlank() }
+    val progressHasBytes = progress?.keyValueMap?.containsKey(ModelDeliveryWorker.KEY_BYTES) == true
+    val outputHasBytes = output?.keyValueMap?.containsKey(ModelDeliveryWorker.KEY_BYTES) == true
+    val manifestTotal = model.files.sumOf { it.expectedBytes }
+    val fallbackStaged = !progressHasBytes && !outputHasBytes &&
+        (controls == com.envi.wispr.models.ModelDeliveryControlState.PAUSED ||
+            controls == com.envi.wispr.models.ModelDeliveryControlState.CANCELLED ||
+            info?.state == WorkInfo.State.CANCELLED)
+    val bytes = when {
+        progressHasBytes -> progress!!.getLong(ModelDeliveryWorker.KEY_BYTES, 0L)
+        outputHasBytes -> output!!.getLong(ModelDeliveryWorker.KEY_BYTES, 0L)
+        fallbackStaged -> store.stagedBytes(model)
+        else -> 0L
+    }
+    val total = when {
+        progress?.keyValueMap?.containsKey(ModelDeliveryWorker.KEY_TOTAL) == true -> progress.getLong(ModelDeliveryWorker.KEY_TOTAL, 0L)
+        output?.keyValueMap?.containsKey(ModelDeliveryWorker.KEY_TOTAL) == true -> output.getLong(ModelDeliveryWorker.KEY_TOTAL, 0L)
+        fallbackStaged -> manifestTotal
+        else -> 0L
+    }
+    val reason = output?.getString(ModelDeliveryWorker.KEY_REASON).orEmpty()
+        .ifBlank { progress?.getString(ModelDeliveryWorker.KEY_REASON).orEmpty() }
         .ifBlank { null }
-    val controls = ModelDeliveryControlStore(com.envi.wispr.models.ModelStorage.root(context)).read(model)
     val stale = ModelDeliveryWorker.hasStaleInstallation(context, model)
     // A finished removal says so in its output; one finished before that flag existed is known by the model
     // directory being gone, which a successful download never leaves (it succeeds only once verified in place).
-    val removed = info?.outputData?.getBoolean(ModelDeliveryWorker.KEY_REMOVED, false) == true ||
-        !com.envi.wispr.models.ModelDeliveryStore(com.envi.wispr.models.ModelStorage.root(context)).finalDirectory(model).exists()
+    val removed = output?.getBoolean(ModelDeliveryWorker.KEY_REMOVED, false) == true ||
+        !store.finalDirectory(model).exists()
     val waitingForWifi = info?.state == WorkInfo.State.ENQUEUED &&
         com.envi.wispr.models.ModelDownloadPolicy.requiresWifi(info.constraints) && !com.envi.wispr.models.ModelDownloadPolicy.onWifi(context)
     return modelUiState(ready, info?.state?.name, progressState, bytes, total, reason, controls.name, stale, removed, waitingForWifi)

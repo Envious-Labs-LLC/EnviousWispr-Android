@@ -67,7 +67,7 @@ class ModelDownloadPolicyTest {
 
     /**
      * Drift guard: every request the worker builds takes its constraints from the policy, and the transfer opens through
-     * the network WorkManager assigned. A path that picks its own network type, or a transfer on the default network,
+     * a network verified by the policy. A path that picks its own network type, or a transfer on the unchecked default,
      * reopens the mobile-data leak.
      */
     @Test fun everyDownloadRequestTakesItsNetworkFromThePolicy() {
@@ -75,7 +75,7 @@ class ModelDownloadPolicyTest {
         assertFalse("no request picks its own network type", worker.contains("NetworkType"))
         assertEquals("one request builder, from the policy", 1, Regex("""ModelDownloadPolicy\.constraints\(""").findAll(worker).count())
         assertTrue("the transfer uses the worker's network", worker.contains("HttpsRangeTransport(transferNetwork)") && worker.contains("network?.openConnection(url)"))
-        assertTrue("a Wi-Fi-only transfer without a network finds Wi-Fi or waits", worker.contains("ModelDownloadPolicy.wifiNetwork(applicationContext) ?: run {"))
+        assertTrue("a Wi-Fi-only transfer without a network finds Wi-Fi or waits", worker.contains("ModelDownloadPolicy.wifiNetwork(applicationContext, network) ?: run {"))
         assertTrue("a re-queue updates the captured request by id", worker.contains("manager.updateWork(request(model, kind, ModelDownloadPolicy.anyNetwork(context, model), waiting.id))"))
         val upgrade = File("src/main/java/com/envi/wispr/models/SpeechModelUpgrade.kt").readText()
         assertFalse(upgrade.contains("mobileData"))

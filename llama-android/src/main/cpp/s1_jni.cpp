@@ -10,6 +10,8 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 #include "chat.h"
 #include "common.h"
@@ -32,6 +34,7 @@ constexpr int END_NONE = -1;
 constexpr int END_EOS = 0;
 constexpr int END_LENGTH = 1;
 constexpr int END_ABORTED = 2;
+constexpr size_t MAX_PREFIX_STATE_BYTES = 64u * 1024u * 1024u;
 
 std::mutex g_mutex;
 bool g_backend_initialized = false;
@@ -41,10 +44,12 @@ llama_model * g_model = nullptr;
 llama_context * g_context = nullptr;
 llama_batch g_batch{};
 common_chat_templates_ptr g_templates;
+llama_tokens g_cached_prefix_tokens;
+std::vector<uint8_t> g_cached_prefix_state;
 // Set by S1Native.abort from the deadline thread WITHOUT g_mutex (generation holds it); cleared by resetAbort
 // before the deadline is armed. Checked between steps and, through the llama abort callback, inside a decode.
 std::atomic<bool> g_abort{false};
-int g_last_end[3] = {END_NONE, 0, 0};
+int g_last_end[4] = {END_NONE, 0, 0, 0};
 
 void log_info(const std::string & message) {
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "%s", message.c_str());
@@ -104,7 +109,22 @@ jstring to_jstring(JNIEnv * env, const std::string & value) {
     return env->NewStringUTF(value.c_str());
 }
 
+void clear_prefix_cache() {
+    llama_tokens().swap(g_cached_prefix_tokens);
+    std::vector<uint8_t>().swap(g_cached_prefix_state);
+}
+
+struct SamplerGuard {
+    common_sampler * sampler = nullptr;
+    ~SamplerGuard() {
+        if (sampler != nullptr) {
+            common_sampler_free(sampler);
+        }
+    }
+};
+
 void free_model() {
+    clear_prefix_cache();
     g_templates.reset();
     if (g_batch.token != nullptr) {
         llama_batch_free(g_batch);
@@ -121,14 +141,14 @@ void free_model() {
 }
 
 // 0 decoded, 1 failed, 2 aborted.
-int decode_tokens(const llama_tokens & tokens) {
-    int position = 0;
-    for (int offset = 0; offset < static_cast<int>(tokens.size()); offset += BATCH_SIZE) {
+int decode_tokens(const llama_tokens & tokens, size_t start_index = 0) {
+    int position = static_cast<int>(start_index);
+    for (size_t offset = start_index; offset < tokens.size(); offset += BATCH_SIZE) {
         if (g_abort.load()) return 2;
-        const int count = std::min(BATCH_SIZE, static_cast<int>(tokens.size()) - offset);
+        const size_t count = std::min(static_cast<size_t>(BATCH_SIZE), tokens.size() - offset);
         common_batch_clear(g_batch);
-        for (int index = 0; index < count; ++index) {
-            const bool needs_logits = offset + index == static_cast<int>(tokens.size()) - 1;
+        for (size_t index = 0; index < count; ++index) {
+            const bool needs_logits = (offset + index) == tokens.size() - 1;
             common_batch_add(g_batch, tokens[offset + index], position++, {0}, needs_logits);
         }
         const int result = llama_decode(g_context, g_batch);
@@ -138,17 +158,72 @@ int decode_tokens(const llama_tokens & tokens) {
     return 0;
 }
 
+bool warm_prefix_state(const std::string & system_prompt) {
+    clear_prefix_cache();
+    if (g_model == nullptr || g_context == nullptr || !g_templates || system_prompt.empty()) {
+        return false;
+    }
+    if (g_abort.load()) return false;
+
+    try {
+        common_chat_templates_inputs inputs;
+        inputs.messages = {
+            {"system", system_prompt},
+        };
+        inputs.add_generation_prompt = false;
+        inputs.use_jinja = true;
+        inputs.enable_thinking = false;
+
+        const std::string prompt = common_chat_templates_apply(g_templates.get(), inputs).prompt;
+        llama_tokens prefix_tokens = common_tokenize(g_context, prompt, true, true);
+        if (prefix_tokens.empty() || static_cast<int>(prefix_tokens.size()) >= g_context_size - 16) {
+            return false;
+        }
+
+        llama_memory_clear(llama_get_memory(g_context), true);
+        const int decoded = decode_tokens(prefix_tokens);
+        if (decoded != 0) {
+            llama_memory_clear(llama_get_memory(g_context), true);
+            return false;
+        }
+
+        const size_t state_size = llama_state_seq_get_size(g_context, 0);
+        if (state_size == 0 || state_size > MAX_PREFIX_STATE_BYTES) {
+            llama_memory_clear(llama_get_memory(g_context), true);
+            return false;
+        }
+
+        std::vector<uint8_t> state(state_size);
+        const size_t written = llama_state_seq_get_data(g_context, state.data(), state.size(), 0);
+        if (written != state_size) {
+            llama_memory_clear(llama_get_memory(g_context), true);
+            return false;
+        }
+        // Move only after capture succeeds so an allocation failure earlier cannot leave a partial snapshot.
+        g_cached_prefix_tokens = std::move(prefix_tokens);
+        g_cached_prefix_state = std::move(state);
+        return true;
+    } catch (...) {
+        clear_prefix_cache();
+        if (g_context != nullptr) {
+            llama_memory_clear(llama_get_memory(g_context), true);
+        }
+        return false;
+    }
+}
+
 std::string aborted(int prompt_tokens, int generated) {
     g_last_end[0] = END_ABORTED;
     g_last_end[1] = generated;
     g_last_end[2] = prompt_tokens;
+    g_last_end[3] = 0;
     return "ERROR: S1 generation aborted";
 }
 
 std::string generate_text(const std::string & system_prompt,
                           const std::string & user_prompt,
                           int requested_tokens) {
-    g_last_end[0] = END_NONE; g_last_end[1] = 0; g_last_end[2] = 0;
+    g_last_end[0] = END_NONE; g_last_end[1] = 0; g_last_end[2] = 0; g_last_end[3] = 0;
     if (g_model == nullptr || g_context == nullptr || !g_templates) {
         return "ERROR: S1-mini is not loaded";
     }
@@ -171,66 +246,101 @@ std::string generate_text(const std::string & system_prompt,
         return "ERROR: Chat template failed";
     }
 
-    llama_memory_clear(llama_get_memory(g_context), true);
-    const llama_tokens prompt_tokens = common_tokenize(g_context, prompt, true, true);
-    if (prompt_tokens.empty()) return "ERROR: S1 prompt tokenization failed";
-    const int prompt_count = static_cast<int>(prompt_tokens.size());
+    try {
+        const llama_tokens prompt_tokens = common_tokenize(g_context, prompt, true, true);
+        if (prompt_tokens.empty()) return "ERROR: S1 prompt tokenization failed";
+        const int prompt_count = static_cast<int>(prompt_tokens.size());
 
-    const int available_tokens = g_context_size - prompt_count - 8;
-    if (available_tokens <= 0) return "ERROR: S1 prompt exceeds the mobile context limit";
-    const int max_tokens = std::max(1, std::min(requested_tokens, available_tokens));
+        const int available_tokens = g_context_size - prompt_count - 8;
+        if (available_tokens <= 0) return "ERROR: S1 prompt exceeds the mobile context limit";
+        const int max_tokens = std::max(1, std::min(requested_tokens, available_tokens));
 
-    const int decoded = decode_tokens(prompt_tokens);
-    if (decoded == 2) return aborted(prompt_count, 0);
-    if (decoded != 0) return "ERROR: Prompt decode failed";
-
-    common_params_sampling sampling;
-    sampling.temp = 0.0f;
-    sampling.top_k = 0;
-    sampling.top_p = 1.0f;
-    sampling.min_p = 0.0f;
-    sampling.penalty_repeat = 1.0f;
-    common_sampler * sampler = common_sampler_init(g_model, sampling);
-    if (sampler == nullptr) return "ERROR: S1 sampler initialization failed";
-
-    std::string output;
-    int position = prompt_count;
-    const llama_vocab * vocab = llama_model_get_vocab(g_model);
-    int end = END_LENGTH;
-    int generated = 0;
-
-    for (; generated < max_tokens; ++generated) {
-        if (g_abort.load()) {
-            common_sampler_free(sampler);
-            return aborted(prompt_count, generated);
+        bool used_prefix_cache = false;
+        if (!g_cached_prefix_tokens.empty() &&
+            !g_cached_prefix_state.empty() &&
+            prompt_tokens.size() > g_cached_prefix_tokens.size() &&
+            std::equal(g_cached_prefix_tokens.begin(), g_cached_prefix_tokens.end(), prompt_tokens.begin())) {
+            try {
+                llama_memory_clear(llama_get_memory(g_context), true);
+                const size_t restored = llama_state_seq_set_data(
+                    g_context, g_cached_prefix_state.data(), g_cached_prefix_state.size(), 0);
+                if (restored == g_cached_prefix_state.size()) {
+                    const int suffix_decoded = decode_tokens(prompt_tokens, g_cached_prefix_tokens.size());
+                    if (suffix_decoded == 2) return aborted(prompt_count, 0);
+                    if (suffix_decoded == 0) {
+                        used_prefix_cache = true;
+                    } else {
+                        clear_prefix_cache();
+                        llama_memory_clear(llama_get_memory(g_context), true);
+                    }
+                } else {
+                    clear_prefix_cache();
+                    llama_memory_clear(llama_get_memory(g_context), true);
+                }
+            } catch (...) {
+                clear_prefix_cache();
+                llama_memory_clear(llama_get_memory(g_context), true);
+                used_prefix_cache = false;
+            }
         }
-        const llama_token token = common_sampler_sample(sampler, g_context, -1);
-        common_sampler_accept(sampler, token, true);
-        if (llama_vocab_is_eog(vocab, token)) {
-            end = END_EOS;
-            break;
+        if (!used_prefix_cache) {
+            llama_memory_clear(llama_get_memory(g_context), true);
+            const int decoded = decode_tokens(prompt_tokens);
+            if (decoded == 2) return aborted(prompt_count, 0);
+            if (decoded != 0) return "ERROR: Prompt decode failed";
         }
 
-        output += common_token_to_piece(g_context, token);
+        common_params_sampling sampling;
+        sampling.temp = 0.0f;
+        sampling.top_k = 0;
+        sampling.top_p = 1.0f;
+        sampling.min_p = 0.0f;
+        sampling.penalty_repeat = 1.0f;
+        SamplerGuard sampler{common_sampler_init(g_model, sampling)};
+        if (sampler.sampler == nullptr) return "ERROR: S1 sampler initialization failed";
 
-        common_batch_clear(g_batch);
-        common_batch_add(g_batch, token, position++, {0}, true);
-        const int result = llama_decode(g_context, g_batch);
-        if (g_abort.load()) {
-            common_sampler_free(sampler);
-            return aborted(prompt_count, generated + 1);
+        std::string output;
+        int position = prompt_count;
+        const llama_vocab * vocab = llama_model_get_vocab(g_model);
+        int end = END_LENGTH;
+        int generated = 0;
+
+        for (; generated < max_tokens; ++generated) {
+            if (g_abort.load()) {
+                return aborted(prompt_count, generated);
+            }
+            const llama_token token = common_sampler_sample(sampler.sampler, g_context, -1);
+            common_sampler_accept(sampler.sampler, token, true);
+            if (llama_vocab_is_eog(vocab, token)) {
+                end = END_EOS;
+                break;
+            }
+
+            output += common_token_to_piece(g_context, token);
+
+            common_batch_clear(g_batch);
+            common_batch_add(g_batch, token, position++, {0}, true);
+            const int result = llama_decode(g_context, g_batch);
+            if (g_abort.load()) {
+                return aborted(prompt_count, generated + 1);
+            }
+            if (result != 0) {
+                return "ERROR: S1 generation decode failed";
+            }
         }
-        if (result != 0) {
-            common_sampler_free(sampler);
-            return "ERROR: S1 generation decode failed";
+
+        g_last_end[0] = end;
+        g_last_end[1] = end == END_EOS ? generated : max_tokens;
+        g_last_end[2] = prompt_count;
+        g_last_end[3] = used_prefix_cache ? 1 : 0;
+        return output;
+    } catch (...) {
+        clear_prefix_cache();
+        if (g_context != nullptr) {
+            llama_memory_clear(llama_get_memory(g_context), true);
         }
+        return "ERROR: Out of memory during local polish";
     }
-
-    common_sampler_free(sampler);
-    g_last_end[0] = end;
-    g_last_end[1] = end == END_EOS ? generated : max_tokens;
-    g_last_end[2] = prompt_count;
-    return output;
 }
 
 }  // namespace
@@ -295,21 +405,38 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     return to_jstring(env, status.str());
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_envi_wispr_llama_S1Native_warmPrefix(
+    JNIEnv * env, jobject, jstring system_prompt) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    try {
+        return warm_prefix_state(from_jstring(env, system_prompt)) ? JNI_TRUE : JNI_FALSE;
+    } catch (...) {
+        clear_prefix_cache();
+        return JNI_FALSE;
+    }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_envi_wispr_llama_S1Native_generate(
     JNIEnv * env, jobject, jstring system_prompt, jstring user_prompt, jint max_tokens) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    return to_jstring(env, generate_text(
-        from_jstring(env, system_prompt),
-        from_jstring(env, user_prompt),
-        static_cast<int>(max_tokens)));
+    try {
+        return to_jstring(env, generate_text(
+            from_jstring(env, system_prompt),
+            from_jstring(env, user_prompt),
+            static_cast<int>(max_tokens)));
+    } catch (...) {
+        clear_prefix_cache();
+        return to_jstring(env, "ERROR: Out of memory during local polish");
+    }
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
 Java_com_envi_wispr_llama_S1Native_lastEnd(JNIEnv * env, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    jintArray result = env->NewIntArray(3);
-    if (result != nullptr) env->SetIntArrayRegion(result, 0, 3, g_last_end);
+    jintArray result = env->NewIntArray(4);
+    if (result != nullptr) env->SetIntArrayRegion(result, 0, 4, g_last_end);
     return result;
 }
 

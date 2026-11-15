@@ -3,7 +3,7 @@
 GitHub issue: `#510` (also closes the load branch question of `#465`, see §2.5.3). Tier: MEDIUM (one engine plus
 the session owner's watchdog value; no AIDL, process or Room change). Status: DRAFT.
 
-Stacked on PR #529 (`feat/eg1-micro-local-polish`, head `f30652ba`), because the seq-0 prefix cache this change
+Stacked on PR #529 (`feat/eg1-micro-local-polish`, head f30652ba), because the seq-0 prefix cache this change
 builds on and EG-1 Micro both arrive there. Retarget to `main` when #529 merges.
 
 ## Preface — Lane + Hardware UAT declaration
@@ -120,7 +120,7 @@ poisons and ends the process; prefix cache restored per request (PR #529). A rec
 `general.architecture = qwen35`) cannot drop a partial sequence unless its context keeps recurrent-state
 snapshots (`n_rs_seq`, `llm_arch_supports_rs_rollback` includes `LLM_ARCH_QWEN35`).
 
-### 5. Premises, with evidence (bench `CopyAheadBenchDeviceTest`, branch `exp/polish-copy-ahead` `c72476e0`,
+### 5. Premises, with evidence (bench CopyAheadBenchDeviceTest, branch `exp/polish-copy-ahead` c72476e0,
 run folder `20261114-171908-polish-copy-ahead-e31f`, process held in the foreground cgroup)
 Paired, same process, same loaded S1-mini, 12 cases (10 held-out benchmark cases plus 2 synthetic ~800-char):
 
@@ -173,7 +173,7 @@ The founder rejected longer waits: people will not wait more than 10 to 15 s, an
 no budget grows with dictation length. Both local models use S1's shipped budget: cooperative 10 s, hard 12 s,
 watchdog 15 s. EG-1 Micro drops from 18/20/23 s. `LocalPolishBudget.forModel` and `PolishWatchdogBudget.forPolicy`
 keep their signatures and their exhaustive `when` over `LocalPolishModel` (so a new model must still choose); the
-`EG1_*` constants are removed and both arms return the shared value. Speed comes only from copy-ahead (§3.1).
+EG-1 constants are removed and both arms return the shared value. Speed comes only from copy-ahead (§3.1).
 
 Accepted consequence: a dictation whose generation exceeds 10 s still returns the cleaned-up text at about 10 s,
 as today; for EG-1 Micro that now happens on shorter dictations than before (its generation is slower than S1's
@@ -202,7 +202,7 @@ the cached prefix). Abort mid-batch leaves KV beyond `position`, cleared by the 
 
 ## 6. Consumers
 `generate_text` callers: `PolishService.work`, qualification canary, warm path (no generation),
-`Eg1MicroHardwareDeviceTest`, benchmark module (`CpuBenchmarkEngine`, `PortableCpuDeviceTest`). Budget readers:
+`Eg1MicroHardwareDeviceTest`, benchmark module (CpuBenchmarkEngine, `PortableCpuDeviceTest`). Budget readers:
 `PolishService.work`, `PolishService.qualify` (two reads: `ProcessingQualificationTask`'s load-plus-hard
 deadline, now 60 s load + 12 s hard = 72 s, and the canary's 10 s cooperative timeout), `debugStall`
 (`MAX_OVERRIDE_MS`, unchanged), `TakePolishController` watchdog through `DelayPolishTimeout`.
@@ -268,7 +268,7 @@ the GenieX path is unchanged.
 
 ## 12. Blast radius & rollback
 S1-mini on MID phones (copy-ahead) and every EG-1 Micro user (the shorter budget only). Rollback: draft size 0 restores the shipped loop
-(one constant); restoring the `EG1_*` constants restores EG-1's old budget.
+(one constant); restoring the EG-1 constants restores EG-1's old budget.
 
 ## 13. Ship criteria
 G1-G4 met with the evidence above re-taken on the final build; Codex all-clear with confirming re-run; Play

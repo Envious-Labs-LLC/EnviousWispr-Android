@@ -16,6 +16,11 @@ Merge order: #529, #530, this PR (§12).
 corrected (§2.5.4); consumer dispositions (§5.1), async-edge matrix (§5.2), GPU qualification details (§3.5),
 storage/packaging and memory measurements (§11) added.
 
+**Revision 3 (after grounded round 2):** superseded statements removed (§4 `previous`, §7 storage row, §2.5.4
+network paragraph); `ProviderConfigurationRepository` C for chunk 5 with separate CPU/OpenCL evidence; tokenizer
+error branch proven by a host-build observation, not an end code; memory goal and ship criterion stated as a sampled
+comparison.
+
 **Revision 2 (after grounded round 1):** generation recipe now prefills explicitly; HTTP support turned off at build
 (the earlier omni exclusion claim was wrong); storage checks include the cache; dispositions corrected
 (`PolishSettingsViewModel`, `PolishSettingsViewModelTest`, `Eg1LocalPolishUiDeviceTest`, `ModelDeliveryWorker`,
@@ -33,7 +38,7 @@ ship; the row then moves with the evidence in §13.
 **Hardware UAT:** Y. A person with EG-1 Micro selected double-presses the side button, dictates *"hey Sam, quick
 update, the launch moved to Thursday, sorry, Friday, and we need three things: the deck, the budget and the demo"*
 into Gmail, and gets a polished email with "Friday" only and a three-item list, on the S26 and on a mid-range phone,
-inside the EG-1 budget, with the `:polish` process's private memory under the §13 limit.
+inside the EG-1 budget, with the `:polish` process's sampled private memory meeting the §13 comparison.
 
 ## Preface — User Rubric
 
@@ -71,7 +76,7 @@ Answered against named personas (primary: Meera Patel). The heading spelling is 
 - **Frank**: nothing new to configure. The one visible change: the EG-1 Micro card shows more storage (§3.4).
 
 Tension: Frank and Meera (mid-range, storage-limited) versus memory. The cache file trades about 580 MB of storage
-for about 0.9 GB less memory the phone cannot free (§3.4). Memory wins: it is what decides whether Android closes the
+for about 0.9 GB less memory the phone cannot free (Mac measurement; phone numbers owed, §3.4). Memory wins: it is what decides whether Android closes the
 app mid-dictation; storage is shown honestly before download.
 
 ---
@@ -115,8 +120,10 @@ blind exam, Test Lab speed and memory on four phones, and a phone pass on the S2
    its output matches the CPU canary.
 4. Quality: the full 4,352-case exam on the shipped MNN file is not significantly worse than the Q4_K_M file on any
    set, and serious errors do not rise.
-5. Memory: every speed and quality run reports peak resident, private and file-backed memory; the `:polish`
-   process's peak private memory with EG-1 on MNN is at most today's llama.cpp EG-1 number on the same phone.
+5. Memory: every speed and quality run reports peak resident, private and file-backed memory. On each phone, the
+   `:polish` process's maximum sampled RssAnon with EG-1 on MNN does not exceed llama.cpp's under the same sampling
+   method (50 ms), separately for first-build and reused-cache runs, with the interval and observation windows
+   reported. This is a sampled comparison, not an exact peak-private guarantee.
 6. S1-mini behaviour, files, runtimes and budgets are byte-for-byte unchanged.
 
 ### 2.2 Non-goals
@@ -206,10 +213,10 @@ Names from the pinned MNN checkout, the study artifact or git (not in this tree)
   is NOT compiled out: an app process's stdout is not routed to logcat by default, so the text is discarded, but
   this is a platform default, not our guarantee. Build with `MNN_USE_LOGCAT=OFF`, and in chunk 1 trace every
   reachable MNN print in the LLM path for prompt or output text (`llm.cpp` prints shown in §2.5.5 P10) and run a
-  synthetic-prompt canary with logcat captured, asserting the canary string never appears. Nothing here is
-  network-reachable: MNN has no network code in the LLM path (NOT VERIFIED beyond a grep for socket/http/curl in
-  `transformers/llm` and `source/core`, done in chunk 1), and automatic telemetry stays allowlist-only
-  (`telemetry/PayloadSanitizer.kt`).
+  synthetic-prompt canary with logcat captured, asserting the canary string never appears. Network: our build
+  explicitly disables `LLM_SUPPORT_HTTP_RESOURCE` (P10); the packaged-library import audit verifies the resulting
+  boundary, and until that audit runs the packaged result is NOT VERIFIED. Automatic telemetry stays
+  allowlist-only (`telemetry/PayloadSanitizer.kt`).
 - **Storage:** the weight cache must live outside the model folder (verification rejects extra files,
   `ModelDelivery.kt:142`).
 
@@ -343,7 +350,8 @@ heavy processes possible.
 
 - `S1RuntimeKind`: two new members. Meaning: "which native engine and processor ran this polish". Telemetry
   `polish_runtime` gains two closed values automatically.
-- `ModelManifest.eg1Micro`: new revision, `engineId = "mnn"`, five files, `previous` names the GGUF revision.
+- `ModelManifest.eg1Micro`: new MNN revision, `engineId = "mnn"`, five files, `previous = emptyList()`. Internal GGUF
+  installations require downloading the MNN revision.
   Meaning: EG-1 Micro installed means MNN files present and verified.
 - `S1Runtime`: unchanged interface; new implementation.
 - `ModelStorage` (or a sibling owner): a per-model cache folder outside the model root, removed with the model.
@@ -381,7 +389,8 @@ Dispositions: **C** changed, **U** unchanged with reason, **X** UNCHECKED (none 
 | `EngineDeadline`, `PolishWatchdogBudget` and their tests | U | budgets are per model, not per engine; 10/12/15 s from #530 |
 | `LocalPolishDiagnostics`, `PostHogSchema`, `SentrySchema`, `MajorFaults` | U | read `S1RuntimeKind.entries`/identity generically |
 | `PolishSettingsViewModel` | C (chunk 5 only) | computes the current runtime's context before qualification and discards other contexts' results (`:123-139`, `:187-195`); chunk 5 validates against the explicitly requested qualification runtime, keeps CPU and OpenCL evidence separately, and the take's policy freezes the chosen route. Chunks 1 to 4: unchanged (EG-1 stays CPU-only) |
-| `LocalPolishModel`, `PolishPolicy`, `ProviderConfigurationRepository`, `ProcessingCheckClient`, `S1ModelSelection` and their tests, `ProviderConfigurationRepositoryTest` | U | carry the model choice and descriptor, not the engine; `S1ModelSelection` keeps `files.first()` (now `config.json`) |
+| `ProviderConfigurationRepository` | C (chunk 5 only) | reads one qualification record per model (`:192-203`), replaces evidence when the context changes (`:240-253`), one EG-1 key (`:550-552`). Chunk 5 persists and retrieves EG-1 CPU and OpenCL evidence separately, preserving S1-mini's storage; recording either runtime's result preserves the other, including after repository recreation; the selected evidence travels in the existing policy snapshot. Chunk 5 is cut if this contract is not completed |
+| `LocalPolishModel`, `PolishPolicy`, `ProcessingCheckClient`, `S1ModelSelection` and their tests, `ProviderConfigurationRepositoryTest` | U | carry the model choice and descriptor, not the engine; `S1ModelSelection` keeps `files.first()` (now `config.json`) |
 | `AppLaunchFacts`, `TakeFactsTest`, `AppActions`, `AppShell`, `SettingsActivity`, `ReadinessViewModel`, `ModelWorkViewModel` (+ tests, `ModelWorkOwnershipTest`), `PolishScreen`, `PolishLocalControls`, `PolishStatusChipTest`, `PolishScreenLayoutTest`, `ModelDeliveryNotification` | U except size lines | model id and state only; `PolishLocalControls`/model card size lines change for the cache (§3.4) |
 | `ProcessingObservationTest`, `S1LoadedConfigurationTest`, `PolishFailsOpenTest`, `TakePolishControllerTest`, `SustainedDictationDeviceTest` | U | engine-agnostic outcomes; S1-only device test |
 
@@ -414,7 +423,7 @@ Dispositions: **C** changed, **U** unchanged with reason, **X** UNCHECKED (none 
 | Failure | Origin | Caller | User sees | Persisted | Retry |
 |---|---|---|---|---|---|
 | MNN load fails | `MnnNative.load` | `PolishService.loadModel` | deterministic text, existing local-not-ready copy | none | next take |
-| Cache folder not writable or full disk | MNN `tmp_path` | load | nothing visible; MNN continues without the disk cache (`llm.cpp:268-277`), so more private memory; logged locally | none | next take |
+| Cache folder not writable or full disk | MNN `tmp_path` | load | runtime storage or writability checks refuse loading with `ERROR:`; the existing deterministic fallback delivers text; no deliberate cache-disabled retry | none | next take |
 | Generation exceeds deadline | step loop | cooperative abort, then watchdog | deterministic text (existing `LOCAL_TIMEOUT` path) | timeout outcome | next take |
 | OpenCL canary mismatch | qualification | `PolishSettingsViewModel` | nothing; CPU used | qualification false for revision | re-qualify on new revision |
 | Stale cache from another revision | load | runtime | nothing; folder deleted, rebuilt | none | automatic |
@@ -467,7 +476,7 @@ this phone"), checked against `content-brand.md`.
    telemetry allowlists include the new kinds; manifest upgrade path; cache folder removal. Harness contract: the
    in-app memory report.
 2. **Reverts.** Routing EG-1 back to `PORTABLE_CPU` turns the device test's runtime assertion red; deleting the
-   cache-removal call turns the removal unit test red; removing `use_mmap` turns the private-memory assertion red;
+   cache-removal call turns the removal unit test red; removing `use_mmap` turns the sampled private-memory comparison red;
    removing the abort check turns the deadline device test red (it asserts native generation returned through the
    cooperative abort before the hard deadline, read from the runtime's own end code, because a timeout can also
    "succeed" through the hard-kill path, `PolishService.kt:315, 373-387`). Each revert is performed and recorded;
@@ -500,7 +509,7 @@ this phone"), checked against `content-brand.md`.
 | S1-mini unchanged: the existing S1 device and unit suites pass unmodified, and `git diff` shows no change under S1-only files | drift guard | goal 6 | n/a |
 | Storage: download peak disk use, cache allocated bytes (`du`), APK and installed size before and after, clean CI build time | measurement | §3.4, P9 | n/a |
 | Packaging: `llvm-readelf -d` and library names in the APK show no clash with GenieX or `ew-*` libraries; `useLegacyPackaging` still extracts; load, cache build and generate run on a 16 KB page-size emulator image (Android 15+) | product outcome | P5 | n/a |
-| Privacy canary: a synthetic prompt with a unique marker through load and generate, plus a forced tokenizer error whose exact unencodable fragment is known; the test asserts the error path actually ran (runtime end code), then searches captured logcat for the full marker AND the exact fragment, neither may appear; the import audit of the packaged `libMNN.so` fails if unreadable or if any socket/connect/getaddrinfo import exists | product outcome | P10 | a control build with `MNN_USE_LOGCAT=ON` must turn it red (performed once, recorded) |
+| Privacy canary: a synthetic prompt with a unique marker through load and generate, captured logcat searched for the full marker, which must not appear. Tokenizer error branch (`tokenizer/tokenizer.cpp:565-577` returns `void` and sets no end code): its execution is proven by an explicit observation from that branch, staged first on the host build of the same MNN pin where the branch's stdout print is captured and the exact fragment is seen; the same input then runs on the phone and the exact fragment must be absent from logcat. Until demonstrated, error-path coverage is NOT VERIFIED; the import audit of the packaged `libMNN.so` fails if unreadable or if any socket/connect/getaddrinfo import exists | product outcome | P10 | a control build with `MNN_USE_LOGCAT=ON` must turn it red (performed once, recorded) |
 | GPU qualification (chunk 5): first-time qualification, CPU/OpenCL identity separation, actual GPU execution, output comparison, measured speed advantage | product outcome | §3.5 | force CPU fallback: qualification must fail |
 
 ## 12. Blast radius and rollback
@@ -521,7 +530,9 @@ this phone"), checked against `content-brand.md`.
 - [ ] Each Test Lab phone: MNN p50 and long-case time below llama.cpp on the same phone, same matrix.
 - [ ] Per phone, the share of the 45 fidelity cases finishing inside the 10 s cooperative budget, MNN versus
   llama.cpp, reported in the PR; phones and lengths still over budget are named, not hidden.
-- [ ] `:polish` peak private memory with MNN at most llama.cpp's on the same phone; numbers in the PR.
+- [ ] `:polish` maximum sampled RssAnon with MNN at most llama.cpp's on the same phone, same 50 ms sampling,
+  first-build and reused-cache runs separately; interval and windows reported in the PR (a sampled comparison, not an
+  exact peak-private guarantee).
 - [ ] Full exam: no set significantly worse; serious errors not higher.
 - [ ] S26: OpenCL used only after a matching canary, or chunk 5 cut and filed.
 

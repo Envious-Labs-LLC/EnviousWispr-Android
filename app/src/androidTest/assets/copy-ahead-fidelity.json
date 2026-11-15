@@ -186,5 +186,28 @@
   "id": "MID-500",
   "raw": "ok so for the school pickup this week um Leo has football on Tuesday and Thursday so I need someone to grab him at four fifteen instead of three thirty and on Wednesday he has the dentist at two so I'll take him out early myself and then on Friday there's the bake sale so can you drop off the two trays of cupcakes before nine they're in the fridge on the bottom shelf and also remind Maya that her library books are due on Monday or she'll get another fine and that's everything I think thanks"
  },
- "adjudicated": []
+ "adjudicated": [
+  {
+   "id": "SB-00024",
+   "model": "S1_MINI",
+   "expected": "the replacement holds cost 1 200 euros and the supplier says they'll arrive around the 21st of may",
+   "actual": "the replacement holds cost 1 200 and the supplier says they'll arrive around the 21st of may",
+   "reason": "Formatting: '1,200 euros' written as '€1,200'; amount and currency unchanged (hand-adjudicated 2026-11-14).",
+   "seenOn": [
+    "a26x-s1",
+    "panther-s1"
+   ]
+  },
+  {
+   "id": "MINIEMAIL26-development-eg12-email-v1-closing_boundary-0045",
+   "model": "S1_MINI",
+   "expected": "hi dimitri oscar can you pick up the repaired boots at the leather workshop this afternoon thanks for passing that on the regards from a leaf were written on the repair card",
+   "actual": "hi dimitri oscar can pick up the repaired boots at the leather workshop this afternoon thanks for passing that on the regards from a leaf were written on the repair card",
+   "reason": "The one-token loop added an unspoken 'you'; copy-ahead kept the dictated 'can pick up' (hand-adjudicated 2026-11-14).",
+   "seenOn": [
+    "a26x-s1",
+    "panther-s1"
+   ]
+  }
+ ]
 }

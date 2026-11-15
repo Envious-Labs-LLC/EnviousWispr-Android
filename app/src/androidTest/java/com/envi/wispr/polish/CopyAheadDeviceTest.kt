@@ -44,6 +44,8 @@ import org.junit.runner.RunWith
  * comes back unpolished).
  *
  * Runner args: `model` = `s1` (default) or `eg1`; `firebaseS1Fixture` / `firebaseEg1Fixture` stage Test Lab files.
+ * Copy-ahead runs on transformer models only, so with `model=eg1` run `onlyTransformerModelsSpeculate` (and the
+ * product row as a measurement); the speculation rows refuse a non-speculating model.
  * Not stageable deterministically: EOS arriving inside an accepted guess run (the model decides where it stops);
  * the fidelity report counts natural EOS ends instead.
  */
@@ -66,6 +68,22 @@ class CopyAheadDeviceTest {
     }
 
     private data class Run(val text: String, val end: IntArray, val stats: IntArray, val ms: Long)
+
+    @Test
+    fun onlyTransformerModelsSpeculate() = withModel { load ->
+        val (id, raw) = cases.first()
+        val run = generate(raw)
+        when (model) {
+            LocalPolishModel.S1_MINI -> {
+                assertTrue("copy-ahead is not enabled on this S1-mini load: $load", load.contains("| copy-ahead 4"))
+                assertTrue("$id: S1-mini made no guesses", run.stats[1] > 0)
+            }
+            LocalPolishModel.EG1_MICRO -> {
+                assertTrue("copy-ahead is enabled on EG-1 Micro: $load", load.contains("| copy-ahead 0"))
+                assertEquals("$id: EG-1 Micro guessed", 0, run.stats[1])
+            }
+        }
+    }
 
     @Test
     fun speculationRunsAndMatchesTheOneTokenLoop() = withModel { load ->
@@ -115,6 +133,7 @@ class CopyAheadDeviceTest {
 
     @Test
     fun anAbortDuringGenerationEndsAbortedAndTheNextRequestIsClean() = withModel {
+        requireSpeculatingModel()
         val raw = cases.maxBy { it.second.length }.second
         val timer = Executors.newSingleThreadScheduledExecutor()
         try {
@@ -132,6 +151,7 @@ class CopyAheadDeviceTest {
 
     @Test
     fun copyAheadChangesNoWordOnTheFidelitySetUnlessAdjudicated() = withModel { load ->
+        requireSpeculatingModel()
         val rows = JSONArray()
         val real = mutableListOf<String>()
         var mutationFlagged = 0
@@ -187,6 +207,11 @@ class CopyAheadDeviceTest {
             }
             override fun onServiceDisconnected(name: ComponentName?) { service = null }
         }
+        // A real take binds :polish from the foreground session service; without this the test process binds it from
+        // Android's background group, which halved its speed on the Pixel 7 (#510 lab run, 2026-11-14).
+        BenchForegroundService.started = CompletableFuture()
+        context.startForegroundService(Intent(context, BenchForegroundService::class.java))
+        BenchForegroundService.started.get(10, TimeUnit.SECONDS)
         assertTrue(context.bindService(Intent(context, PolishService::class.java), connection, Context.BIND_AUTO_CREATE))
         try {
             assertTrue("PolishService did not connect", connected.await(15, TimeUnit.SECONDS))
@@ -207,6 +232,7 @@ class CopyAheadDeviceTest {
             assertEquals("a ${raw.length}-character take came back ${outcome.reason} after ${ms}ms", PolishReason.POLISHED, outcome.reason)
         } finally {
             context.unbindService(connection)
+            context.stopService(Intent(context, BenchForegroundService::class.java))
         }
     }
 
@@ -246,6 +272,10 @@ class CopyAheadDeviceTest {
             ModelDeliveryStore(ModelStorage.root(context)).isVerified(descriptor),
         )
     }
+
+    /** Speculation rows exercise copy-ahead, which runs on transformer models only (`s1_jni.cpp` copy_ahead_limit). */
+    private fun requireSpeculatingModel() =
+        assertEquals("this row needs a speculating model: run it with model=s1", LocalPolishModel.S1_MINI, model)
 
     private fun <T> withModel(block: (String) -> T): T {
         stageAndVerify()
@@ -303,6 +333,7 @@ class CopyAheadDeviceTest {
 
     /** The first case whose copy-ahead text equals the one-token loop's: recovery rows compare against it exactly. */
     private fun stableCase(): Pair<String, String> {
+        requireSpeculatingModel()
         for (case in cases.take(12)) {
             val plain = generate(case.second, guesses = 0)
             val copy = generate(case.second)

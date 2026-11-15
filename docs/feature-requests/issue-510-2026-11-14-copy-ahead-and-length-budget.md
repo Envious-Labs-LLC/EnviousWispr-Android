@@ -48,7 +48,7 @@ constants are removed and both models read S1's shipped budget. The decode chang
 ## 0. TL;DR
 
 Local polish times out on mid-tier phones because writing out a long dictation takes longer than the 10 s budget
-(field data, §1). Two changes on the portable llama.cpp runtime only: (1) copy-ahead decoding: guess the next 4
+(field data, §1). Two changes on the portable llama.cpp runtime only: (1) copy-ahead decoding for S1-mini (transformer models; EG-1 Micro excluded after the lab fidelity run, §3.1): guess the next 4
 tokens from where the output last matched the input, check them in one batch with the same greedy sampler, keep
 the matching prefix; measured 1.33x to 1.56x faster at the median on three physical lab phones; (2) one 15 s
 ceiling for every local model (founder, Gate 2): EG-1 Micro's 18/20/23 s budget comes down to S1's shipped
@@ -74,7 +74,7 @@ a time and most of the output repeats the input.
 ## 2. Goals & non-goals
 
 ### 2.1 Goals
-- G1. On the portable runtime, median generation at least 1.3x faster on the three lab phones in §2.5.5, same
+- G1. For S1-mini on the portable runtime, median generation at least 1.3x faster on the three lab phones in §2.5.5, same
   cases, same loaded model.
 - G2. No dictated word added or lost against the shipped one-token loop on the fidelity set (§11); cosmetic
   differences (digit vs word, comma) are reported, not hidden.
@@ -152,20 +152,20 @@ the one-token loop (G4). Draft size 4: best or tied-best median on all three pho
 `common_speculative` framework, designed for server slots with checkpoints and a draft context; for one sequence it
 adds state we do not need. Rejected: a draft model (memory, one heavy model resident).
 
-EG-1 Micro: load with `n_rs_seq = 5` and allow at most `n_rs_seq - 1` guesses; any other recurrent/hybrid model
-with no snapshots keeps the one-token loop. S1-mini (`qwen3`, transformer) needs no snapshots.
-
-**Closed classification.** Every loaded model is classified with `llama_model_is_recurrent` and
-`llama_model_is_hybrid` (not a model list). Transformers use ordinary cache removal. Recurrent/hybrid models
-speculate only within the EFFECTIVE `llama_n_rs_seq(ctx) - 1` read after context creation (llama.cpp may clamp
-the request to zero); zero means the one-token loop.
+**Transformers only (build revision after the lab fidelity run, 2026-11-14).** Every loaded model is classified
+with `llama_model_is_recurrent` and `llama_model_is_hybrid` (not a model list); recurrent and hybrid models keep the
+one-token loop and request no recurrent-state snapshots. Evidence: with 5 snapshots and 4 guesses, EG-1 Micro
+(`qwen35`) lost dictated words on LONG-01 identically on the lab Galaxy A26 and Pixel 7 (after a comma flip, "one
+backend engineer and one contractor" became "one, and one contractor"); cause not isolated (batched arithmetic or
+recurrent rollback). It also gained little on long dictations (A26 18.7→17.2 s, Pixel 7 16.1→16.5 s). S1-mini
+(`qwen3`, transformer) keeps copy-ahead. Reopen for EG-1 only with a fidelity run showing no word change.
 
 **Recovery state on fallback (G4).** On speculative failure (batch decode failure or refused `seq_rm`), disable
 copy-ahead for the rest of the generation, preserve committed token history, output, count, sampler state and
 pending-token accepted/emitted status, then clear memory and restore the existing valid prefix or full prompt and
-replay committed output without sampler accepts to rebuild attention state, recurrent state and valid logits
-before resuming under the original allowance and deadline. A refused rollback leaves rejected recurrent state in
-place, so re-decoding one token is not a repair; replay is. Reconstruction failure returns the existing decode
+replay committed output without sampler accepts to rebuild attention state and valid logits before resuming
+under the original allowance and deadline. A refused removal leaves rejected positions in place and a failed decode
+leaves the cache undefined, so re-decoding one token is not a repair; replay is. Reconstruction failure returns the existing decode
 error and deterministic fallback.
 
 ### 3.2 One 15 s ceiling for both models (founder decision, Gate 2, 2026-11-14)
@@ -188,10 +188,9 @@ The decode loop lives in `s1_jni.cpp` because it is the only owner of the portab
 budgets stay in `LocalPolishBudget` and `PolishWatchdogBudget`, which already own them.
 
 ## 4. Contract deltas
-`S1Native.loadModel` keeps its signature: the native loader requests `COPY_AHEAD_GUESSES + 1` recurrent-state
-snapshots when the model reports itself recurrent or hybrid, and none otherwise (build revision: the plan first
-passed a count from Kotlin; reading the model's own properties keeps the classification closed and leaves the four
-`S1Native` consumers untouched). `LocalPolishBudget.forModel` and
+`S1Native.loadModel` keeps its signature and requests no recurrent-state snapshots (build revision: the plan first
+passed a snapshot count; with recurrent/hybrid models excluded, none is needed and the four `S1Native` consumers stay
+untouched). `LocalPolishBudget.forModel` and
 `PolishWatchdogBudget.forPolicy` keep their signatures; EG-1's values change to S1's. `lastEnd()` unchanged; `lastCopyAheadStats()` reports decode, guessed, accepted and recovery counts. The test
 switches (guess count, fault injection, accept-all mutation) are compiled only into the debug native library
 (`EW_COPY_AHEAD_TEST_SWITCHES`, `llama-android/build.gradle.kts`).
@@ -233,7 +232,7 @@ The native runtime logs one counts-only line per generation (decodes, guessed, a
 Unchanged: the deterministic cleanup text, the last successful text.
 
 ## 10. Files
-`llama-android/src/main/cpp/s1_jni.cpp` (loop, lookup, snapshots), `llama-android/.../S1Native.kt`,
+`llama-android/src/main/cpp/s1_jni.cpp` (loop, lookup, transformer gate), `llama-android/.../S1Native.kt`,
 `polish/S1PortableRuntime.kt`, `polish/EngineDeadline.kt`, `ui/PolishWatchdogBudget.kt` (and the budget comments
 in the last two), tests below. Knowledge `polish-engines.md`: update FACT: the-polish-budgets for the single
 15 s ceiling (EG-1's separate budget retired, founder 2026-11-14); scope the historical n-gram result in FACT:
@@ -248,14 +247,13 @@ tuning-was-tried-and-the-default-won to GenieX NPU with short inputs.
   targeted branch occurred (from the copy-ahead counts and a branch marker), and the suite must fail with
   copy-ahead removed and with acceptance forced always true on a witnessed mismatching draft. Recovery tests
   compare complete output and end metadata on parity-stable fixtures; abort, EOS and length tests assert their
-  specific termination contracts; every test also checks the next request is correct. Gating: S1 (transformer)
-  speculates with zero snapshots; EG-1 with zero snapshots falls back to the one-token loop; EG-1 with 5
-  speculates.
+  specific termination contracts; every test also checks the next request is correct. Gating
+  (`onlyTransformerModelsSpeculate`): S1-mini loads with copy-ahead 4 and guesses; EG-1 Micro loads with
+  copy-ahead 0 and never guesses. The speculation rows refuse a non-speculating model.
 - Fidelity tests report literal differences and adjudicate every word addition or loss against explicit
   expected text, including independently seeded oracle errors (a planted added word and a planted dropped word
   the oracle must flag).
-- `Eg1MicroHardwareDeviceTest`'s direct `loadModel` calls gain the snapshot argument.
-  Its `EG1_EMAIL_MAX_LATENCY_MS` (20 s, sized to the old budget) drops to the 10 s cooperative budget.
+- `Eg1MicroHardwareDeviceTest`'s `EG1_EMAIL_MAX_LATENCY_MS` (20 s, sized to the old budget) drops to the 10 s cooperative budget.
 - EG-1 qualification retains the existing 60 s load allowance, uses a 72 s combined hard deadline and a 10 s cooperative canary timeout, and must still return AVAILABLE on A26 and Pixel 7. (Product Outcome, through `PolishService.qualify`.)
 - Device (Harness Contract → Product Outcome where noted): fidelity set of at least 40 cases (held-out benchmark
   plus long synthetic) on the lab A26: words added/lost counted by a word-diff oracle against the shipped loop;
@@ -269,7 +267,7 @@ Lab A26 and Pixel 7 (physical, Test Lab, personal-credit project), plus one sile
 the GenieX path is unchanged.
 
 ## 12. Blast radius & rollback
-MID phones on the portable runtime and every EG-1 Micro user. Rollback: draft size 0 restores the shipped loop
+S1-mini on MID phones (copy-ahead) and every EG-1 Micro user (the shorter budget only). Rollback: draft size 0 restores the shipped loop
 (one constant); restoring the `EG1_*` constants restores EG-1's old budget.
 
 ## 13. Ship criteria
@@ -277,8 +275,9 @@ G1-G4 met with the evidence above re-taken on the final build; Codex all-clear w
 internal build on the founder's phone before merge.
 
 ## 14. Open questions
-Resolved at Gate 2: one 15 s ceiling (§3.2). Open: whether EG-1's 13% snapshot overhead is worth it on dictations it reformats (current data says
-net 1.30x; re-measure paired in the fidelity run).
+Resolved at Gate 2: one 15 s ceiling (§3.2). Resolved by the lab fidelity run: EG-1 Micro keeps the one-token loop
+(§3.1). Open, founder-visible: with the 10 s budget and no speedup, EG-1 Micro returns the cleaned-up text on mid-tier
+phones for dictations around 500 characters and longer (lab A26 and Pixel 7 both timed out at 10.1 s, 2026-11-14).
 
 ## 15. Related
 #510, #465, #529, #433, `polish-engines.md`, run folders `20261114-155819-eg1-micro-opencl-in-app-687d`,

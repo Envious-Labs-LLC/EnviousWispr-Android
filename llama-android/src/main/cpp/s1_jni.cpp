@@ -248,25 +248,14 @@ int copy_ahead_fault() { return 0; }
 bool copy_ahead_accept_all() { return false; }
 #endif
 
-// Recurrent-state snapshots a context needs so a recurrent or hybrid model can drop `guesses` rejected positions.
-// Classified by the model's own properties, never a model list; llama.cpp clamps the request to zero for an
-// architecture that cannot roll back, and copy_ahead_limit then reads that zero.
-uint32_t copy_ahead_snapshots(int guesses) {
-    if (guesses <= 0) return 0;
-    if (!llama_model_is_recurrent(g_model) && !llama_model_is_hybrid(g_model)) return 0;
-    return static_cast<uint32_t>(guesses + 1);
-}
-
-// Guesses this loaded context can verify and drop: a transformer drops positions from its cache directly; a
-// recurrent or hybrid model only within the snapshots its context actually kept.
+// Guesses this loaded model may verify. Transformers only, classified by the model's own properties, never a model
+// list. On a recurrent or hybrid model (EG-1 Micro, qwen35) copy-ahead lost dictated words on lab phones (#510,
+// 2026-11-14, LONG-01 on Galaxy A26 and Pixel 7: after a comma flip, "one backend engineer" became "one"); the cause
+// was not isolated (batched arithmetic or recurrent rollback). Reopen only with a fidelity run showing no word
+// change on that model.
 int copy_ahead_limit() {
-    const int guesses = copy_ahead_guesses();
-    if (guesses <= 0) return 0;
-    if (llama_model_is_recurrent(g_model) || llama_model_is_hybrid(g_model)) {
-        const int snapshots = static_cast<int>(llama_n_rs_seq(g_context));
-        return snapshots > 1 ? std::min(guesses, snapshots - 1) : 0;
-    }
-    return guesses;
+    if (llama_model_is_recurrent(g_model) || llama_model_is_hybrid(g_model)) return 0;
+    return copy_ahead_guesses();
 }
 
 // Longest recent n-gram (3, then 2, then 1 token) found earlier in history; `guess` gets the tokens that followed it.
@@ -287,7 +276,7 @@ void lookup_guess(const llama_tokens & history, int max_guess, llama_tokens & gu
 }
 
 // Rebuilds the cache from the committed tokens alone after a speculative failure: a refused removal leaves rejected
-// recurrent state in place and a failed decode leaves the cache undefined, so neither can be patched in place.
+// positions in place and a failed decode leaves the cache undefined, so neither can be patched in place.
 // Restores the seq-0 prefix when it still matches, else decodes from the start. The sampler is not touched, so
 // nothing is accepted twice; the last committed token's logits are valid afterwards. 0 rebuilt, 1 failed, 2 aborted.
 int rebuild_committed(const llama_tokens & committed) {
@@ -568,10 +557,6 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     context_params.n_threads_batch = threads;
     context_params.abort_callback = abort_requested;
     context_params.abort_callback_data = nullptr;
-    // Zero for a transformer; a recurrent or hybrid model keeps snapshots so copy-ahead can drop rejected guesses.
-    if (const uint32_t snapshots = copy_ahead_snapshots(copy_ahead_guesses()); snapshots > 0) {
-        context_params.n_rs_seq = snapshots;
-    }
     g_context = llama_init_from_model(g_model, context_params);
     if (g_context == nullptr) {
         free_model();

@@ -1,0 +1,189 @@
+{
+ "source": "EnviousWispr sealed benchmark short40 (issue-3803 mlx-inputs) plus #510 held-out email and long synthetic cases; synthetic text, no user content",
+ "cases": [
+  {
+   "id": "SB-00000",
+   "raw": "Bositor, the couple wants the group photos before dinner. Sorry, before the speeches, so we need to finish the portraits by six."
+  },
+  {
+   "id": "SB-00001",
+   "raw": "Orl said he'd call the owner about the trailer, sorry, he'd call them after the lift."
+  },
+  {
+   "id": "SB-00002",
+   "raw": "There are three things for this morning. First, move the pallet of flour away from bay too. Second, check why the compressor keeps cutting out. Third, calm ketchup before the parts truck arrives."
+  },
+  {
+   "id": "SB-00003",
+   "raw": "Tomas, can you label the hazelnut loaves? Actually, just label the gluten free ones."
+  },
+  {
+   "id": "SB-00004",
+   "raw": "The tasting notes are on the table beside the smoker. Don't use the ones from last month because Mateus changed the blend and I was just about to."
+  },
+  {
+   "id": "SB-00005",
+   "raw": "Maya has approved the new price list, so I'll send it to the distributors this afternoon."
+  },
+  {
+   "id": "SB-00006",
+   "raw": "Audilie said the new LED bars cost 380 euros each, which is more than we put in the estimate. I told her we could hire four for the weekend instead of buying them, and Teodoro is checking whether that brings the total under 1,200."
+  },
+  {
+   "id": "SB-00007",
+   "raw": "I'll call Solvig now and let her know the mooring fee isn't part of the plumbing quote."
+  },
+  {
+   "id": "SB-00008",
+   "raw": "Three quick jobs before we leave. First, Shilon needs the measurements from yesterday. Second, clear the old samples out of the front window display. Third, add the new housing projects to the reading list."
+  },
+  {
+   "id": "SB-00009",
+   "raw": "Here's what I need sorted before we open. First, ask Solveg to move the costumes off the seats. Second, make sure the delivery van can get through the side gate. Third, put the grant form in the blue folder."
+  },
+  {
+   "id": "SB-00010",
+   "raw": "I'll send Halima the maintenance note, but I think it's the compressor seal, not the motor."
+  },
+  {
+   "id": "SB-00011",
+   "raw": "The rain made the roof survey harder than we expected. Kirin and I had only reached the old storage shed when water started coming through above the equipment room. We covered the boxes, marked the leak on the map, and postponed the rest until the roof is dry enough to inspect properly."
+  },
+  {
+   "id": "SB-00012",
+   "raw": "Here's what I need done while I'm at the supplier. First, portion the vegetables. Second, label sits order for six. Third, make sure the stage rig is clear of the loading door."
+  },
+  {
+   "id": "SB-00013",
+   "raw": "Can we get someone to reset the weather sensor after lunch? And unrelated to the farm, who's covering Kieran's shift at the food bank?"
+  },
+  {
+   "id": "SB-00014",
+   "raw": "I've printed the forms for the housing case and left them on your desk."
+  },
+  {
+   "id": "SB-00015",
+   "raw": "I told Sitz I'd stay until six, but if the delivery isn't here by five fifteen, I'm heading out."
+  },
+  {
+   "id": "SB-00016",
+   "raw": "Liesel called about the vaccine fridge delivery. The clinic has someone waiting this afternoon, so Teodoro needs to keep the bike free and take the insulated box straight thereafter."
+  },
+  {
+   "id": "SB-00017",
+   "raw": "Solvig called to ask whether we can get her usual blood pressure tablets in by Friday."
+  },
+  {
+   "id": "SB-00018",
+   "raw": "Halima's daughter was there for the visit, so I went through the medication changes with both of them."
+  },
+  {
+   "id": "SB-00019",
+   "raw": "I've left the props for the courtroom scene in the green room, next to the old wooden desk."
+  },
+  {
+   "id": "SB-00020",
+   "raw": "I think the well pump came up in one of the interviews, but I need to check."
+  },
+  {
+   "id": "SB-00021",
+   "raw": "Norr has updated the ground floor plan, and the new stair position gives us a much cleaner entrance."
+  },
+  {
+   "id": "SB-00022",
+   "raw": "Dylan noticed that two cases from the kiln district order were missing from the pallet. We checked the packing list, and it looks like they were left at the warehouse rather than loaded onto the truck. He's going back over there now, so I told him to call me before they send anything out."
+  },
+  {
+   "id": "SB-00023",
+   "raw": "can you bring the roof survey to the lighting office before we load in?"
+  },
+  {
+   "id": "SB-00024",
+   "raw": "The replacement holds cost 1,200 euros and the supplier says they'll arrive around the 21st of may."
+  },
+  {
+   "id": "SB-00025",
+   "raw": "The van is nearly loaded with the cereal, nappies and cleaning supplies, but we still need to add the boxes by the side door."
+  },
+  {
+   "id": "SB-00026",
+   "raw": "I told Maya I'd bring the delivery van to the hall, but I mean the smaller car. The van's still with the mechanic."
+  },
+  {
+   "id": "SB-00027",
+   "raw": "Teodoro, leave those goggles by the desk. Sorry, the ones with the green strap, not the red ones."
+  },
+  {
+   "id": "SB-00028",
+   "raw": "I've left the reading list beside the samples, sorry, the material schedule beside the samples."
+  },
+  {
+   "id": "SB-00029",
+   "raw": "Three quick things about the lakeside site. First, the mooring fee is due on Friday. Second, Perla needs to send over the boat access form. Third, Arun should check that the landing gate is still locked."
+  },
+  {
+   "id": "SB-00030",
+   "raw": "could you tell me whether a rune's phone is ready yet?"
+  },
+  {
+   "id": "SB-00031",
+   "raw": "The delivery van arrived before the office opened, and the driver left the admissions brochures at reception."
+  },
+  {
+   "id": "SB-00032",
+   "raw": "Bositor called to say the roof survey team will arrive after lunch."
+  },
+  {
+   "id": "SB-00033",
+   "raw": "I still need the client name for the grant form."
+  },
+  {
+   "id": "SB-00034",
+   "raw": "Emery's is in the shallow end with the beginners group."
+  },
+  {
+   "id": "SB-00035",
+   "raw": "Bositor left his goggles and towel in the changing room, so could you put them in the lost property box?"
+  },
+  {
+   "id": "SB-00036",
+   "raw": "Milena wanted to rearrange the front window display before the weekend, but one of the shelves had cracked. Ravi found a spare board in the back, so they'll replace it after the glaze firing is unloaded."
+  },
+  {
+   "id": "SB-00037",
+   "raw": "can you ask Solvig if Tuesday's upright is ready for tuning?"
+  },
+  {
+   "id": "SB-00038",
+   "raw": "The vaccine fridge is actually I'm not going to get into that now. I'll email the manager."
+  },
+  {
+   "id": "SB-00039",
+   "raw": "I think Ravi's bringing the Spaniel in at three, but can you check whether he's paid the Tuesday invoice?"
+  },
+  {
+   "id": "MINIEMAIL26-development-eg12-email-v1-closing_boundary-0045",
+   "raw": "Hi Dimitri Oscar can pick up the repaired boots at the leather workshop this afternoon thanks for passing that on the regards from a leaf were written on the repair card."
+  },
+  {
+   "id": "MINIEMAIL26-development-eg12-email-v1-envelope_presence-0086",
+   "raw": "Dear Quintin, the Walking Tour team should meet outside the old station at 10, because Florian wants to check the new route before the first group arrives. Isabel has the printed maps, and I will bring the spare umbrellas. Kind regards, Isabel."
+  },
+  {
+   "id": "MINIEMAIL26-development-eg12-email-v1-long_message-0213",
+   "raw": "Hi Petra, I have three things to cover at tomorrow's meeting about the new game. First, we need to agree on the tutorial because the current version explains the controls too late and new players keep missing the first objective. Second, Jamal wants to review the sound effects after the latest play test, since the footsteps are louder than the dialogue in several scenes. 3rd Dimitri needs a final answer about the release window before he can book the outside testers. I think we should aim for late September, but I do not want to promise that until we know how much work the accessibility settings will take, there is also a small issue with the title screen that can probably wait until next week. If you have time, please bring the notes from Friday's testing session. I would rather make one clear plan than keep changing tasks halfway through the sprint"
+  },
+  {
+   "id": "LONG-01",
+   "raw": "okay so um for the quarterly planning doc I want to cover three things first the hiring plan we said we would bring on two backend engineers by march but honestly I think we can only afford one so let's say one backend engineer and one contractor for the data pipeline second the office move the lease on the second floor ends on april thirtieth and the new space on elm street is ready on may fifth so there is a gap of about five days where people will work from home and we need to tell everyone by the end of this month third the budget we are about twelve percent over on software subscriptions mostly because of the design tools so can someone go through the seats and cancel anything nobody has opened in sixty days thanks"
+  },
+  {
+   "id": "LONG-02",
+   "raw": "hey Priya thanks for sending the draft over last night I read through it this morning and overall it looks really good a few notes though on page two the paragraph about the pilot results says we tested with forty clinics but it was actually thirty four clinics forty was the original target so please fix that number also the chart on page three uses last year's colors and marketing asked us to switch to the new palette I can send you the hex codes if you need them um the section about pricing is fine but I'd move it after the case study so the reader sees the outcome before the cost and then finally the conclusion is a little long maybe cut it down to two or three sentences and end with the call to book a demo I think if we get this back to legal by thursday at three we can still make the friday send let me know if that timeline doesn't work for you thanks Marcus"
+  }
+ ],
+ "productCase": {
+  "id": "MID-500",
+  "raw": "ok so for the school pickup this week um Leo has football on Tuesday and Thursday so I need someone to grab him at four fifteen instead of three thirty and on Wednesday he has the dentist at two so I'll take him out early myself and then on Friday there's the bake sale so can you drop off the two trays of cupcakes before nine they're in the fridge on the bottom shelf and also remind Maya that her library books are due on Monday or she'll get another fine and that's everything I think thanks"
+ }
+}

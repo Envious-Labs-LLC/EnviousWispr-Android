@@ -220,6 +220,170 @@ std::string aborted(int prompt_tokens, int generated) {
     return "ERROR: S1 generation aborted";
 }
 
+// Copy-ahead (prompt-lookup) decoding (#510). Polish mostly copies the transcript, so after each token the next few
+// are guessed from where the recent output last appeared in prompt+output, decoded in ONE batch with logits for
+// each, and checked one by one by the same greedy sampler. The matching prefix is kept, the first mismatch is the
+// sampler's own token, and the rejected positions are removed from the cache. Greedy output is the one-token loop's
+// output, except where batched arithmetic flips a near-tie (the fidelity check in #510 measures that).
+constexpr int COPY_AHEAD_GUESSES = 4;
+// Stats of the last generation, counts only: [decode calls, guessed tokens, accepted guesses, recoveries].
+int g_copy_ahead_stats[4] = {0, 0, 0, 0};
+
+#ifdef EW_COPY_AHEAD_TEST_SWITCHES
+// Debug builds only (llama-android/build.gradle.kts): device tests drive every branch through these. A release
+// library is compiled without them, so nothing outside a test can change decoding.
+int test_switch(const char * name, int fallback) {
+    const char * value = getenv(name);
+    return value == nullptr ? fallback : atoi(value);
+}
+// EW_COPY_AHEAD_GUESSES=<n>: guesses per step (0 runs the one-token loop, the removal control).
+int copy_ahead_guesses() { return std::clamp(test_switch("EW_COPY_AHEAD_GUESSES", COPY_AHEAD_GUESSES), 0, 16); }
+// EW_COPY_AHEAD_FAULT=1 fails the first guess batch's decode; =2 makes the first cache removal report failure.
+int copy_ahead_fault() { return test_switch("EW_COPY_AHEAD_FAULT", 0); }
+// EW_COPY_AHEAD_ACCEPT_ALL=1 accepts every guess unchecked: the mutation the fidelity oracle must catch.
+bool copy_ahead_accept_all() { return test_switch("EW_COPY_AHEAD_ACCEPT_ALL", 0) == 1; }
+#else
+int copy_ahead_guesses() { return COPY_AHEAD_GUESSES; }
+int copy_ahead_fault() { return 0; }
+bool copy_ahead_accept_all() { return false; }
+#endif
+
+// Recurrent-state snapshots a context needs so a recurrent or hybrid model can drop `guesses` rejected positions.
+// Classified by the model's own properties, never a model list; llama.cpp clamps the request to zero for an
+// architecture that cannot roll back, and copy_ahead_limit then reads that zero.
+uint32_t copy_ahead_snapshots(int guesses) {
+    if (guesses <= 0) return 0;
+    if (!llama_model_is_recurrent(g_model) && !llama_model_is_hybrid(g_model)) return 0;
+    return static_cast<uint32_t>(guesses + 1);
+}
+
+// Guesses this loaded context can verify and drop: a transformer drops positions from its cache directly; a
+// recurrent or hybrid model only within the snapshots its context actually kept.
+int copy_ahead_limit() {
+    const int guesses = copy_ahead_guesses();
+    if (guesses <= 0) return 0;
+    if (llama_model_is_recurrent(g_model) || llama_model_is_hybrid(g_model)) {
+        const int snapshots = static_cast<int>(llama_n_rs_seq(g_context));
+        return snapshots > 1 ? std::min(guesses, snapshots - 1) : 0;
+    }
+    return guesses;
+}
+
+// Longest recent n-gram (3, then 2, then 1 token) found earlier in history; `guess` gets the tokens that followed it.
+void lookup_guess(const llama_tokens & history, int max_guess, llama_tokens & guess) {
+    guess.clear();
+    if (max_guess <= 0) return;
+    const int size = static_cast<int>(history.size());
+    for (int n = 3; n >= 1 && guess.empty(); --n) {
+        if (size <= n) continue;
+        for (int start = size - n - 1; start >= 0; --start) {
+            if (!std::equal(history.end() - n, history.end(), history.begin() + start)) continue;
+            for (int i = start + n; i < size - n && static_cast<int>(guess.size()) < max_guess; ++i) {
+                guess.push_back(history[i]);
+            }
+            if (!guess.empty()) break;
+        }
+    }
+}
+
+// Rebuilds the cache from the committed tokens alone after a speculative failure: a refused removal leaves rejected
+// recurrent state in place and a failed decode leaves the cache undefined, so neither can be patched in place.
+// Restores the seq-0 prefix when it still matches, else decodes from the start. The sampler is not touched, so
+// nothing is accepted twice; the last committed token's logits are valid afterwards. 0 rebuilt, 1 failed, 2 aborted.
+int rebuild_committed(const llama_tokens & committed) {
+    llama_memory_clear(llama_get_memory(g_context), true);
+    if (!g_cached_prefix_tokens.empty() && !g_cached_prefix_state.empty() &&
+        committed.size() > g_cached_prefix_tokens.size() &&
+        std::equal(g_cached_prefix_tokens.begin(), g_cached_prefix_tokens.end(), committed.begin())) {
+        const size_t restored = llama_state_seq_set_data(
+            g_context, g_cached_prefix_state.data(), g_cached_prefix_state.size(), 0);
+        if (restored == g_cached_prefix_state.size()) return decode_tokens(committed, g_cached_prefix_tokens.size());
+        llama_memory_clear(llama_get_memory(g_context), true);
+    }
+    return decode_tokens(committed);
+}
+
+// The generation loop with copy-ahead. `position` is the next cache position after the prompt. Returns END_EOS,
+// END_LENGTH, END_ABORTED, or END_NONE for a decode failure the one-token loop would also have reported. After a
+// recoverable speculative failure it rebuilds the cache and continues with guessing off, under the same token
+// allowance and the caller's same deadline.
+int generate_copy_ahead(common_sampler * sampler, const llama_vocab * vocab, const llama_tokens & prompt_tokens,
+                        int max_tokens, int limit, int position, std::string & output, int & generated) {
+    llama_tokens committed = prompt_tokens;  // prompt plus every emitted token, in cache order
+    llama_tokens guess;
+    llama_memory_t memory = llama_get_memory(g_context);
+    int fault = copy_ahead_fault();
+    const bool accept_all = copy_ahead_accept_all();
+    // `next` is sampled and accepted by the sampler but not yet emitted.
+    llama_token next = common_sampler_sample(sampler, g_context, -1);
+    common_sampler_accept(sampler, next, true);
+    while (true) {
+        if (g_abort.load()) return END_ABORTED;
+        if (llama_vocab_is_eog(vocab, next)) return END_EOS;
+        output += common_token_to_piece(g_context, next);
+        committed.push_back(next);
+        if (++generated >= max_tokens) return END_LENGTH;
+
+        const int room = std::min({limit, max_tokens - generated, g_context_size - position - 2, BATCH_SIZE - 1});
+        lookup_guess(committed, room, guess);
+
+        const int base = position;
+        common_batch_clear(g_batch);
+        common_batch_add(g_batch, next, base, {0}, true);
+        for (size_t i = 0; i < guess.size(); ++i) {
+            common_batch_add(g_batch, guess[i], base + 1 + static_cast<int>(i), {0}, true);
+        }
+        int result = llama_decode(g_context, g_batch);
+        if (fault == 1 && !guess.empty()) { result = -1; fault = 0; }
+        if (g_abort.load()) return END_ABORTED;
+        if (result != 0) {
+            if (guess.empty()) return END_NONE;  // the one-token step failed: exactly today's error
+            limit = 0;
+            g_copy_ahead_stats[3] += 1;
+            const int rebuilt = rebuild_committed(committed);
+            if (rebuilt == 2) return END_ABORTED;
+            if (rebuilt != 0) return END_NONE;
+            position = static_cast<int>(committed.size());
+            next = common_sampler_sample(sampler, g_context, -1);
+            common_sampler_accept(sampler, next, true);
+            continue;
+        }
+        g_copy_ahead_stats[0] += 1;
+        g_copy_ahead_stats[1] += static_cast<int>(guess.size());
+
+        size_t accepted = 0;
+        while (true) {
+            llama_token token = common_sampler_sample(sampler, g_context, static_cast<int>(accepted));
+            if (accept_all && accepted < guess.size()) token = guess[accepted];
+            common_sampler_accept(sampler, token, true);
+            if (accepted < guess.size() && token == guess[accepted] && !llama_vocab_is_eog(vocab, token)) {
+                output += common_token_to_piece(g_context, token);
+                committed.push_back(token);
+                ++accepted;
+                g_copy_ahead_stats[2] += 1;
+                if (++generated >= max_tokens) return END_LENGTH;
+                continue;
+            }
+            next = token;
+            break;
+        }
+        position = base + 1 + static_cast<int>(accepted);
+        if (accepted == guess.size()) continue;
+        if (llama_vocab_is_eog(vocab, next)) return END_EOS;  // nothing more is decoded, so no removal is needed
+        bool removed = llama_memory_seq_rm(memory, 0, position, -1);
+        if (fault == 2) { removed = false; fault = 0; }
+        if (!removed) {
+            // `next` stays pending (accepted, not emitted): the rebuilt cache ends at the last committed token.
+            limit = 0;
+            g_copy_ahead_stats[3] += 1;
+            const int rebuilt = rebuild_committed(committed);
+            if (rebuilt == 2) return END_ABORTED;
+            if (rebuilt != 0) return END_NONE;
+            position = static_cast<int>(committed.size());
+        }
+    }
+}
+
 std::string generate_text(const std::string & system_prompt,
                           const std::string & user_prompt,
                           int requested_tokens) {
@@ -305,6 +469,23 @@ std::string generate_text(const std::string & system_prompt,
         int end = END_LENGTH;
         int generated = 0;
 
+        std::fill(std::begin(g_copy_ahead_stats), std::end(g_copy_ahead_stats), 0);
+        if (const int limit = copy_ahead_limit(); limit > 0) {
+            const int copy_end = generate_copy_ahead(
+                sampler.sampler, vocab, prompt_tokens, max_tokens, limit, position, output, generated);
+            std::ostringstream stats;
+            stats << "copy-ahead decodes " << g_copy_ahead_stats[0] << " | guessed " << g_copy_ahead_stats[1]
+                  << " | accepted " << g_copy_ahead_stats[2] << " | recoveries " << g_copy_ahead_stats[3];
+            log_info(stats.str());
+            if (copy_end == END_ABORTED) return aborted(prompt_count, generated);
+            if (copy_end == END_NONE) return "ERROR: S1 generation decode failed";
+            g_last_end[0] = copy_end;
+            g_last_end[1] = copy_end == END_EOS ? generated : max_tokens;
+            g_last_end[2] = prompt_count;
+            g_last_end[3] = used_prefix_cache ? 1 : 0;
+            return output;
+        }
+
         for (; generated < max_tokens; ++generated) {
             if (g_abort.load()) {
                 return aborted(prompt_count, generated);
@@ -384,6 +565,10 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     context_params.n_threads_batch = threads;
     context_params.abort_callback = abort_requested;
     context_params.abort_callback_data = nullptr;
+    // Zero for a transformer; a recurrent or hybrid model keeps snapshots so copy-ahead can drop rejected guesses.
+    if (const uint32_t snapshots = copy_ahead_snapshots(copy_ahead_guesses()); snapshots > 0) {
+        context_params.n_rs_seq = snapshots;
+    }
     g_context = llama_init_from_model(g_model, context_params);
     if (g_context == nullptr) {
         free_model();
@@ -400,7 +585,8 @@ Java_com_envi_wispr_llama_S1Native_loadModel(
     char description[256];
     llama_model_desc(g_model, description, sizeof(description));
     std::ostringstream status;
-    status << description << " | context " << g_context_size << " | threads " << threads;
+    status << description << " | context " << g_context_size << " | threads " << threads
+           << " | copy-ahead " << copy_ahead_limit();
     log_info(status.str());
     return to_jstring(env, status.str());
 }
@@ -437,6 +623,14 @@ Java_com_envi_wispr_llama_S1Native_lastEnd(JNIEnv * env, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
     jintArray result = env->NewIntArray(4);
     if (result != nullptr) env->SetIntArrayRegion(result, 0, 4, g_last_end);
+    return result;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_envi_wispr_llama_S1Native_lastCopyAheadStats(JNIEnv * env, jobject) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    jintArray result = env->NewIntArray(4);
+    if (result != nullptr) env->SetIntArrayRegion(result, 0, 4, g_copy_ahead_stats);
     return result;
 }
 

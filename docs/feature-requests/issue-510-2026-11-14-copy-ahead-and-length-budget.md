@@ -188,8 +188,13 @@ The decode loop lives in `s1_jni.cpp` because it is the only owner of the portab
 budgets stay in `LocalPolishBudget` and `PolishWatchdogBudget`, which already own them.
 
 ## 4. Contract deltas
-`S1Native.loadModel` gains a recurrent-snapshot count (0 for S1). `LocalPolishBudget.forModel` and
-`PolishWatchdogBudget.forPolicy` keep their signatures; EG-1's values change to S1's. `lastEnd()` unchanged; a debug-only `lastCopyAheadStats()` reports decode/drafted/accepted counts.
+`S1Native.loadModel` keeps its signature: the native loader requests `COPY_AHEAD_GUESSES + 1` recurrent-state
+snapshots when the model reports itself recurrent or hybrid, and none otherwise (build revision: the plan first
+passed a count from Kotlin; reading the model's own properties keeps the classification closed and leaves the four
+`S1Native` consumers untouched). `LocalPolishBudget.forModel` and
+`PolishWatchdogBudget.forPolicy` keep their signatures; EG-1's values change to S1's. `lastEnd()` unchanged; `lastCopyAheadStats()` reports decode, guessed, accepted and recovery counts. The test
+switches (guess count, fault injection, accept-all mutation) are compiled only into the debug native library
+(`EW_COPY_AHEAD_TEST_SWITCHES`, `llama-android/build.gradle.kts`).
 
 ## 5. State and lifecycle
 Per generation only: history tokens and the guess buffer live on the native stack; nothing persists between
@@ -222,8 +227,7 @@ contract.
 | process death | unchanged (`SERVICE_DIED`) |
 
 ## 8. Signals
-Add copy-ahead counts (decodes, drafted, accepted) to the local log line beside `GenerationEnd.logLine` (counts
-only). Telemetry: no new field in this change; generation time already reports the effect.
+The native runtime logs one counts-only line per generation (decodes, guessed, accepted, recoveries). Telemetry: no new field in this change; generation time already reports the effect.
 
 ## 9. Fallback source of truth
 Unchanged: the deterministic cleanup text, the last successful text.

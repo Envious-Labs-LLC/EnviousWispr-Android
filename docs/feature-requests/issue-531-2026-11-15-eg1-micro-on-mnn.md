@@ -16,6 +16,11 @@ Merge order: #529, #530, this PR (§12).
 corrected (§2.5.4); consumer dispositions (§5.1), async-edge matrix (§5.2), GPU qualification details (§3.5),
 storage/packaging and memory measurements (§11) added.
 
+**Revision 2 (after grounded round 1):** generation recipe now prefills explicitly; HTTP support turned off at build
+(the earlier omni exclusion claim was wrong); storage checks include the cache; dispositions corrected
+(`PolishSettingsViewModel`, `PolishSettingsViewModelTest`, `Eg1LocalPolishUiDeviceTest`, `ModelDeliveryWorker`,
+`PolishPolicyParcelTest` to C); falsifiable telemetry, deadline and privacy tests; citations and claims narrowed.
+
 ## Preface: Lane + Hardware UAT declaration
 
 **Lane:** Code (`app/**`, a new `mnn-android/**` module, `third_party/MNN` submodule, `settings.gradle.kts`,
@@ -133,7 +138,7 @@ Commands: `git diff --stat 9276cae4..HEAD`; `grep -rnE "LocalPolishModel\.(EG1_M
 `grep -rniE "16 ?KB|max-page-size|useLegacyPackaging"`; plus every file cited, read on branch `feat/eg1-mnn-531`
 at `f30652ba`. MNN facts are from the pinned checkout `alibaba/MNN@b6a32165e2855106b76852fba80793d58a829663`.
 
-Names from the pinned MNN checkout, the study artifact or git (not in this tree): `MNN_USE_LOGCAT` (external), `b6a32165e2855106b76852fba80793d58a829663` (external), `f30652ba` (external), `generate_init` (external), `kvcache_mmap` (external), `modelUUID` (external), `mtok` (external), `set_config` (external), `stoped` (external), `tmp_path` (external), `use_cached_mmap` (external), `use_mmap` (external), `LLM_LOG_TO_STRING` (external), `MNN_BUILD_LLM_OMNI` (external), `MNN_ERROR` (external), `MNN_PRINT` (external), `e768a8ea` (external), `httplib` (external).
+Names from the pinned MNN checkout, the study artifact or git (not in this tree): `MNN_USE_LOGCAT` (external), `b6a32165e2855106b76852fba80793d58a829663` (external), `f30652ba` (external), `generate_init` (external), `kvcache_mmap` (external), `modelUUID` (external), `mtok` (external), `set_config` (external), `stoped` (external), `tmp_path` (external), `use_cached_mmap` (external), `use_mmap` (external), `LLM_LOG_TO_STRING` (external), `MNN_BUILD_LLM_OMNI` (external), `MNN_ERROR` (external), `MNN_PRINT` (external), `e768a8ea` (external), `httplib` (external), `LLM_SUPPORT_HTTP_RESOURCE` (external), `MNN_LLM_BUILD_DEMO` (external).
 
 ### 2.5.1 Producer to owner to consumer
 
@@ -149,7 +154,8 @@ Names from the pinned MNN checkout, the study artifact or git (not in this tree)
 5. Model path: `S1ModelSelector.resolve` passes `descriptor.files.first()` (`polish/S1ModelSelection.kt:80`) to
    `S1Runtime.load`.
 6. Prompts: `EGOneNamedLanguagePromptBuilder` (`:16-87`) chosen at `PolishService.kt:804-818`; the chat template is
-   applied natively (`llama-android/src/main/cpp/s1_jni.cpp:232-243`), greedy (`:294-298`).
+   applied natively for llama.cpp (`llama-android/src/main/cpp/s1_jni.cpp:387-398`), greedy (`:448-453`), on
+   the restacked branch.
 7. Output: `PolishService.kt:830-856` (trim, `ERROR:` protocol, `</think>` strip, blank rejected, refusal check).
 8. Outcome and telemetry: `LocalPolishDiagnostics.properties()` (`polish/LocalPolishDiagnostics.kt:19-26`) with
    `polish_runtime` closed over `S1RuntimeKind` identities (`telemetry/PostHogSchema.kt:118`,
@@ -220,7 +226,7 @@ Names from the pinned MNN checkout, the study artifact or git (not in this tree)
 | P7 | No RAM gate exists | `device/DeviceTier.kt:22-43` (cores and i8mm only); `ModelDeliveryWorker.kt:61` | Read |
 | P8 | Thinking stays off without a `context.json` file | Study used `context.json` `{"enable_thinking": false}` next to the model | Not verified: chunk 1 sets it through `set_config` and checks no `<think>` appears; otherwise ship the file in the manifest |
 | P9 | MNN source build fits the existing CI build | Not verified: chunk 1 measures the clean `assembleDebug` time with MNN; CI `build-check` runs unit tests only |
-| P10 | No MNN path we build can send or log dictated text | Grep of the pinned tree: the only HTTP client (`httplib.h`) is included by `transformers/llm/engine/app/*` (not built) and `src/omni.cpp` (built only with `MNN_BUILD_LLM_OMNI`, kept OFF). One print can carry user text: `tokenizer/tokenizer.cpp:575` prints an unencodable fragment through `MNN_ERROR` (stdout, discarded by default). `LLM_LOG_TO_STRING` stays OFF (`transformers/llm/engine/CMakeLists.txt:84-87`). | Read; chunk 1 adds the synthetic-canary logcat test and an `llvm-nm` check that the shipped `libMNN.so` has no `httplib`/socket symbols |
+| P10 | No MNN path we build can send or log dictated text | The LLM engine globs every source file (`transformers/llm/engine/CMakeLists.txt:44`), so `src/omni.cpp` is built, and its HTTP client (`omni.cpp:2208-2218`) is compiled in because `LLM_SUPPORT_HTTP_RESOURCE` defaults ON (`CMakeLists.txt:4`). Our build sets `LLM_SUPPORT_HTTP_RESOURCE=OFF` explicitly; `transformers/llm/engine/app/*` (the other `httplib.h` users) is not built. This removes network capability; it was never evidence of transmission. One print can carry user text: `tokenizer/tokenizer.cpp:575` prints an unencodable fragment through `MNN_ERROR` (stdout, discarded by default). `LLM_LOG_TO_STRING` stays OFF (`transformers/llm/engine/CMakeLists.txt:84-87`). | Read; chunk 1 adds the synthetic-canary logcat test and an `llvm-readelf --dyn-syms` / `llvm-nm -D` audit of the packaged `libMNN.so` imports that FAILS if it cannot read them and fails on any socket/connect/getaddrinfo import |
 
 ## 3. Design
 
@@ -242,7 +248,11 @@ JNI surface (one `Llm` per process, guarded like `s1_jni.cpp`):
   "greedy", "reuse_kv": false, "use_mmap": true, "tmp_path": cacheDir, "jinja": {"context": {"enable_thinking":
   false}}}` and loads. Returns `""` or an `ERROR:` string, matching the existing protocol.
 - `generate(system, user, maxTokens, timeoutMs): String` resets, applies the chat template through
-  `apply_chat_template(ChatMessages)`, tokenizes, `generate_init`, then steps `generate(1)` until stop, cap or abort.
+  `apply_chat_template(ChatMessages)`, tokenizes, `generate_init`, then PREFILLS with `generate(input_ids, 0)`
+  (`llm.cpp:1131-1176`; `generate_init` only initialises state, `:983-1013`, and `generate(int)` decodes from
+  existing outputs, `:1117-1128`), checks status and the abort flag, then steps `generate(1)` until stop, cap or
+  abort. Chunk 1 compares this loop's complete output with `response()` on all 45 fidelity cases (must be identical)
+  and measures any speed cost.
 - `abort()`, `close()`, and `lastGeneration` counters (prompt tokens, generated tokens, prefill and decode ms).
 
 ### 3.2 Model files
@@ -267,8 +277,10 @@ the debug graph dump `llm.mnn.json` are not shipped. Sizes and SHA-256 come from
 
 Unchanged Kotlin prompts (`EGOneNamedLanguagePromptBuilder`). The chat template comes from the export's
 `llm_config.json` (Qwen 3.5 Jinja). Output handling at `PolishService.kt:830-856` is unchanged; `EgOneMnnRuntime`
-returns text or `null` exactly as `S1PortableRuntime` does. Context: MNN has no fixed 2048 context; the builder's
-cap (1,024 tokens maximum, `EGOneNamedLanguagePromptBuilder.kt:61-87`) stays the limit.
+returns text or `null` exactly as `S1PortableRuntime` does. The builder's 1,024 is an OUTPUT ceiling
+(`EGOneNamedLanguagePromptBuilder.kt:82-86`); it still subtracts from `S1Config.CONTEXT_SIZE`, which stays the input
+plus output budget for EG-1 on MNN (MNN's own default is larger; the JNI layer refuses a prompt that would exceed it,
+returning `ERROR:` so the deterministic fallback runs).
 
 ### 3.4 Weight cache (memory)
 
@@ -341,7 +353,7 @@ heavy processes possible.
 
 | Population | Enumeration |
 |---|---|
-| Exhaustive `when` over `S1RuntimeKind` | `S1Runtime.kt:34-37`, `S1RuntimeKind.kt:32-35` and `decide`/`reason` (`:41-61`). All gain the new members; compiler-enforced. |
+| Exhaustive `when` over `S1RuntimeKind` | `S1Runtime.kt:34-37`, `S1RuntimeKind.kt:32-35` and `decide`/`reason` (`:41-60`). The factory `when` is exhaustive (compiler-enforced); `decide` uses predicate branches, not an enumeration, and is edited by hand (it never returns an MNN kind; MNN kinds come only from `runtimeKindFor`). |
 | Exhaustive `when` over `LocalPolishModel` | `PolishService.kt:645, 760, 804`; `polish/EngineDeadline.kt:19`; `PolishWatchdogBudget.kt:20`; `ProcessingEnvironment.kt:20-23`; `ProviderConfigurationRepository.kt:551, 559`; `PolishScreen.kt:136, 193`. None changes branch meaning; `PolishService.kt:645` (warm prefix) becomes a no-op for EG-1 through the runtime. |
 | Places assuming llama.cpp for EG-1 | `PolishService.kt:102-106` (hard-coded reason string); `ModelManifest.kt:75` (`engineId`); `ProcessingEnvironment.kt:39` (context identity hashes llama constants); `Eg1MicroHardwareDeviceTest.kt:147, 309-336` (asserts `PORTABLE_CPU`, calls `S1Native`). Each is changed (§10). |
 | Files written next to model files | Enumerated: MNN writes only to `tmp_path` (`llm.cpp:265-299`); with `tmp_path` outside the model folder, none. |
@@ -360,12 +372,17 @@ Dispositions: **C** changed, **U** unchanged with reason, **X** UNCHECKED (none 
 | `S1RuntimeKindTest`, `PolishPolicyTest` (asserts `runtimeKindFor(EG1_MICRO) == PORTABLE_CPU` without a hardware probe) | C | expect `MNN_CPU`; keep the no-probe assertion |
 | `ModelManifestTest`, `S1ModelSelectorTest` (EG-1 GGUF fixture names) | C | MNN file set, `engineId`, `config.json` first |
 | `Eg1MicroHardwareDeviceTest`, `CopyAheadDeviceTest` (EG-1 arm drives `S1Native` with the GGUF) | C | EG-1 arms drive the MNN runtime; memory split added (§11) |
-| `LocalPolishDiagnosticsTest` | C | add a parcel round-trip row for each new kind |
-| `FirebaseModelFixture`, `Eg1LocalPolishUiDeviceTest` | U | stage and download whatever `ModelManifest.eg1Micro` lists; fixture bytes regenerated from the new descriptor |
+| `LocalPolishDiagnosticsTest` | U | timing tests only, no parcel operations; parcel coverage lives in `PolishPolicyParcelTest` |
+| `PolishPolicyParcelTest` | C | add both MNN kinds to its real parcel round trips (`:43-50`) |
+| `PolishSettingsViewModelTest` | C | hard-codes EG-1's portable runtime (`:151-153`, `:178`); expect `MNN_CPU`, keep the model-switch assertions with literal expected values |
+| `Eg1LocalPolishUiDeviceTest` | C | requires `"541.9 MB"` (`:126`); new literal for the MNN download and the "about 1.1 GB on this phone" line |
+| `FirebaseModelFixture` | U | stages whatever `ModelManifest.eg1Micro` lists (`:23`); fixture bytes regenerated from the new descriptor |
+| `ModelDeliveryWorker` | C | storage checks use manifest bytes plus 128 MiB (`:104-105`, `:119-126`); add the cache requirement (§3.4) |
 | `EngineDeadline`, `PolishWatchdogBudget` and their tests | U | budgets are per model, not per engine; 10/12/15 s from #530 |
 | `LocalPolishDiagnostics`, `PostHogSchema`, `SentrySchema`, `MajorFaults` | U | read `S1RuntimeKind.entries`/identity generically |
-| `LocalPolishModel`, `PolishPolicy`, `ProviderConfigurationRepository`, `PolishSettingsViewModel`, `ProcessingCheckClient`, `S1ModelSelection` and their tests, `PolishPolicyParcelTest`, `ProviderConfigurationRepositoryTest` | U | carry the model choice and descriptor, not the engine; `S1ModelSelection` keeps `files.first()` (now `config.json`) |
-| `AppLaunchFacts`, `TakeFactsTest`, `AppActions`, `AppShell`, `SettingsActivity`, `ReadinessViewModel`, `ModelWorkViewModel` (+ tests, `ModelWorkOwnershipTest`), `PolishScreen`, `PolishLocalControls`, `PolishStatusChipTest`, `PolishScreenLayoutTest`, `ModelDeliveryNotification`, `ModelDeliveryWorker` | U except size lines | model id and state only; `PolishLocalControls`/model card size lines change for the cache (§3.4) |
+| `PolishSettingsViewModel` | C (chunk 5 only) | computes the current runtime's context before qualification and discards other contexts' results (`:123-139`, `:187-195`); chunk 5 validates against the explicitly requested qualification runtime, keeps CPU and OpenCL evidence separately, and the take's policy freezes the chosen route. Chunks 1 to 4: unchanged (EG-1 stays CPU-only) |
+| `LocalPolishModel`, `PolishPolicy`, `ProviderConfigurationRepository`, `ProcessingCheckClient`, `S1ModelSelection` and their tests, `ProviderConfigurationRepositoryTest` | U | carry the model choice and descriptor, not the engine; `S1ModelSelection` keeps `files.first()` (now `config.json`) |
+| `AppLaunchFacts`, `TakeFactsTest`, `AppActions`, `AppShell`, `SettingsActivity`, `ReadinessViewModel`, `ModelWorkViewModel` (+ tests, `ModelWorkOwnershipTest`), `PolishScreen`, `PolishLocalControls`, `PolishStatusChipTest`, `PolishScreenLayoutTest`, `ModelDeliveryNotification` | U except size lines | model id and state only; `PolishLocalControls`/model card size lines change for the cache (§3.4) |
 | `ProcessingObservationTest`, `S1LoadedConfigurationTest`, `PolishFailsOpenTest`, `TakePolishControllerTest`, `SustainedDictationDeviceTest` | U | engine-agnostic outcomes; S1-only device test |
 
 ### 5.2 Async edges (load, cache build, generate, abort, close)
@@ -376,7 +393,7 @@ Dispositions: **C** changed, **U** unchanged with reason, **X** UNCHECKED (none 
 | Deleted | Cache folder deleted while not loaded: rebuilt next load. Model folder removed: `ModelSwap` kills `:polish` first | n/a (no files read during generation once loaded, except mmapped cache pages; deleting a mapped file keeps the inode alive) | n/a |
 | Mutated | Cache from another revision or MNN build: folder name mismatch, deleted, rebuilt (P4) | n/a | n/a |
 | Concurrent | One `Llm` per process, guarded by the same single-worker executor `PolishService` uses; qualification and requests serialise on it | Next-request isolation: `reset()` before every generate; a chunk 2 test runs two different prompts back to back and compares with fresh-process output | `abort()` from the deadline thread races `generate(1)`: atomic flag only, no native free; `close()` runs on the worker after generate returns |
-| Absent | Full disk or unwritable folder: MNN continues without the disk cache (`llm.cpp:268-277`), more private memory; chunk 1 measures this path and records it | Model file missing: existing `LOCAL_NOT_READY` path | n/a |
+| Absent | Not enough storage: the download check (`ModelDeliveryWorker`) requires model bytes plus the cache plus the existing 128 MiB margin, and `EgOneMnnRuntime` re-checks free space before a cache build; if short, it returns `ERROR:` so the deterministic text is delivered (it never falls back to loading without `use_mmap`, which would break the memory goal) and never fills the disk the recording and History need. An unwritable folder only logs (`llm.cpp:269-285`) and still configures mmap, so the runtime creates and probes the folder itself first. Real full-disk behaviour: NOT VERIFIED until chunk 1 exercises it | Model file missing: existing `LOCAL_NOT_READY` path | n/a |
 | Stale | Old-revision cache folders swept on load (file by file) | A completion after the deadline: existing generation ids drop it | n/a |
 
 ## 6. Downstream consumer matrix
@@ -426,7 +443,8 @@ this phone"), checked against `content-brand.md`.
 - `settings.gradle.kts`: include `:mnn-android`.
 - `mnn-android/build.gradle.kts`, `mnn-android/src/main/cpp/CMakeLists.txt` (MNN options: `MNN_BUILD_LLM=ON`,
   `MNN_LOW_MEMORY=ON`, `MNN_ARM82=ON`, `MNN_OPENCL=ON`, `MNN_SUPPORT_TRANSFORMER_FUSE=ON`, `MNN_USE_LOGCAT=OFF`,
-  `MNN_SEP_BUILD=OFF`, tests/tools/demos/converter off, `-Wl,-z,max-page-size=16384`), `mnn_jni.cpp`,
+  `MNN_SEP_BUILD=OFF`, `LLM_SUPPORT_HTTP_RESOURCE=OFF`, `MNN_LLM_BUILD_DEMO=OFF`, tests/tools/demos/converter off,
+  `-Wl,-z,max-page-size=16384`), `mnn_jni.cpp`,
   `MnnNative.kt`.
 - `app/build.gradle.kts`: depend on `:mnn-android`.
 - `polish/S1RuntimeKind.kt`: two members, `runtimeKindFor` EG-1 branch, `reason` text.
@@ -435,6 +453,8 @@ this phone"), checked against `content-brand.md`.
 - `polish/ProcessingEnvironment.kt`: context identity for MNN kinds hashes MNN settings, not llama constants.
 - `models/ModelManifest.kt`: `eg1Micro` revision, files, `engineId`, `previous`.
 - `models/ModelStorage.kt` (or `ModelDelivery.kt` remove path): cache folder owner and deletion.
+- `models/ModelDeliveryWorker.kt`: storage requirement includes the cache bytes for EG-1 Micro.
+- `polish/PolishSettingsViewModel.kt` (chunk 5 only): qualification validated against the requested runtime.
 - UI size lines (`ModelCards.kt`, `PolishLocalControls.kt`, `StoragePage`).
 - `app/src/main/assets/THIRD_PARTY_NOTICES.txt`, `scripts/generate-notices.py` if it enumerates libraries.
 - Tests listed in §11. `Eg1MicroHardwareDeviceTest`: assert MNN kinds, drop the `S1Native` prefix-parity block for
@@ -448,7 +468,10 @@ this phone"), checked against `content-brand.md`.
    in-app memory report.
 2. **Reverts.** Routing EG-1 back to `PORTABLE_CPU` turns the device test's runtime assertion red; deleting the
    cache-removal call turns the removal unit test red; removing `use_mmap` turns the private-memory assertion red;
-   removing the abort check turns the deadline device test red. Each revert is performed and recorded.
+   removing the abort check turns the deadline device test red (it asserts native generation returned through the
+   cooperative abort before the hard deadline, read from the runtime's own end code, because a timeout can also
+   "succeed" through the hard-kill path, `PolishService.kt:315, 373-387`). Each revert is performed and recorded;
+   until then every revert claim here is NOT VERIFIED.
 3. **Not tested:** MNN's own kernels (vendor), OpenCL on Mali (not offered), NPU.
 
 ### 11.1 Hardware UAT
@@ -471,13 +494,13 @@ this phone"), checked against `content-brand.md`.
 | Cache build kill test (kill `:polish` mid-first-load, reload, compare canary) | product outcome | P3 | skip sync handling |
 | `ModelManifestTest` upgrade and file set | drift guard | §3.2 | revert manifest |
 | Cache removal unit test | drift guard | §3.4 | delete removal call |
-| `PostHogSchemaTest`, `SentrySchemaTest` | drift guard | §6 | remove members |
+| `PostHogSchemaTest`, `SentrySchemaTest`: new literal assertions that `polish_runtime` accepts `mnn-<sha>-cpu` and `mnn-<sha>-opencl` (neither test names `polish_runtime` today) | drift guard | §6 | remove members |
 | Telemetry recount excluding test installs | measurement | §1 | n/a |
-| Memory attribution: a sampler in the device test reads the `:polish` process's `/proc/<pid>/status` (VmHWM, RssAnon, RssFile) every 50 ms across load and generation; reports peak resident, peak private (max sampled RssAnon) and file-backed, separately for first load (cache build) and reused cache, for llama.cpp and MNN in the same matrix | harness contract | goal 5 | remove `use_mmap`: peak private rises above the limit |
+| Memory attribution: a sampler in the device test reads the `:polish` process's `/proc/<pid>/status` (VmHWM, RssAnon, RssFile) every 50 ms across load and generation; reports peak resident (kernel VmHWM, exact), sampled peak private (max sampled RssAnon; a sampled maximum, not an exact peak, since the kernel keeps no private high-water mark) and file-backed, separately for first load (cache build) and reused cache, for llama.cpp and MNN in the same matrix | harness contract | goal 5 | remove `use_mmap`: peak private rises above the limit |
 | S1-mini unchanged: the existing S1 device and unit suites pass unmodified, and `git diff` shows no change under S1-only files | drift guard | goal 6 | n/a |
 | Storage: download peak disk use, cache allocated bytes (`du`), APK and installed size before and after, clean CI build time | measurement | §3.4, P9 | n/a |
 | Packaging: `llvm-readelf -d` and library names in the APK show no clash with GenieX or `ew-*` libraries; `useLegacyPackaging` still extracts; load, cache build and generate run on a 16 KB page-size emulator image (Android 15+) | product outcome | P5 | n/a |
-| Privacy canary: a synthetic prompt string through load, generate and a forced tokenizer error, logcat captured, the string never appears; `llvm-nm` shows no `httplib`/socket symbols in the shipped `libMNN.so` | product outcome | P10 | build with `MNN_USE_LOGCAT=ON` turns it red |
+| Privacy canary: a synthetic prompt with a unique marker through load and generate, plus a forced tokenizer error whose exact unencodable fragment is known; the test asserts the error path actually ran (runtime end code), then searches captured logcat for the full marker AND the exact fragment, neither may appear; the import audit of the packaged `libMNN.so` fails if unreadable or if any socket/connect/getaddrinfo import exists | product outcome | P10 | a control build with `MNN_USE_LOGCAT=ON` must turn it red (performed once, recorded) |
 | GPU qualification (chunk 5): first-time qualification, CPU/OpenCL identity separation, actual GPU execution, output comparison, measured speed advantage | product outcome | §3.5 | force CPU fallback: qualification must fail |
 
 ## 12. Blast radius and rollback

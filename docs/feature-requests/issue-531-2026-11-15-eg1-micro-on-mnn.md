@@ -1,6 +1,6 @@
 # Issue #531: Run EG-1 Micro through MNN: 2026-11-15
 
-GitHub issue: `#531` (Part of `#510`). Tier: REFACTOR (adds a Gradle module; also an engine plus model delivery). Status: DRAFT.
+GitHub issue: `#531` (Part of `#510`). Tier: REFACTOR (adds a Gradle module; also an engine plus model delivery). Status: APPROVED (founder Gate 2, 2026-11-15).
 Gate 1 approved by the founder 2026-11-15 ("Ok continue" to the intent: EG-1 Micro on MNN, processor everywhere,
 graphics chip only where it qualifies, S1-mini untouched, built on the EG-1 Micro branch, memory as a gate).
 

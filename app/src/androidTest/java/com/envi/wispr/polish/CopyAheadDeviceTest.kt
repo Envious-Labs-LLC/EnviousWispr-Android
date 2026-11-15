@@ -166,6 +166,11 @@ class CopyAheadDeviceTest {
         assertTrue("oracle missed a planted added word", WordDiff.of(first.second, base, "$base zeppelin").real.isNotEmpty())
         assertTrue("oracle missed a repeated name", WordDiff.of("call Maya", "Call Maya.", "Call Maya Maya.").real.isNotEmpty())
         assertTrue("oracle missed swapped names", WordDiff.of("Maya called Leo", "Maya called Leo.", "Leo called Maya.").real.isNotEmpty())
+        assertTrue(
+            "oracle missed swapped names with a cosmetic deletion",
+            WordDiff.of("Maya called Leo", "Maya called Leo you.", "Leo called Maya.").real.isNotEmpty(),
+        )
+        assertTrue("oracle missed a substituted name", WordDiff.of("call Maya", "Call Maya.", "Call Mia.").real.isNotEmpty())
         assertTrue("oracle flagged a digit for a spoken number", WordDiff.of("five apples", "Five apples.", "5 apples.").real.isEmpty())
         assertTrue("oracle flagged dropping an unspoken word", WordDiff.of("can grab Leo", "Can you grab Leo?", "Can grab Leo?").real.isEmpty())
         writeReport(
@@ -383,8 +388,25 @@ internal data class WordDiff(val real: List<String>, val cosmetic: List<String>)
                     else -> cosmetic += (if (now < was) "-$word" else "+$word")
                 }
             }
-            if (real.isEmpty() && had == has) real += "reordered"
+            // Order: every word both sides share must keep its order, whatever cosmetic words came or went. The
+            // longest common subsequence covers all shared copies only when nothing shared moved.
+            if (real.isEmpty() && longestCommonSubsequence(before, after) < had.entries.sumOf { (w, c) -> minOf(c, has[w] ?: 0) }) {
+                real += "reordered"
+            }
             return WordDiff(real, cosmetic)
+        }
+
+        private fun longestCommonSubsequence(a: List<String>, b: List<String>): Int {
+            val row = IntArray(b.size + 1)
+            for (word in a) {
+                var diagonal = 0
+                for (j in b.indices) {
+                    val above = row[j + 1]
+                    row[j + 1] = if (word == b[j]) diagonal + 1 else maxOf(row[j], above)
+                    diagonal = above
+                }
+            }
+            return row[b.size]
         }
     }
 }

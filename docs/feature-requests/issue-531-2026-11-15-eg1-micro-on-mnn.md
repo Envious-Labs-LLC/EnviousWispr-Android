@@ -355,7 +355,9 @@ heavy processes possible.
   Meaning: EG-1 Micro installed means MNN files present and verified.
 - `S1Runtime`: unchanged interface; new implementation.
 - `ModelStorage` (or a sibling owner): a per-model cache folder outside the model root, removed with the model.
-- No AIDL change. No persisted preference change (the model choice key from #528 is reused).
+- No AIDL change. User choices and the model-selection key (#528) remain unchanged. Chunk 5 changes persisted EG-1
+  qualification evidence to preserve CPU and OpenCL records separately; S1-mini's saved settings and qualification
+  storage remain unchanged.
 
 ## 5. End-to-end state and lifecycle audit
 
@@ -464,6 +466,8 @@ this phone"), checked against `content-brand.md`.
 - `models/ModelStorage.kt` (or `ModelDelivery.kt` remove path): cache folder owner and deletion.
 - `models/ModelDeliveryWorker.kt`: storage requirement includes the cache bytes for EG-1 Micro.
 - `polish/PolishSettingsViewModel.kt` (chunk 5 only): qualification validated against the requested runtime.
+- `providers/ProviderConfigurationRepository.kt` (chunk 5 only): separate persisted EG-1 CPU/OpenCL qualification
+  evidence, preserved across repository recreation (§5.1).
 - UI size lines (`ModelCards.kt`, `PolishLocalControls.kt`, `StoragePage`).
 - `app/src/main/assets/THIRD_PARTY_NOTICES.txt`, `scripts/generate-notices.py` if it enumerates libraries.
 - Tests listed in §11. `Eg1MicroHardwareDeviceTest`: assert MNN kinds, drop the `S1Native` prefix-parity block for
@@ -514,8 +518,9 @@ this phone"), checked against `content-brand.md`.
 
 ## 12. Blast radius and rollback
 
-- Touched: `:polish` EG-1 path, new `:mnn-android`, manifest, model cards, notices. Not touched: S1-mini files,
-  runtimes and budgets; `:asr`; capture; insertion; AIDL; persisted settings.
+- Touched: `:polish` EG-1 routing, the new native module, manifest, model cards, notices, and, in chunk 5, persisted
+  EG-1 qualification evidence. Untouched: S1-mini files, runtimes, budgets and saved settings; `:asr`; capture;
+  insertion; AIDL.
 - APK grows by about 8 MB (`libMNN.so` 7.8 MB plus the shim).
 - Rollback is a forward change, not a plain revert: restore the #529 descriptor and llama.cpp routing for EG-1 while
   keeping the cache-folder sweep, so the orphaned MNN cache (about 580 MB) is deleted file by file on the next load;

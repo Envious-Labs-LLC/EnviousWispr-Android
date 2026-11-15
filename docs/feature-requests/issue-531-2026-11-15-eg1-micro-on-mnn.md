@@ -412,7 +412,7 @@ Dispositions: **C** changed, **U** unchanged with reason, **X** UNCHECKED (none 
 | New `S1RuntimeKind` members | `PostHogSchema.kt:118`, `SentrySchema.kt:156` | closed over entries | same, two more values | No | `PostHogSchemaTest`, `SentrySchemaTest` |
 | New `S1RuntimeKind` members | `LocalPolishDiagnostics.kt:35, 43` | `valueOf` by name | same | No | parcel round-trip test |
 | New members | History label `PolishService.kt:515-520` | `<name> by <creator> (<UNIT>)` | same, unit CPU or GPU | No | `ProcessingObservationTest` |
-| `eg1Micro` revision and files | `ModelUpdates.kt:16-45` | `previous` empty | upgrade from GGUF revision | No (data) | `ModelManifestTest` |
+| `eg1Micro` revision and files | `ModelUpdates.kt:16-45` | `previous` empty | still empty (engine change, §3.2); GGUF installs read as not installed and re-download | No (data) | `ModelManifestTest`, chunk 3 phone check |
 | `eg1Micro` files | `ModelCards.kt`, `PolishLocalControls.kt:92, 202`, `StoragePage` | manifest sum | manifest sum plus cache | Yes | `ModelDeliveryUiTest`, layout test |
 | Cache folder | model remove path `ModelDelivery.kt:389` | removes model folder | also removes cache folder | Yes | new unit test |
 | `engineId = "mnn"` | `ModelManifestTest`, notices | `llama.cpp` | `mnn` | Test data | `ThirdPartyNoticesTest` |
@@ -517,8 +517,10 @@ this phone"), checked against `content-brand.md`.
 - Touched: `:polish` EG-1 path, new `:mnn-android`, manifest, model cards, notices. Not touched: S1-mini files,
   runtimes and budgets; `:asr`; capture; insertion; AIDL; persisted settings.
 - APK grows by about 8 MB (`libMNN.so` 7.8 MB plus the shim).
-- Rollback: revert the PR; phones that downloaded the MNN revision fall back through `previous` handling only if the
-  GGUF descriptor returns, so rollback restores the #529 descriptor and the cache folder is deleted on load.
+- Rollback is a forward change, not a plain revert: restore the #529 descriptor and llama.cpp routing for EG-1 while
+  keeping the cache-folder sweep, so the orphaned MNN cache (about 580 MB) is deleted file by file on the next load;
+  phones holding MNN files then read EG-1 as not installed and re-download the GGUF. A plain revert would leave the
+  cache folder orphaned.
 - Merge order: #529, #530, this PR. This branch is already restacked on #530's head (`e768a8ea`), so its budgets
   and its `S1Native`/`s1_jni.cpp` copy-ahead changes are the base; this change does not touch `s1_jni.cpp`. Overlap
   with #530: `Eg1MicroHardwareDeviceTest` and `CopyAheadDeviceTest` (EG-1 arms), resolved here. If #529 or #530

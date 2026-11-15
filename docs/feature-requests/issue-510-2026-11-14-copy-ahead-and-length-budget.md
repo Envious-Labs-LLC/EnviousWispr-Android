@@ -1,4 +1,4 @@
-# Issue #510: copy-ahead decoding and a length-scaled local polish budget, 2026-11-14
+# Issue #510: copy-ahead decoding and one 15 s local polish ceiling, 2026-11-14
 
 GitHub issue: `#510` (also closes the load branch question of `#465`, see §2.5.3). Tier: MEDIUM (one engine plus
 the session owner's watchdog value; no AIDL, process or Room change). Status: DRAFT.
@@ -13,8 +13,9 @@ builds on and EG-1 Micro both arrive there. Retarget to `main` when #529 merges.
 **PAR rows closed:** none (performance of an Android-only runtime; macOS polish uses a different runtime).
 
 **Hardware UAT:** Y. Success: on a mid-tier phone (lab Galaxy A26 and Pixel 7, physical), a long dictation of about
-500 to 900 characters polished on the processor returns polished text, where the shipped build returns the
-cleaned-up text after the deadline; short dictations come back faster than the shipped build with the same words.
+500 characters (the field timeout median) polished on the processor returns polished text within the 10 s
+budget, where the shipped build returns the cleaned-up text after the deadline; short dictations come back faster
+than the shipped build with the same words; no take waits longer than 15 s.
 
 ## Preface — User Rubric
 
@@ -37,21 +38,21 @@ User Rubric: answered below against Meera Patel (primary) with a cross-persona c
 ### Cross-persona check
 Frank Chen and Meera want it faster and unchanged with no new setting (agree). Marcus Weber and Priya
 Ramachandran care that words are not altered (the fidelity gate, §11). Dr. Elena Vasquez: nothing leaves the
-phone (unchanged). Diana Foster and Aaron Wu: shorter waits, no new modal. Tension: a longer budget means a longer
-wait on very long dictations on slow phones. Resolved in §3.2 by a cap the founder signs off at Gate 2.
+phone (unchanged). Diana Foster and Aaron Wu: shorter waits, no new modal. Tension: polishing very long
+dictations would need a longer wait. Resolved by the founder at Gate 2 (§3.2): no wait beyond 15 s; very long
+dictations on slow phones keep returning the cleaned-up text.
 
-Consolidation: none. The change adds one decode path and one budget formula and merges no duplicate owners; the
-budget formula gets ONE owner (`LocalPolishBudget`) read by both the engine and the watchdog, which today hold
-separate constants.
+Consolidation: the per-model local budgets collapse to one value: EG-1 Micro's separate engine and watchdog
+constants are removed and both models read S1's shipped budget. The decode change merges no owners.
 
 ## 0. TL;DR
 
 Local polish times out on mid-tier phones because writing out a long dictation takes longer than the 10 s budget
 (field data, §1). Two changes on the portable llama.cpp runtime only: (1) copy-ahead decoding: guess the next 4
 tokens from where the output last matched the input, check them in one batch with the same greedy sampler, keep
-the matching prefix; measured 1.33x to 1.56x faster at the median on three physical lab phones; (2) a budget that
-grows with dictation length, shared by the engine and the session watchdog, so very long takes are polished
-rather than dropped. GenieX (STANDARD phones) is untouched by (1) and gains only (2).
+the matching prefix; measured 1.33x to 1.56x faster at the median on three physical lab phones; (2) one 15 s
+ceiling for every local model (founder, Gate 2): EG-1 Micro's 18/20/23 s budget comes down to S1's shipped
+10/12/15 s. GenieX (STANDARD phones) is untouched by (1); (2) changes it only for EG-1, which never runs there.
 
 ## 1. Problem
 
@@ -77,8 +78,8 @@ a time and most of the output repeats the input.
   cases, same loaded model.
 - G2. No dictated word added or lost against the shipped one-token loop on the fidelity set (§11); cosmetic
   differences (digit vs word, comma) are reported, not hidden.
-- G3. A take whose length predicts generation beyond 10 s on S1 (18 s on EG-1) gets a proportionally longer
-  engine budget and watchdog, up to a cap.
+- G3. No local polish holds the text longer than S1's shipped ceiling: cooperative 10 s, hard 12 s, watchdog 15 s,
+  for both models and every dictation length.
 - G4. G4 guarantees ordinary decoding after recoverable speculative failures; reconstruction failure returns the
   existing decode error and deterministic fallback.
 
@@ -167,40 +168,28 @@ before resuming under the original allowance and deadline. A refused rollback le
 place, so re-decoding one token is not a repair; replay is. Reconstruction failure returns the existing decode
 error and deterministic fallback.
 
-### 3.2 Length-scaled budget, one owner
-`LocalPolishBudget.forRequest(model, rawChars)` (proposed) owns the formula; `PolishWatchdogBudget.forPolicy`
-gains the same `rawChars` and stays `hard + 3 s`. The hard + 3 s relation orders budget durations at every
-length, not absolute expiry times: Binder and worker-queue delay can make the watchdog fire first, and debug
-overrides may intentionally invert ordering (both true today).
-Proposed S1: cooperative = clamp(10 s + 18 ms × max(0, chars − 300), 10 s, 25 s); EG-1: clamp(18 s + 18 ms ×
-max(0, chars − 600), 18 s, 30 s). Slope from the slowest measured phone with copy-ahead (A15, 875 chars, 20.1 s).
-**Gate 2 founder decision: the caps (25 s S1, 30 s EG-1).** A lower cap returns rough text sooner on very long
-takes; a higher one polishes more of them at a longer wait. The debug override keeps replacing the cooperative
-value.
+### 3.2 One 15 s ceiling for both models (founder decision, Gate 2, 2026-11-14)
+The founder rejected longer waits: people will not wait more than 10 to 15 s, and irritation starts near 5 s. So
+no budget grows with dictation length. Both local models use S1's shipped budget: cooperative 10 s, hard 12 s,
+watchdog 15 s. EG-1 Micro drops from 18/20/23 s. `LocalPolishBudget.forModel` and `PolishWatchdogBudget.forPolicy`
+keep their signatures and their exhaustive `when` over `LocalPolishModel` (so a new model must still choose); the
+`EG1_*` constants are removed and both arms return the shared value. Speed comes only from copy-ahead (§3.1).
 
-**`rawChars` definition.** The character count of the vocabulary-restored, trimmed request text, before
-deterministic cleanup and prompt construction: in the session owner `preparedRaw.trim().length`
-(`TakePolishController.prepare`), in `:polish` the trimmed request text it receives. Both sides compute it from
-the same string, so they agree. Qualification keeps its fixed per-model budget (load-plus-hard deadline and the
-canary's cooperative timeout); warm-up has no request length and no budget.
+Accepted consequence: a dictation whose generation exceeds 10 s still returns the cleaned-up text at about 10 s,
+as today; for EG-1 Micro that now happens on shorter dictations than before (its generation is slower than S1's
+on the same phone). EG-1 qualification retains the existing 60 s load allowance, uses a 72 s combined hard deadline and a 10 s cooperative canary timeout, and must still return AVAILABLE on A26 and Pixel 7.
 
-**Debug override ordering.** The session watchdog follows the shipped length budget, never the engine's debug
-override (as today: the watchdog ignores the override). For shipped budgets, the engine hard duration is always
-three seconds shorter than the watchdog duration; absolute expiry ordering also depends on Binder and
-worker-queue delay, while debug overrides may invert duration ordering; `debugStall`'s `MAX_OVERRIDE_MS` bound is
-unchanged.
-
-**Non-local policies.** `Cloud`, `Off` and `CloudUnconfigured` also pass through `forPolicy`; their budgets stay
-independent of `rawChars`.
+The hard + 3 s relation orders budget durations, not absolute expiry times: Binder and worker-queue delay can make
+the watchdog fire first, and debug overrides may intentionally invert ordering (both true today). The debug
+override, `debugStall`'s `MAX_OVERRIDE_MS` bound, and the Cloud, Off and CloudUnconfigured budgets are unchanged.
 
 ## 3b. Ownership
 The decode loop lives in `s1_jni.cpp` because it is the only owner of the portable runtime's generation; the
-budget formula lives in `LocalPolishBudget` because both sides already read their values from that pair of types.
+budgets stay in `LocalPolishBudget` and `PolishWatchdogBudget`, which already own them.
 
 ## 4. Contract deltas
-`S1Native.loadModel` gains a recurrent-snapshot count (0 for S1). `LocalPolishBudget.forModel` becomes
-`forRequest(model, rawChars)`; `PolishWatchdogBudget.forPolicy(policy, rawChars)`; `PolishTimeout.await` receives
-the length. `lastEnd()` unchanged; a debug-only `lastCopyAheadStats()` reports decode/drafted/accepted counts.
+`S1Native.loadModel` gains a recurrent-snapshot count (0 for S1). `LocalPolishBudget.forModel` and
+`PolishWatchdogBudget.forPolicy` keep their signatures; EG-1's values change to S1's. `lastEnd()` unchanged; a debug-only `lastCopyAheadStats()` reports decode/drafted/accepted counts.
 
 ## 5. State and lifecycle
 Per generation only: history tokens and the guess buffer live on the native stack; nothing persists between
@@ -211,7 +200,7 @@ the cached prefix). Abort mid-batch leaves KV beyond `position`, cleared by the 
 `generate_text` callers: `PolishService.work`, qualification canary, warm path (no generation),
 `Eg1MicroHardwareDeviceTest`, benchmark module (`CpuBenchmarkEngine`, `PortableCpuDeviceTest`). Budget readers:
 `PolishService.work`, `PolishService.qualify` (two reads: `ProcessingQualificationTask`'s load-plus-hard
-deadline and the canary's cooperative timeout, both keep the fixed per-model budget), `debugStall`
+deadline, now 60 s load + 12 s hard = 72 s, and the canary's 10 s cooperative timeout), `debugStall`
 (`MAX_OVERRIDE_MS`, unchanged), `TakePolishController` watchdog through `DelayPolishTimeout`.
 
 ## 7. Failure modes
@@ -229,7 +218,7 @@ contract.
 | prefix cache miss, failed or throwing restore, suffix-decode failure | full-prompt retry where today retries, otherwise today's error; copy-ahead starts only after prompt decode |
 | abort during batch | `END_ABORTED` takes precedence over acceptance; `LOCAL_TIMEOUT` path unchanged |
 | next request after any of the above | starts from a clean restored prefix, as today |
-| longer budget still exceeded | deterministic text, `LOCAL_TIMEOUT`, as today |
+| budget still exceeded | deterministic text, `LOCAL_TIMEOUT`, as today |
 | process death | unchanged (`SERVICE_DIED`) |
 
 ## 8. Signals
@@ -241,18 +230,14 @@ Unchanged: the deterministic cleanup text, the last successful text.
 
 ## 10. Files
 `llama-android/src/main/cpp/s1_jni.cpp` (loop, lookup, snapshots), `llama-android/.../S1Native.kt`,
-`polish/S1PortableRuntime.kt`, `polish/EngineDeadline.kt`, `polish/PolishService.kt`,
-`ui/PolishWatchdogBudget.kt`, `ui/PolishTimeout.kt`, `ui/TakePolishController.kt` (and the fixed-budget
-comments in the first three), tests below. Knowledge `polish-engines.md`: update FACT: the-polish-budgets for
-length scaling, fixed qualification budgets and debug ordering; scope the historical n-gram result in FACT:
+`polish/S1PortableRuntime.kt`, `polish/EngineDeadline.kt`, `ui/PolishWatchdogBudget.kt` (and the budget comments
+in the last two), tests below. Knowledge `polish-engines.md`: update FACT: the-polish-budgets for the single
+15 s ceiling (EG-1's separate budget retired, founder 2026-11-14); scope the historical n-gram result in FACT:
 tuning-was-tried-and-the-default-won to GenieX NPU with short inputs.
 
 ## 11. Testing
-- JVM: `EngineDeadlineTest` (both models: S1 at 0, 300, 875 and its cap; EG-1 at 0, 600, 875 and its cap; an
-  invalid override falls back to the request-scaled budget; qualification stays fixed), `PolishWatchdogBudgetTest`
-  (watchdog > hard for every length and both models; Cloud, Off, CloudUnconfigured unchanged by length),
-  `TakePolishControllerTest` (forwards the length; vocabulary restore and surrounding whitespace give the same
-  count on both sides). The shared fake timeout changes signature with `PolishTimeout.await`.
+- JVM: `EngineDeadlineTest` (both models return 10 s / 12 s; override unchanged), `PolishWatchdogBudgetTest`
+  (both local models 15 s; watchdog > hard for both; Cloud, Off, CloudUnconfigured unchanged).
 - Native decode paths (device, Harness Contract, through a debug-only fault switch read like the bench's
   environment switches): batch decode failure, `seq_rm` refusal, EOS during acceptance, length during
   acceptance, abort during batch, context nearly full. Each fault test must assert that speculation and its
@@ -266,10 +251,13 @@ tuning-was-tried-and-the-default-won to GenieX NPU with short inputs.
   expected text, including independently seeded oracle errors (a planted added word and a planted dropped word
   the oracle must flag).
 - `Eg1MicroHardwareDeviceTest`'s direct `loadModel` calls gain the snapshot argument.
+  Its `EG1_EMAIL_MAX_LATENCY_MS` (20 s, sized to the old budget) drops to the 10 s cooperative budget.
+- EG-1 qualification retains the existing 60 s load allowance, uses a 72 s combined hard deadline and a 10 s cooperative canary timeout, and must still return AVAILABLE on A26 and Pixel 7. (Product Outcome, through `PolishService.qualify`.)
 - Device (Harness Contract → Product Outcome where noted): fidelity set of at least 40 cases (held-out benchmark
   plus long synthetic) on the lab A26: words added/lost counted by a word-diff oracle against the shipped loop;
-  Product Outcome row through the real `:polish` binder on A26 and Pixel 7: an ~800-char take returns `POLISHED`
-  where the shipped build returns `LOCAL_TIMEOUT` at the same input.
+  Product Outcome row through the real `:polish` binder on A26 and Pixel 7: a ~500-char take (the field timeout
+  median) returns `POLISHED` within the 10 s budget where the shipped build returns `LOCAL_TIMEOUT` at the same
+  input; ~800-char takes are measured and reported, not required to polish.
 - `Eg1MicroHardwareDeviceTest` cache-parity rows keep passing.
 
 ### 11.1 Hardware UAT
@@ -278,14 +266,14 @@ the GenieX path is unchanged.
 
 ## 12. Blast radius & rollback
 MID phones on the portable runtime and every EG-1 Micro user. Rollback: draft size 0 restores the shipped loop
-(one constant), budget formula returns the fixed pair.
+(one constant); restoring the `EG1_*` constants restores EG-1's old budget.
 
 ## 13. Ship criteria
 G1-G4 met with the evidence above re-taken on the final build; Codex all-clear with confirming re-run; Play
 internal build on the founder's phone before merge.
 
 ## 14. Open questions
-Caps (Gate 2). Whether EG-1's 13% snapshot overhead is worth it on dictations it reformats (current data says
+Resolved at Gate 2: one 15 s ceiling (§3.2). Open: whether EG-1's 13% snapshot overhead is worth it on dictations it reformats (current data says
 net 1.30x; re-measure paired in the fidelity run).
 
 ## 15. Related

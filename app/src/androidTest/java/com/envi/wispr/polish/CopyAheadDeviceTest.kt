@@ -38,7 +38,7 @@ import org.junit.runner.RunWith
  * Harness Contract rows (in-process `S1Native` with the DEBUG library's test switches, `s1_jni.cpp`): every
  * speculative branch is proven to have fired from its own counter, and each ends with the one-token loop's text and
  * end metadata on a parity-stable fixture, followed by a correct next request. The fidelity row compares copy-ahead
- * with the one-token loop on 45 synthetic benchmark dictations and fails on any real word added or lost; its oracle
+ * with the one-token loop on 45 synthetic benchmark dictations and fails on any unadjudicated word change; its oracle
  * is itself checked on planted errors and on the accept-everything mutation. Product Outcome row: a ~500-character
  * take through the real `:polish` binder returns POLISHED (when this fails, a typical long dictation on this phone
  * comes back unpolished).
@@ -131,7 +131,7 @@ class CopyAheadDeviceTest {
     }
 
     @Test
-    fun copyAheadAddsOrLosesNoDictatedWordOnTheFidelitySet() = withModel { load ->
+    fun copyAheadChangesNoWordOnTheFidelitySetUnlessAdjudicated() = withModel { load ->
         val rows = JSONArray()
         val real = mutableListOf<String>()
         var mutationFlagged = 0
@@ -140,45 +140,35 @@ class CopyAheadDeviceTest {
             val plain = generate(raw, guesses = 0)
             val copy = generate(raw)
             val mutated = generate(raw, acceptAll = true)
-            val diff = WordDiff.of(raw, plain.text, copy.text)
-            if (WordDiff.of(raw, plain.text, mutated.text).real.isNotEmpty()) mutationFlagged++
+            val diff = WordDiff.of(plain.text, copy.text)
+            if (WordDiff.of(plain.text, mutated.text).changed) mutationFlagged++
             if (copy.end[0] == 0) naturalEos++
-            if (diff.real.isNotEmpty()) real += "$id ${diff.real}"
+            val waived = diff.changed && adjudicated(id, diff)
+            if (diff.changed && !waived) real += "$id expected=${diff.expected} actual=${diff.actual}"
             rows.put(
                 JSONObject().put("id", id).put("rawChars", raw.length).put("plainMs", plain.ms).put("copyMs", copy.ms)
-                    .put("identical", plain.text == copy.text).put("cosmetic", JSONArray(diff.cosmetic))
-                    .put("real", JSONArray(diff.real)).put("end", copy.end[0]).put("guessed", copy.stats[1])
-                    .put("accepted", copy.stats[2]).put("plain", plain.text).put("copy", copy.text),
+                    .put("identical", plain.text == copy.text).put("punctuationOnly", diff.punctuationOnly)
+                    .put("wordsChanged", diff.changed).put("adjudicated", waived)
+                    .put("end", copy.end[0]).put("guessed", copy.stats[1])
+                    .put("accepted", copy.stats[2]).put("plain", plain.text).put("copy", copy.text)
+                    .put("expectedWords", diff.expected.joinToString(" ")).put("actualWords", diff.actual.joinToString(" ")),
             )
         }
         val first = cases.first()
         val base = generate(first.second, guesses = 0).text
-        val words = base.split(' ')
-        val spoken = WordDiff.words(first.second).groupingBy { it }.eachCount()
-        val written = WordDiff.words(base).groupingBy { it }.eachCount()
-        // A word the output holds no more often than it was spoken, so dropping one copy is a real loss.
-        val victim = words.indexOfFirst { word ->
-            WordDiff.words(word).singleOrNull()?.let { (written[it] ?: 0) <= (spoken[it] ?: 0) } == true
-        }
-        assertTrue("no dictated word in the first fixture's output to plant a loss on", victim >= 0)
-        val dropped = words.filterIndexed { index, _ -> index != victim }.joinToString(" ")
-        assertTrue("oracle missed a planted dropped word", WordDiff.of(first.second, base, dropped).real.isNotEmpty())
-        assertTrue("oracle missed a planted added word", WordDiff.of(first.second, base, "$base zeppelin").real.isNotEmpty())
-        assertTrue("oracle missed a repeated name", WordDiff.of("call Maya", "Call Maya.", "Call Maya Maya.").real.isNotEmpty())
-        assertTrue("oracle missed swapped names", WordDiff.of("Maya called Leo", "Maya called Leo.", "Leo called Maya.").real.isNotEmpty())
-        assertTrue(
-            "oracle missed swapped names with a cosmetic deletion",
-            WordDiff.of("Maya called Leo", "Maya called Leo you.", "Leo called Maya.").real.isNotEmpty(),
-        )
-        assertTrue("oracle missed a substituted name", WordDiff.of("call Maya", "Call Maya.", "Call Mia.").real.isNotEmpty())
-        assertTrue("oracle flagged a digit for a spoken number", WordDiff.of("five apples", "Five apples.", "5 apples.").real.isEmpty())
-        assertTrue("oracle flagged dropping an unspoken word", WordDiff.of("can grab Leo", "Can you grab Leo?", "Can grab Leo?").real.isEmpty())
+        assertTrue("oracle missed a planted dropped word", WordDiff.of(base, base.substringBeforeLast(' ')).changed)
+        assertTrue("oracle missed a planted added word", WordDiff.of(base, "$base zeppelin").changed)
+        assertTrue("oracle missed a reversed meaning", WordDiff.of("Do not send it.", "Do send it.").changed)
+        assertTrue("oracle missed swapped names", WordDiff.of("Maya called Leo.", "Leo called Maya.").changed)
+        assertTrue("oracle missed a reintroduced correction", WordDiff.of("Call Leo.", "Call Maya Leo.").changed)
+        assertFalse("oracle flagged punctuation alone", WordDiff.of("Call Leo, today.", "Call Leo today").changed)
+        assertFalse("oracle flagged a digit for a spoken number", WordDiff.of("Five apples.", "5 apples.").changed)
         writeReport(
             JSONObject().put("model", model.name).put("load", load).put("cases", rows)
                 .put("mutationFlagged", mutationFlagged).put("naturalEos", naturalEos),
         )
         assertTrue("the accept-everything mutation changed no output, so the oracle proves nothing", mutationFlagged > 0)
-        assertTrue("copy-ahead added or lost dictated words: $real", real.isEmpty())
+        assertTrue("copy-ahead changed words that no adjudication covers: $real", real.isEmpty())
     }
 
     @Test
@@ -221,6 +211,17 @@ class CopyAheadDeviceTest {
     }
 
     // --- harness
+
+    /** A hand-adjudicated cosmetic difference for this exact case, model and word sequences (fixture `adjudicated`). */
+    private fun adjudicated(id: String, diff: WordDiff): Boolean {
+        val list = fixture.optJSONArray("adjudicated") ?: return false
+        return (0 until list.length()).map { list.getJSONObject(it) }.any {
+            it.getString("id") == id && it.getString("model") == model.name &&
+                it.getString("expected") == diff.expected.joinToString(" ") &&
+                it.getString("actual") == diff.actual.joinToString(" ")
+        }
+    }
+
 
     private fun IPolishService.awaitWarm() {
         // A real take queues behind the warm-up on the service's single worker; this request is that wait.
@@ -350,14 +351,14 @@ class CopyAheadDeviceTest {
 }
 
 /**
- * The fidelity oracle (#510), over ordered, normalized words (lowercase, punctuation dropped, spoken numbers up to
- * twenty as digits). REAL: copy-ahead now holds a word fewer times than the dictation did (a dictated word lost), or
- * more times than both the dictation and the one-token loop did (a word added or repeated), or the same words in a
- * different order. Anything else is cosmetic and reported: punctuation, a digit for a spoken number, or dropping a
- * word nobody said that the one-token loop had added (observed: "can you" for a spoken "can").
+ * The fidelity oracle (#510): strict equality of ORDERED normalized words (lowercase, punctuation dropped, spoken
+ * numbers up to twenty as digits) between the one-token loop and copy-ahead. Any word difference is a change; it
+ * passes only when its exact case, model and word sequences were adjudicated by hand as cosmetic and listed in
+ * the fixture's `adjudicated` array. Code review round 3 showed a dictation-aware classifier cannot tell a
+ * harmless difference from a reversed meaning ("do not send" to "do send") or a reintroduced correction.
  */
-internal data class WordDiff(val real: List<String>, val cosmetic: List<String>) {
-    val changed: Boolean get() = real.isNotEmpty() || cosmetic.isNotEmpty()
+internal data class WordDiff(val expected: List<String>, val actual: List<String>, val punctuationOnly: Boolean) {
+    val changed: Boolean get() = expected != actual
 
     companion object {
         private val numbers = listOf(
@@ -368,45 +369,7 @@ internal data class WordDiff(val real: List<String>, val cosmetic: List<String>)
         fun words(text: String): List<String> = text.lowercase()
             .split(Regex("[^\\p{L}\\p{N}']+")).filter { it.isNotEmpty() }.map { numbers[it] ?: it }
 
-        fun of(raw: String, expected: String, actual: String): WordDiff {
-            val before = words(expected)
-            val after = words(actual)
-            if (before == after) return WordDiff(emptyList(), if (expected == actual) emptyList() else listOf("punctuation"))
-            val spoken = words(raw).groupingBy { it }.eachCount()
-            val had = before.groupingBy { it }.eachCount()
-            val has = after.groupingBy { it }.eachCount()
-            val real = mutableListOf<String>()
-            val cosmetic = mutableListOf<String>()
-            for (word in (had.keys + has.keys).sorted()) {
-                val now = has[word] ?: 0
-                val was = had[word] ?: 0
-                val said = spoken[word] ?: 0
-                when {
-                    now == was -> Unit
-                    now < was && now < said -> real += "-$word"
-                    now > was && now > maxOf(said, was) -> real += "+$word"
-                    else -> cosmetic += (if (now < was) "-$word" else "+$word")
-                }
-            }
-            // Order: every word both sides share must keep its order, whatever cosmetic words came or went. The
-            // longest common subsequence covers all shared copies only when nothing shared moved.
-            if (real.isEmpty() && longestCommonSubsequence(before, after) < had.entries.sumOf { (w, c) -> minOf(c, has[w] ?: 0) }) {
-                real += "reordered"
-            }
-            return WordDiff(real, cosmetic)
-        }
-
-        private fun longestCommonSubsequence(a: List<String>, b: List<String>): Int {
-            val row = IntArray(b.size + 1)
-            for (word in a) {
-                var diagonal = 0
-                for (j in b.indices) {
-                    val above = row[j + 1]
-                    row[j + 1] = if (word == b[j]) diagonal + 1 else maxOf(row[j], above)
-                    diagonal = above
-                }
-            }
-            return row[b.size]
-        }
+        fun of(expected: String, actual: String): WordDiff =
+            WordDiff(words(expected), words(actual), words(expected) == words(actual) && expected != actual)
     }
 }

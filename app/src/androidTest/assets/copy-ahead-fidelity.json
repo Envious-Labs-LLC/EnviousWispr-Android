@@ -196,7 +196,8 @@
    "seenOn": [
     "a26x-s1",
     "panther-s1"
-   ]
+   ],
+   "actualText": "The replacement holds cost €1,200, and the supplier says they'll arrive around the 21st of May."
   },
   {
    "id": "MINIEMAIL26-development-eg12-email-v1-closing_boundary-0045",
@@ -207,7 +208,8 @@
    "seenOn": [
     "a26x-s1",
     "panther-s1"
-   ]
+   ],
+   "actualText": "Hi Dimitri Oscar, can pick up the repaired boots at the leather workshop this afternoon? Thanks for passing that on. The regards from a leaf were written on the repair card."
   }
  ]
 }

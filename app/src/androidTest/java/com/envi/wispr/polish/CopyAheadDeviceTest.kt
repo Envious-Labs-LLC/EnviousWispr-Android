@@ -163,7 +163,7 @@ class CopyAheadDeviceTest {
             val diff = WordDiff.of(plain.text, copy.text)
             if (WordDiff.of(plain.text, mutated.text).changed) mutationFlagged++
             if (copy.end[0] == 0) naturalEos++
-            val waived = diff.changed && adjudicated(id, diff)
+            val waived = diff.changed && adjudicated(id, diff, copy.text)
             if (diff.changed && !waived) real += "$id expected=${diff.expected} actual=${diff.actual}"
             rows.put(
                 JSONObject().put("id", id).put("rawChars", raw.length).put("plainMs", plain.ms).put("copyMs", copy.ms)
@@ -238,13 +238,17 @@ class CopyAheadDeviceTest {
 
     // --- harness
 
-    /** A hand-adjudicated cosmetic difference for this exact case, model and word sequences (fixture `adjudicated`). */
-    private fun adjudicated(id: String, diff: WordDiff): Boolean {
+    /**
+     * A hand-adjudicated cosmetic difference for this exact case, model, word sequences AND full output text (fixture
+     * `adjudicated`): normalized words drop symbols, so "€1,200" and a lost currency compare equal without the text.
+     */
+    private fun adjudicated(id: String, diff: WordDiff, actualText: String): Boolean {
         val list = fixture.optJSONArray("adjudicated") ?: return false
         return (0 until list.length()).map { list.getJSONObject(it) }.any {
             it.getString("id") == id && it.getString("model") == model.name &&
                 it.getString("expected") == diff.expected.joinToString(" ") &&
-                it.getString("actual") == diff.actual.joinToString(" ")
+                it.getString("actual") == diff.actual.joinToString(" ") &&
+                it.optString("actualText", "") == actualText
         }
     }
 

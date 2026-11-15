@@ -13,6 +13,10 @@
             android:name=".debug.ForegroundProbeService"
             android:exported="false"
             android:foregroundServiceType="microphone|dataSync" />
+        <service
+            android:name=".debug.BenchForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <activity
             android:name=".debug.PasteProbeActivity"
             android:exported="true"

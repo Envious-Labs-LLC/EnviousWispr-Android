@@ -214,7 +214,7 @@ class Eg1MicroHardwareDeviceTest {
                 assertNoThinkTags(outcome.text)
             }
             assertTrue(
-                "EG-1 email latency ${d4Email.latencyMs}ms exceeded 20s local budget",
+                "EG-1 email latency ${d4Email.latencyMs}ms exceeded the 10s local budget",
                 d4Email.latencyMs < EG1_EMAIL_MAX_LATENCY_MS,
             )
             val spanishLower = d5Spanish.text.lowercase()
@@ -397,7 +397,7 @@ class Eg1MicroHardwareDeviceTest {
 
     private companion object {
         const val RSS_LIMIT_KB = 1_572_864L // 1.5 GiB
-        const val EG1_EMAIL_MAX_LATENCY_MS = 20_000L
+        const val EG1_EMAIL_MAX_LATENCY_MS = 10_000L // LocalPolishBudget.COOPERATIVE_MS, #510
         const val R2_DOWNLOAD_TIMEOUT_MS = 180_000L
     }
 }

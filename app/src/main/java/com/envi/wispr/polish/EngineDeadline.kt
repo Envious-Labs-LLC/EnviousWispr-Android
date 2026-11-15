@@ -3,22 +3,21 @@ package com.envi.wispr.polish
 /**
  * The shipped local budgets and the debug override's bounded meaning. A valid override in 1..60 000 sets the
  * cooperative budget to that value and the hard budget to the value plus a grace; anything else is the
- * shipped pair. `EngineDeadlineTest` pins the bounds.
+ * shipped pair. Every local model gets the same pair: no polish holds the text longer than the session's 15 s
+ * ceiling (founder, #510, 2026-11-14). The `when` stays exhaustive so a new model must choose. `EngineDeadlineTest`
+ * pins the bounds.
  */
 internal data class LocalPolishBudget(val cooperativeMs: Long, val hardMs: Long) {
     companion object {
         const val COOPERATIVE_MS = 10_000L
         const val HARD_MS = 12_000L
-        const val EG1_COOPERATIVE_MS = 18_000L
-        const val EG1_HARD_MS = 20_000L
         const val GRACE_MS = 2_000L
         const val MAX_OVERRIDE_MS = 60_000L
         val SHIPPED = LocalPolishBudget(COOPERATIVE_MS, HARD_MS)
-        val EG1_SHIPPED = LocalPolishBudget(EG1_COOPERATIVE_MS, EG1_HARD_MS)
 
         fun forModel(model: LocalPolishModel): LocalPolishBudget = when (model) {
             LocalPolishModel.S1_MINI -> SHIPPED
-            LocalPolishModel.EG1_MICRO -> EG1_SHIPPED
+            LocalPolishModel.EG1_MICRO -> SHIPPED
         }
 
         fun fromOverride(value: String?, fallback: LocalPolishBudget = SHIPPED): LocalPolishBudget {

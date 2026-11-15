@@ -554,6 +554,16 @@ this phone"), checked against `content-brand.md`.
 #510, #528 (PR #529), PR #530, #531. Study artifact `enviouswispr-android/20261115-103824-eg1-gpu-spike-b3b7`.
 `polish-engines.md` FACT: eg1-micro-gpu-and-engine-spike-2026-11-15 and RULE: every-model-run-reports-memory.
 
+## 16. Review digest
+
+Run folder: artifact `enviouswispr-android/20261115-181050-eg1-mnn-531-plan-review-77a8`.
+- Coverage (one round): 8 gaps, all adopted (revision 1), including restacking on #530 and its 15 s ceiling.
+- Grounded round 1: PROCEED-WITH-REVISIONS, 8 findings, all adopted (revision 2): explicit prefill, HTTP support off,
+  storage checks include the cache, corrected dispositions, falsifiable tests.
+- Grounded round 2: 4 findings, all adopted (revision 3); a class sweep found and fixed 2 more stale statements.
+- Grounded round 3: 1 finding (persisted qualification storage), adopted.
+- Grounded round 4 (confirming): PROCEED-AS-PLANNED, no findings.
+
 ## Chunks (each leaves the app usable)
 
 1. `:mnn-android` builds from the submodule; `MnnNative` load and one generate on the S26 via a debug-only test;

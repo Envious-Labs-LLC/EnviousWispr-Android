@@ -167,9 +167,9 @@ class PolishPolicyTest {
         assertEquals(s1Qual, s1Policy.qualification)
     }
 
-    @Test fun egOneMicroSelectsPortableCpuWithoutEvaluatingHardwareProbeOrGpuBackends() {
+    @Test fun egOneMicroSelectsMnnCpuWithoutEvaluatingHardwareProbeOrGpuBackends() {
         assertEquals(
-            S1RuntimeKind.PORTABLE_CPU,
+            S1RuntimeKind.MNN_CPU,
             S1RuntimeKind.runtimeKindFor(LocalPolishModel.EG1_MICRO) { error("hardware probe must not run for EG-1 Micro") },
         )
         assertEquals(
@@ -178,7 +178,7 @@ class PolishPolicyTest {
         )
         assertEquals(
             setOf(com.envi.wispr.processing.ProcessingBackend.CPU),
-            com.envi.wispr.processing.ProcessingEnvironment.implementedBackends(S1RuntimeKind.GENIEX, LocalPolishModel.EG1_MICRO),
+            com.envi.wispr.processing.ProcessingEnvironment.implementedBackends(S1RuntimeKind.MNN_CPU, LocalPolishModel.EG1_MICRO),
         )
     }
 }

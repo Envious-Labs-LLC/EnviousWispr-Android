@@ -144,7 +144,7 @@ class Eg1MicroHardwareDeviceTest {
             )
             assertEquals(PolishReason.POLISHED, eg1Cold.reason)
             assertEquals("EG-1 Micro by Envious Labs (CPU)", eg1Cold.engine)
-            assertEquals(S1RuntimeKind.PORTABLE_CPU, eg1Cold.diagnostics?.runtime)
+            assertEquals(S1RuntimeKind.MNN_CPU, eg1Cold.diagnostics?.runtime)
             assertEquals(LocalPolishModel.EG1_MICRO.wire, eg1Cold.processing?.modelId)
             assertNoThinkTags(eg1Cold.text)
             assertEquals("Expected same :polish PID after swap to EG-1", polishPid, readPolishPid())

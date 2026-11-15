@@ -453,6 +453,10 @@ class SentrySchemaTest {
             assertEquals(name, SentrySchema.Verdict.Keep(name), SentrySchema.judge("error_type", name))
         }
         assertEquals(SentrySchema.Verdict.Keep("settings:exception:Exception"), SentrySchema.judge("settings_fallback", "settings:exception:Exception"))
+        // #531: EG-1 Micro's MNN runtimes are admitted by literal name; an unknown engine name is not.
+        assertEquals(SentrySchema.Verdict.Keep("mnn-b6a3216-cpu"), SentrySchema.judge("polish_runtime", "mnn-b6a3216-cpu"))
+        assertEquals(SentrySchema.Verdict.Keep("mnn-b6a3216-opencl"), SentrySchema.judge("polish_runtime", "mnn-b6a3216-opencl"))
+        assertFalse(SentrySchema.judge("polish_runtime", "mnn-0000000-cpu") is SentrySchema.Verdict.Keep)
         assertEquals(SentrySchema.Verdict.Redact, SentrySchema.judge("error_type", "Meet"))
     }
 

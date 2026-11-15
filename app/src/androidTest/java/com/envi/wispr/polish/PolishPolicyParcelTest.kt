@@ -40,7 +40,8 @@ class PolishPolicyParcelTest {
         )
         assertEquals(eg1Policy, roundTrip(eg1Policy))
         val usage = com.envi.wispr.processing.ProcessingUsage(com.envi.wispr.processing.ProcessingBackend.CPU, "a".repeat(64), processing, true, "gpu", artifactStamp = "receipt")
-        for (diagnostics in listOf(null, LocalPolishDiagnostics(7, 8, 9, 10, 11, S1RuntimeKind.PORTABLE_CPU))) {
+        val diagnosticsCases = listOf(null) + S1RuntimeKind.entries.map { LocalPolishDiagnostics(7, 8, 9, 10, 11, it) }
+        for (diagnostics in diagnosticsCases) {
             val outcome = PolishOutcome(9, "Kept words.", "S1-mini", PolishReason.POLISHED, 0, 5, usage, diagnostics)
             val parcel = Parcel.obtain()
             try {

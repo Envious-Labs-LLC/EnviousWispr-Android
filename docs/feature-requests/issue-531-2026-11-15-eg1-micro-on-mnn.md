@@ -4,10 +4,17 @@ GitHub issue: `#531` (Part of `#510`). Tier: REFACTOR (adds a Gradle module; als
 Gate 1 approved by the founder 2026-11-15 ("Ok continue" to the intent: EG-1 Micro on MNN, processor everywhere,
 graphics chip only where it qualifies, S1-mini untouched, built on the EG-1 Micro branch, memory as a gate).
 
-Stacked on `feat/eg1-micro-local-polish` (PR #529, issue #528), which adds EG-1 Micro on llama.cpp CPU. This
-change replaces that engine for EG-1 Micro only. PR #529 does not ship on its own; #529 then this PR merge in
-order. PR #530 (`feat/polish-speed-510`) is also stacked on #529 and touches `PolishService`; merge order and
-conflicts are handled at delivery (§12).
+Stacked on `feat/polish-speed-510` (PR #530, issue #510), which sits on `feat/eg1-micro-local-polish` (PR #529,
+issue #528). #529 adds EG-1 Micro on llama.cpp CPU; #530 adds S1-mini copy-ahead and the founder's single 15 s
+local polish ceiling, which already sets EG-1 Micro to the shared 10 s cooperative / 12 s hard / 15 s watchdog
+budgets (founder Gate 2, #510, 2026-11-14; `polish/EngineDeadline.kt` `forModel`, `ui/PolishWatchdogBudget.kt`
+`forPolicy` on that branch). This change replaces EG-1 Micro's engine only and inherits those budgets unchanged.
+Merge order: #529, #530, this PR (§12).
+
+**Revision 1 (after the coverage round, 2026-11-15):** restacked on #530 and adopted its 15 s ceiling (EG-1's
+18/20/23 s budgets no longer exist); cross-engine upgrade no longer uses `previous` (§3.2); privacy wording
+corrected (§2.5.4); consumer dispositions (§5.1), async-edge matrix (§5.2), GPU qualification details (§3.5),
+storage/packaging and memory measurements (§11) added.
 
 ## Preface: Lane + Hardware UAT declaration
 
@@ -53,7 +60,7 @@ Answered against named personas (primary: Meera Patel). The heading spelling is 
 - **Marcus**: restraint must not regress; covered by the dev-400 restraint rows in the exam.
 - **Diana**: zero switching; unchanged path.
 - **Dr. Elena Vasquez**: offline and verifiable. No network change; the engine runs in `:polish`; MNN is built
-  from pinned source with logs compiled out (§2.5.4).
+  from pinned source, its logging kept out of the phone's log (§2.5.4).
 - **Aaron**: no modal interruptions; the first-load cache build happens inside the existing load deadline.
 - **Meera**: the main beneficiary (mid-range speed).
 - **Frank**: nothing new to configure. The one visible change: the EG-1 Micro card shows more storage (§3.4).
@@ -84,8 +91,12 @@ blind exam, Test Lab speed and memory on four phones, and a phone pass on the S2
   recompute in §11 before quoting.
 - EG-1 Micro on llama.cpp CPU, same 45 fidelity cases, no prefix cache (study `RESULTS.md`): Galaxy A26 p50 3.78 s,
   long and email 13.7 to 16.0 s; Galaxy A15 8.24 s, 21.7 to 25.1 s (max 48.4 s); Pixel 7 5.96 s, 16.1 to 18.6 s.
-  EG-1's budget is 18 s cooperative, 20 s hard, 23 s watchdog (`polish/EngineDeadline.kt:10-22`,
-  `PolishWatchdogBudget.kt:14-23`), so long dictations on the A15 class fail.
+  With #530, EG-1's budget is the shared 10 s cooperative, 12 s hard, 15 s watchdog, so on llama.cpp most long
+  dictations on all three phones fail.
+- Honest limit of this change: MNN CPU long and email cases measured 7.8 to 12.2 s on the A26 and 12.8 to 18.0 s on
+  the A15 and Pixel 7 (study, hqq64 and base exports, no prefix cache). MNN brings the A26 class largely inside the
+  10 s cooperative budget but not the A15/Pixel 7 class for long dictations; short dictations (p50 2.9 to 5.6 s)
+  fit everywhere. Remaining levers (prefix cache, copy-ahead for hybrids) are follow-ups (§2.2).
 - #528's own hardware run measured EG-1 Micro `:polish` peak resident 1,325 to 1,332 MiB on the S24 and Pixel 8.
 
 ## 2. Goals and non-goals
@@ -122,7 +133,7 @@ Commands: `git diff --stat 9276cae4..HEAD`; `grep -rnE "LocalPolishModel\.(EG1_M
 `grep -rniE "16 ?KB|max-page-size|useLegacyPackaging"`; plus every file cited, read on branch `feat/eg1-mnn-531`
 at `f30652ba`. MNN facts are from the pinned checkout `alibaba/MNN@b6a32165e2855106b76852fba80793d58a829663`.
 
-Names from the pinned MNN checkout, the study artifact or git (not in this tree): `MNN_USE_LOGCAT` (external), `b6a32165e2855106b76852fba80793d58a829663` (external), `f30652ba` (external), `generate_init` (external), `kvcache_mmap` (external), `modelUUID` (external), `mtok` (external), `set_config` (external), `stoped` (external), `tmp_path` (external), `use_cached_mmap` (external), `use_mmap` (external).
+Names from the pinned MNN checkout, the study artifact or git (not in this tree): `MNN_USE_LOGCAT` (external), `b6a32165e2855106b76852fba80793d58a829663` (external), `f30652ba` (external), `generate_init` (external), `kvcache_mmap` (external), `modelUUID` (external), `mtok` (external), `set_config` (external), `stoped` (external), `tmp_path` (external), `use_cached_mmap` (external), `use_mmap` (external), `LLM_LOG_TO_STRING` (external), `MNN_BUILD_LLM_OMNI` (external), `MNN_ERROR` (external), `MNN_PRINT` (external), `e768a8ea` (external), `httplib` (external).
 
 ### 2.5.1 Producer to owner to consumer
 
@@ -170,8 +181,8 @@ Names from the pinned MNN checkout, the study artifact or git (not in this tree)
 - macOS precedent: EG-1 runs on its own engine (MLX + EnviousDecode) while S1 stays in a separate module. Android
   follows the split: EG-1 on MNN, S1-mini on GenieX/llama.cpp.
 - Binding decisions kept: only one heavy model resident (`architecture-rules.md` RULE: isolate-limbs); polish model
-  leaves with its process (RULE: no-idle-cost); S1-mini budgets 10/12/15 s unchanged; EG-1 budgets 18/20/23 s
-  unchanged.
+  leaves with its process (RULE: no-idle-cost); one 15 s local polish ceiling for every local model (founder, #510,
+  2026-11-14), unchanged here.
 
 ### 2.5.4 Boundaries
 
@@ -185,9 +196,14 @@ Names from the pinned MNN checkout, the study artifact or git (not in this tree)
   layer instead drives `generate_init` plus single-step `generate(1)` and checks an abort flag between tokens
   (`transformers/llm/engine/include/llm/llm.hpp:219-223`).
 - **Privacy:** MNN on Android logs through `__android_log_print` only when built with `MNN_USE_LOGCAT`
-  (`include/MNN/MNNDefine.h:29-30`); otherwise `printf`, which goes nowhere in an app. Build with
-  `MNN_USE_LOGCAT=OFF`. No MNN code path sends anything over the network. Logcat stays on the phone, but the build
-  flag removes even the local copy.
+  (`include/MNN/MNNDefine.h:29-30`); otherwise `MNN_PRINT`/`MNN_ERROR` are `printf` (`MNNDefine.h:38-39`). Logging
+  is NOT compiled out: an app process's stdout is not routed to logcat by default, so the text is discarded, but
+  this is a platform default, not our guarantee. Build with `MNN_USE_LOGCAT=OFF`, and in chunk 1 trace every
+  reachable MNN print in the LLM path for prompt or output text (`llm.cpp` prints shown in §2.5.5 P10) and run a
+  synthetic-prompt canary with logcat captured, asserting the canary string never appears. Nothing here is
+  network-reachable: MNN has no network code in the LLM path (NOT VERIFIED beyond a grep for socket/http/curl in
+  `transformers/llm` and `source/core`, done in chunk 1), and automatic telemetry stays allowlist-only
+  (`telemetry/PayloadSanitizer.kt`).
 - **Storage:** the weight cache must live outside the model folder (verification rejects extra files,
   `ModelDelivery.kt:142`).
 
@@ -204,6 +220,7 @@ Names from the pinned MNN checkout, the study artifact or git (not in this tree)
 | P7 | No RAM gate exists | `device/DeviceTier.kt:22-43` (cores and i8mm only); `ModelDeliveryWorker.kt:61` | Read |
 | P8 | Thinking stays off without a `context.json` file | Study used `context.json` `{"enable_thinking": false}` next to the model | Not verified: chunk 1 sets it through `set_config` and checks no `<think>` appears; otherwise ship the file in the manifest |
 | P9 | MNN source build fits the existing CI build | Not verified: chunk 1 measures the clean `assembleDebug` time with MNN; CI `build-check` runs unit tests only |
+| P10 | No MNN path we build can send or log dictated text | Grep of the pinned tree: the only HTTP client (`httplib.h`) is included by `transformers/llm/engine/app/*` (not built) and `src/omni.cpp` (built only with `MNN_BUILD_LLM_OMNI`, kept OFF). One print can carry user text: `tokenizer/tokenizer.cpp:575` prints an unencodable fragment through `MNN_ERROR` (stdout, discarded by default). `LLM_LOG_TO_STRING` stays OFF (`transformers/llm/engine/CMakeLists.txt:84-87`). | Read; chunk 1 adds the synthetic-canary logcat test and an `llvm-nm` check that the shipped `libMNN.so` has no `httplib`/socket symbols |
 
 ## 3. Design
 
@@ -231,7 +248,15 @@ JNI surface (one `Llm` per process, guarded like `s1_jni.cpp`):
 ### 3.2 Model files
 
 Replace `ModelManifest.eg1Micro`'s files with the MNN export, revision `eg1-micro-1.0-g3d-mnn-hqq64` (proposed),
-`engineId = "mnn"`, `previous = listOf("eg1-micro-1.0-g3d")` so a phone holding the GGUF upgrades. Files, flat, with
+`engineId = "mnn"`, `previous = emptyList()`. `previous` cannot carry the GGUF revision: its contract is "older
+revisions this build's engine still loads unchanged", same engine and file names (`models/ModelManifest.kt:28-33`,
+`ModelManifestTest.previousRevisionsAreTheSameModelAtAnotherPin`), and listing it would hand a GGUF to MNN through
+`usableDescriptor` (`models/ModelDelivery.kt:133-134`). #529 never reached production, so GGUF installs exist only on
+internal test phones. On those, the folder no longer verifies against the MNN descriptor, EG-1 Micro reads as not
+installed (deterministic fallback, existing copy), and the user downloads again; admission replaces the old folder
+through the existing `.old` swap. Chunk 3 verifies on a phone holding the GGUF: not-installed state, download,
+admission, the old files gone, and no GGUF path ever reaching `MnnNative.load` (the runtime also refuses a load path
+whose name is not `config.json`). Files, flat, with
 `config.json` first so `files.first()` stays the load path: `config.json` (our greedy config), `llm_config.json`,
 `llm.mnn`, `llm.mnn.weight`, `tokenizer.mtok`. The unused vision files (`visual.mnn`, `visual.mnn.weight`, 63 MB) and
 the debug graph dump `llm.mnn.json` are not shipped. Sizes and SHA-256 come from the published files; download about
@@ -268,6 +293,15 @@ output matches the `MNN_CPU` canary. Qualification reuses `qualifyProcessingForM
 `mnn_cachefile.bin` lives in the same cache folder. A failed or mismatching canary keeps CPU; no user setting is
 added (EG-1's processing selector stays hidden as in #528). If chunk 5 cannot meet this on the S26, it is cut and
 filed; chunks 1 to 4 ship without it.
+
+Today EG-1 can only qualify CPU: `ProcessingEnvironment.implementedBackends` returns `{CPU}` for `EG1_MICRO`
+(`processing/ProcessingEnvironment.kt:17-23`), and qualification selects the current runtime before testing. Chunk 5
+must therefore: (a) let `implementedBackends(MNN_OPENCL, EG1_MICRO)` include GPU only on an Adreno OpenCL device;
+(b) qualify GPU the first time with no existing GPU approval, running the canary on `MNN_CPU` and `MNN_OPENCL` in one
+qualification and comparing outputs; (c) prove the GPU actually ran (MNN reports its backend after load; a silent CPU
+fallback counts as a failed GPU qualification); (d) require a measured speed advantage on the canary (OpenCL total
+below CPU total); (e) key the evidence by `s1ContextId`-style identity including the MNN kind, so evidence for one
+kind is never read as the other's, and stale or rejected evidence keeps CPU.
 
 ### 3.6 Prefix cache
 
@@ -314,6 +348,36 @@ heavy processes possible.
 | Process deaths during cache build | Local timeout, load stall, ModelSwap, OS kill. All leave no sync marker; next load rebuilds (P3, proven in chunk 1). |
 | Stale completions | Unchanged: generation ids and poisoning in `PolishService` are engine-agnostic. |
 | Model swap while loaded | `ModelSwap.exclusive` kills `:polish` first (`ModelSwap.kt:57-68`); the cache folder of the old revision is deleted after admission. |
+
+### 5.1 Consumer dispositions (complete population)
+
+Producer sweep on the restacked branch: `grep -rlE "eg1Micro|EG1_MICRO|S1RuntimeKind" app/src` = 43 files.
+Dispositions: **C** changed, **U** unchanged with reason, **X** UNCHECKED (none left).
+
+| Files | Disp. | Reason |
+|---|---|---|
+| `S1RuntimeKind`, `S1Runtime`, `PolishService`, `ProcessingEnvironment`, `ModelManifest` | C | §10 |
+| `S1RuntimeKindTest`, `PolishPolicyTest` (asserts `runtimeKindFor(EG1_MICRO) == PORTABLE_CPU` without a hardware probe) | C | expect `MNN_CPU`; keep the no-probe assertion |
+| `ModelManifestTest`, `S1ModelSelectorTest` (EG-1 GGUF fixture names) | C | MNN file set, `engineId`, `config.json` first |
+| `Eg1MicroHardwareDeviceTest`, `CopyAheadDeviceTest` (EG-1 arm drives `S1Native` with the GGUF) | C | EG-1 arms drive the MNN runtime; memory split added (§11) |
+| `LocalPolishDiagnosticsTest` | C | add a parcel round-trip row for each new kind |
+| `FirebaseModelFixture`, `Eg1LocalPolishUiDeviceTest` | U | stage and download whatever `ModelManifest.eg1Micro` lists; fixture bytes regenerated from the new descriptor |
+| `EngineDeadline`, `PolishWatchdogBudget` and their tests | U | budgets are per model, not per engine; 10/12/15 s from #530 |
+| `LocalPolishDiagnostics`, `PostHogSchema`, `SentrySchema`, `MajorFaults` | U | read `S1RuntimeKind.entries`/identity generically |
+| `LocalPolishModel`, `PolishPolicy`, `ProviderConfigurationRepository`, `PolishSettingsViewModel`, `ProcessingCheckClient`, `S1ModelSelection` and their tests, `PolishPolicyParcelTest`, `ProviderConfigurationRepositoryTest` | U | carry the model choice and descriptor, not the engine; `S1ModelSelection` keeps `files.first()` (now `config.json`) |
+| `AppLaunchFacts`, `TakeFactsTest`, `AppActions`, `AppShell`, `SettingsActivity`, `ReadinessViewModel`, `ModelWorkViewModel` (+ tests, `ModelWorkOwnershipTest`), `PolishScreen`, `PolishLocalControls`, `PolishStatusChipTest`, `PolishScreenLayoutTest`, `ModelDeliveryNotification`, `ModelDeliveryWorker` | U except size lines | model id and state only; `PolishLocalControls`/model card size lines change for the cache (§3.4) |
+| `ProcessingObservationTest`, `S1LoadedConfigurationTest`, `PolishFailsOpenTest`, `TakePolishControllerTest`, `SustainedDictationDeviceTest` | U | engine-agnostic outcomes; S1-only device test |
+
+### 5.2 Async edges (load, cache build, generate, abort, close)
+
+| Class | Load / cache build | Generate | Abort / close |
+|---|---|---|---|
+| Interrupted | Kill mid-build leaves no sync marker; next load rebuilds (chunk 1 kill test). Kill after the marker but mid-write of a later page: NOT VERIFIED; chunk 1 corrupts a completed cache file and asserts load either rebuilds or fails to `ERROR:` (never garbage text) | Process death mid-generation: existing poison/kill path; no partial text delivered | Close during prefill: abort flag is checked only between tokens, so a prefill (300 to 800 tokens) finishes first; worst case is one prefill (A15 measured under 2 s). Accepted: the hard deadline still kills the process |
+| Deleted | Cache folder deleted while not loaded: rebuilt next load. Model folder removed: `ModelSwap` kills `:polish` first | n/a (no files read during generation once loaded, except mmapped cache pages; deleting a mapped file keeps the inode alive) | n/a |
+| Mutated | Cache from another revision or MNN build: folder name mismatch, deleted, rebuilt (P4) | n/a | n/a |
+| Concurrent | One `Llm` per process, guarded by the same single-worker executor `PolishService` uses; qualification and requests serialise on it | Next-request isolation: `reset()` before every generate; a chunk 2 test runs two different prompts back to back and compares with fresh-process output | `abort()` from the deadline thread races `generate(1)`: atomic flag only, no native free; `close()` runs on the worker after generate returns |
+| Absent | Full disk or unwritable folder: MNN continues without the disk cache (`llm.cpp:268-277`), more private memory; chunk 1 measures this path and records it | Model file missing: existing `LOCAL_NOT_READY` path | n/a |
+| Stale | Old-revision cache folders swept on load (file by file) | A completion after the deadline: existing generation ids drop it | n/a |
 
 ## 6. Downstream consumer matrix
 
@@ -409,6 +473,12 @@ this phone"), checked against `content-brand.md`.
 | Cache removal unit test | drift guard | §3.4 | delete removal call |
 | `PostHogSchemaTest`, `SentrySchemaTest` | drift guard | §6 | remove members |
 | Telemetry recount excluding test installs | measurement | §1 | n/a |
+| Memory attribution: a sampler in the device test reads the `:polish` process's `/proc/<pid>/status` (VmHWM, RssAnon, RssFile) every 50 ms across load and generation; reports peak resident, peak private (max sampled RssAnon) and file-backed, separately for first load (cache build) and reused cache, for llama.cpp and MNN in the same matrix | harness contract | goal 5 | remove `use_mmap`: peak private rises above the limit |
+| S1-mini unchanged: the existing S1 device and unit suites pass unmodified, and `git diff` shows no change under S1-only files | drift guard | goal 6 | n/a |
+| Storage: download peak disk use, cache allocated bytes (`du`), APK and installed size before and after, clean CI build time | measurement | §3.4, P9 | n/a |
+| Packaging: `llvm-readelf -d` and library names in the APK show no clash with GenieX or `ew-*` libraries; `useLegacyPackaging` still extracts; load, cache build and generate run on a 16 KB page-size emulator image (Android 15+) | product outcome | P5 | n/a |
+| Privacy canary: a synthetic prompt string through load, generate and a forced tokenizer error, logcat captured, the string never appears; `llvm-nm` shows no `httplib`/socket symbols in the shipped `libMNN.so` | product outcome | P10 | build with `MNN_USE_LOGCAT=ON` turns it red |
+| GPU qualification (chunk 5): first-time qualification, CPU/OpenCL identity separation, actual GPU execution, output comparison, measured speed advantage | product outcome | §3.5 | force CPU fallback: qualification must fail |
 
 ## 12. Blast radius and rollback
 
@@ -417,12 +487,17 @@ this phone"), checked against `content-brand.md`.
 - APK grows by about 8 MB (`libMNN.so` 7.8 MB plus the shim).
 - Rollback: revert the PR; phones that downloaded the MNN revision fall back through `previous` handling only if the
   GGUF descriptor returns, so rollback restores the #529 descriptor and the cache folder is deleted on load.
-- Merge order: #529, then this PR, then #530 rebased.
+- Merge order: #529, #530, this PR. This branch is already restacked on #530's head (`e768a8ea`), so its budgets
+  and its `S1Native`/`s1_jni.cpp` copy-ahead changes are the base; this change does not touch `s1_jni.cpp`. Overlap
+  with #530: `Eg1MicroHardwareDeviceTest` and `CopyAheadDeviceTest` (EG-1 arms), resolved here. If #529 or #530
+  change before merge, rebase and re-run the unit suite and the S26 pass on the combined tree.
 
 ## 13. Ship criteria specific to this change
 
 - [ ] EG-1 Micro polishes through MNN on the S26 (Play internal build) and the polished text lands in Gmail.
 - [ ] Each Test Lab phone: MNN p50 and long-case time below llama.cpp on the same phone, same matrix.
+- [ ] Per phone, the share of the 45 fidelity cases finishing inside the 10 s cooperative budget, MNN versus
+  llama.cpp, reported in the PR; phones and lengths still over budget are named, not hidden.
 - [ ] `:polish` peak private memory with MNN at most llama.cpp's on the same phone; numbers in the PR.
 - [ ] Full exam: no set significantly worse; serious errors not higher.
 - [ ] S26: OpenCL used only after a matching canary, or chunk 5 cut and filed.

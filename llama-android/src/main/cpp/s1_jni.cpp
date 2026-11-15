@@ -353,7 +353,9 @@ int generate_copy_ahead(common_sampler * sampler, const llama_vocab * vocab, con
 
         size_t accepted = 0;
         while (true) {
+            if (g_abort.load()) return END_ABORTED;
             llama_token token = common_sampler_sample(sampler, g_context, static_cast<int>(accepted));
+            if (g_abort.load()) return END_ABORTED;
             if (accept_all && accepted < guess.size()) token = guess[accepted];
             common_sampler_accept(sampler, token, true);
             if (accepted < guess.size() && token == guess[accepted] && !llama_vocab_is_eog(vocab, token)) {
@@ -477,7 +479,8 @@ std::string generate_text(const std::string & system_prompt,
             stats << "copy-ahead decodes " << g_copy_ahead_stats[0] << " | guessed " << g_copy_ahead_stats[1]
                   << " | accepted " << g_copy_ahead_stats[2] << " | recoveries " << g_copy_ahead_stats[3];
             log_info(stats.str());
-            if (copy_end == END_ABORTED) return aborted(prompt_count, generated);
+            // A deadline that fired during the final acceptance or the log line still wins over a normal end.
+            if (g_abort.load() || copy_end == END_ABORTED) return aborted(prompt_count, generated);
             if (copy_end == END_NONE) return "ERROR: S1 generation decode failed";
             g_last_end[0] = copy_end;
             g_last_end[1] = copy_end == END_EOS ? generated : max_tokens;

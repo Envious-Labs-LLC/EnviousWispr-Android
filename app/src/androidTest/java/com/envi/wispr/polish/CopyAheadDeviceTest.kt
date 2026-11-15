@@ -141,7 +141,7 @@ class CopyAheadDeviceTest {
             val copy = generate(raw)
             val mutated = generate(raw, acceptAll = true)
             val diff = WordDiff.of(raw, plain.text, copy.text)
-            if (WordDiff.of(raw, plain.text, mutated.text).changed) mutationFlagged++
+            if (WordDiff.of(raw, plain.text, mutated.text).real.isNotEmpty()) mutationFlagged++
             if (copy.end[0] == 0) naturalEos++
             if (diff.real.isNotEmpty()) real += "$id ${diff.real}"
             rows.put(
@@ -154,12 +154,20 @@ class CopyAheadDeviceTest {
         val first = cases.first()
         val base = generate(first.second, guesses = 0).text
         val words = base.split(' ')
-        val dictated = WordDiff.words(first.second).toSet()
-        val victim = words.indexOfFirst { word -> WordDiff.words(word).singleOrNull()?.let { it in dictated } == true }
+        val spoken = WordDiff.words(first.second).groupingBy { it }.eachCount()
+        val written = WordDiff.words(base).groupingBy { it }.eachCount()
+        // A word the output holds no more often than it was spoken, so dropping one copy is a real loss.
+        val victim = words.indexOfFirst { word ->
+            WordDiff.words(word).singleOrNull()?.let { (written[it] ?: 0) <= (spoken[it] ?: 0) } == true
+        }
         assertTrue("no dictated word in the first fixture's output to plant a loss on", victim >= 0)
         val dropped = words.filterIndexed { index, _ -> index != victim }.joinToString(" ")
         assertTrue("oracle missed a planted dropped word", WordDiff.of(first.second, base, dropped).real.isNotEmpty())
         assertTrue("oracle missed a planted added word", WordDiff.of(first.second, base, "$base zeppelin").real.isNotEmpty())
+        assertTrue("oracle missed a repeated name", WordDiff.of("call Maya", "Call Maya.", "Call Maya Maya.").real.isNotEmpty())
+        assertTrue("oracle missed swapped names", WordDiff.of("Maya called Leo", "Maya called Leo.", "Leo called Maya.").real.isNotEmpty())
+        assertTrue("oracle flagged a digit for a spoken number", WordDiff.of("five apples", "Five apples.", "5 apples.").real.isEmpty())
+        assertTrue("oracle flagged dropping an unspoken word", WordDiff.of("can grab Leo", "Can you grab Leo?", "Can grab Leo?").real.isEmpty())
         writeReport(
             JSONObject().put("model", model.name).put("load", load).put("cases", rows)
                 .put("mutationFlagged", mutationFlagged).put("naturalEos", naturalEos),
@@ -337,9 +345,11 @@ class CopyAheadDeviceTest {
 }
 
 /**
- * The fidelity oracle (#510): words copy-ahead added or lost against the one-token loop. A lost word that the
- * dictation contained, or an added word that neither the dictation nor the one-token loop contained, is REAL; any
- * other difference (a digit for a spoken number, punctuation) is cosmetic and reported.
+ * The fidelity oracle (#510), over ordered, normalized words (lowercase, punctuation dropped, spoken numbers up to
+ * twenty as digits). REAL: copy-ahead now holds a word fewer times than the dictation did (a dictated word lost), or
+ * more times than both the dictation and the one-token loop did (a word added or repeated), or the same words in a
+ * different order. Anything else is cosmetic and reported: punctuation, a digit for a spoken number, or dropping a
+ * word nobody said that the one-token loop had added (observed: "can you" for a spoken "can").
  */
 internal data class WordDiff(val real: List<String>, val cosmetic: List<String>) {
     val changed: Boolean get() = real.isNotEmpty() || cosmetic.isNotEmpty()
@@ -354,16 +364,26 @@ internal data class WordDiff(val real: List<String>, val cosmetic: List<String>)
             .split(Regex("[^\\p{L}\\p{N}']+")).filter { it.isNotEmpty() }.map { numbers[it] ?: it }
 
         fun of(raw: String, expected: String, actual: String): WordDiff {
-            val dictated = words(raw).toSet()
-            val remaining = words(actual).groupingBy { it }.eachCount().toMutableMap()
-            val lost = mutableListOf<String>()
-            for (word in words(expected)) {
-                val count = remaining[word] ?: 0
-                if (count > 0) remaining[word] = count - 1 else lost += word
+            val before = words(expected)
+            val after = words(actual)
+            if (before == after) return WordDiff(emptyList(), if (expected == actual) emptyList() else listOf("punctuation"))
+            val spoken = words(raw).groupingBy { it }.eachCount()
+            val had = before.groupingBy { it }.eachCount()
+            val has = after.groupingBy { it }.eachCount()
+            val real = mutableListOf<String>()
+            val cosmetic = mutableListOf<String>()
+            for (word in (had.keys + has.keys).sorted()) {
+                val now = has[word] ?: 0
+                val was = had[word] ?: 0
+                val said = spoken[word] ?: 0
+                when {
+                    now == was -> Unit
+                    now < was && now < said -> real += "-$word"
+                    now > was && now > maxOf(said, was) -> real += "+$word"
+                    else -> cosmetic += (if (now < was) "-$word" else "+$word")
+                }
             }
-            val added = remaining.flatMap { (word, count) -> List(count) { word } }
-            val real = lost.filter { it in dictated }.map { "-$it" } + added.filter { it !in dictated }.map { "+$it" }
-            val cosmetic = lost.filter { it !in dictated }.map { "-$it" } + added.filter { it in dictated }.map { "+$it" }
+            if (real.isEmpty() && had == has) real += "reordered"
             return WordDiff(real, cosmetic)
         }
     }

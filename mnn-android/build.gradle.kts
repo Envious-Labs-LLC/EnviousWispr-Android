@@ -62,10 +62,16 @@ dependencies {
 // configures, and a patch that is already applied is recognised and left alone. A patch that neither applies nor is
 // already applied fails the build rather than building an engine without the fix.
 val mnnSource = rootProject.file("third_party/MNN")
+// The patches this build must carry, by name: a missing or extra file fails the build instead of shrinking the list.
+val requiredMnnPatches = listOf("0001-close-prefix-cache-file-handles.patch")
 val applyMnnPatches by tasks.registering {
-    val patches = fileTree("patches") { include("*.patch") }.sortedBy { it.name }
+    val patches = requiredMnnPatches.map { file("patches/$it") }
     inputs.files(patches)
     doLast {
+        val present = fileTree("patches") { include("*.patch") }.map { it.name }.sorted()
+        if (present != requiredMnnPatches.sorted() || patches.any { !it.isFile }) {
+            throw GradleException("mnn-android/patches must hold exactly $requiredMnnPatches, found $present")
+        }
         patches.forEach { patch ->
             fun git(vararg args: String) = ProcessBuilder(listOf("git", "-C", mnnSource.path) + args).redirectErrorStream(true).start().waitFor()
             when {

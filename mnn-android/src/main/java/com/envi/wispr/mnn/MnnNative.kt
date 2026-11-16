@@ -37,6 +37,9 @@ object MnnNative {
     external fun abort()
     external fun unload()
 
+    /** Debug libraries only: raises the abort flag right after the next prefix call (between the two prefills). */
+    external fun testAbortAfterPrefixCall()
+
     /**
      * Debug libraries only: MNN's own one-call generation, the oracle for the step loop, on a model loaded without
      * prefix reuse. Throws in release.

@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include <sys/statvfs.h>
+
 #include "llm/llm.hpp"
 
 using MNN::Transformer::ChatMessages;
@@ -30,6 +32,10 @@ std::atomic<bool> g_abort{false};
 // Prefix reuse (#531 plan §3.6): on when the model was loaded with a prefix folder.
 std::string g_prefixDir;
 constexpr size_t MAX_PREFIX_ENTRIES = 4;
+// Measured on the arm64 emulator, 2026-11-15 (#531): one saved entry 14,527,238 bytes, KV scratch 9,437,184.
+constexpr uint64_t ENTRY_BYTES = 14527238ULL;
+constexpr uint64_t SCRATCH_BYTES = 9437184ULL;
+constexpr uint64_t MARGIN_BYTES = 128ULL * 1024ULL * 1024ULL;
 const char* const SIDECAR = ".ok";
 
 // [end code, generated tokens, prompt tokens, prefill ms, decode ms]. End codes: 0 stop token, 1 token cap,
@@ -107,92 +113,168 @@ std::string entryKey(const std::vector<int>& ids, size_t n) {
 
 bool ownedBy(const fs::path& file, const std::string& key) {
     const std::string name = file.filename().string();
-    return name.rfind(key + "_", 0) == 0 || name == key + SIDECAR;
+    return name.rfind(key + "_", 0) == 0 || name == key + SIDECAR || name == key + SIDECAR + ".tmp";
 }
 
-// Files only, one by one (tools-and-apps.md RULE: never-unattended-recursive-delete).
-void removeEntry(const std::string& key) {
+// Files only, one by one (tools-and-apps.md RULE: never-unattended-recursive-delete). True only when nothing of the
+// entry is left afterwards.
+bool removeEntry(const std::string& key) {
+    std::error_code ec;
+    std::vector<fs::path> owned;
+    for (const auto& item : fs::directory_iterator(g_prefixDir, ec)) {
+        if (ownedBy(item.path(), key)) owned.push_back(item.path());
+    }
+    if (ec) return false;
+    bool clean = true;
+    for (const auto& file : owned) {
+        std::error_code rm;
+        if (!fs::is_regular_file(fs::symlink_status(file, rm)) || !fs::remove(file, rm) || rm) clean = false;
+    }
+    return clean;
+}
+
+bool isMarker(const std::string& name) { return name.find("_sync.") != std::string::npos; }
+
+// The entry's own files on disk now (data files and MNN's markers), excluding our sidecar.
+std::map<std::string, uintmax_t> entryFiles(const std::string& key) {
+    std::map<std::string, uintmax_t> files;
     std::error_code ec;
     for (const auto& item : fs::directory_iterator(g_prefixDir, ec)) {
-        if (item.is_regular_file(ec) && ownedBy(item.path(), key)) fs::remove(item.path(), ec);
+        const std::string name = item.path().filename().string();
+        if (name.rfind(key + "_", 0) == 0 && item.is_regular_file(ec)) files[name] = item.file_size(ec);
     }
+    return files;
 }
 
-// True when the sidecar exists and every file it lists still has its recorded size.
+// Trusted only when the sidecar is complete (its first line states how many records follow, and exactly that many
+// parse), and the entry's files on disk are exactly the listed ones at the listed sizes, with every data file nonempty.
+// A partially written state file whose size happens to match is not detectable here (plan §3.6, NOT VERIFIED).
 bool entryTrusted(const std::string& key) {
     std::ifstream in(fs::path(g_prefixDir) / (key + SIDECAR));
     if (!in) return false;
+    std::string word;
+    size_t expected = 0;
+    if (!(in >> word >> expected) || word != "count" || expected == 0) return false;
+    std::map<std::string, uintmax_t> listed;
     std::string name;
     uintmax_t size = 0;
-    int listed = 0;
-    std::error_code ec;
-    while (in >> name >> size) {
-        listed++;
-        const fs::path file = fs::path(g_prefixDir) / name;
-        if (!fs::is_regular_file(file, ec) || fs::file_size(file, ec) != size) return false;
+    while (listed.size() < expected && (in >> name >> size)) {
+        if (!listed.emplace(name, size).second) return false;
     }
-    return listed > 0;
+    if (listed.size() != expected || (in >> name)) return false;
+    for (const auto& [file, bytes] : listed) {
+        if (!isMarker(file) && bytes == 0) return false;
+    }
+    return entryFiles(key) == listed;
 }
 
-// Records every file of a freshly written entry with its size; written only after the write call returned cleanly.
-void publishEntry(const std::string& key) {
-    std::error_code ec;
-    std::vector<std::pair<std::string, uintmax_t>> files;
-    for (const auto& item : fs::directory_iterator(g_prefixDir, ec)) {
-        const std::string name = item.path().filename().string();
-        if (item.is_regular_file(ec) && name.rfind(key + "_", 0) == 0) files.emplace_back(name, item.file_size(ec));
+// Writes the sidecar only after the write call returned cleanly: every write, the close and the rename are checked,
+// and no sidecar is left behind on any failure.
+bool publishEntry(const std::string& key) {
+    const auto files = entryFiles(key);
+    if (files.empty()) return false;
+    bool data = false;
+    for (const auto& [name, size] : files) {
+        if (!isMarker(name)) {
+            if (size == 0) return false;
+            data = true;
+        }
     }
-    if (files.empty()) return;
+    if (!data) return false;
     const fs::path tmp = fs::path(g_prefixDir) / (key + SIDECAR + ".tmp");
+    std::error_code ec;
     {
-        std::ofstream out(tmp);
+        std::ofstream out(tmp, std::ios::trunc);
+        out << "count " << files.size() << "\n";
         for (const auto& [name, size] : files) out << name << " " << size << "\n";
+        out.close();
+        if (!out) {
+            fs::remove(tmp, ec);
+            return false;
+        }
     }
     fs::rename(tmp, fs::path(g_prefixDir) / (key + SIDECAR), ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        return false;
+    }
+    return entryTrusted(key);
 }
 
-// Keeps at most MAX_PREFIX_ENTRIES complete entries counting the one about to be built; drops incomplete leftovers.
-void makeRoomFor(const std::string& key) {
+// Room on the prefix folder's disk for one more entry plus KV scratch, with the app's usual 128 MiB margin.
+bool roomForEntry() {
+    struct statvfs st {};
+    if (statvfs(g_prefixDir.c_str(), &st) != 0) return false;
+    const uint64_t free = static_cast<uint64_t>(st.f_bavail) * st.f_frsize;
+    return free >= ENTRY_BYTES + SCRATCH_BYTES + MARGIN_BYTES;
+}
+
+// Keeps at most MAX_PREFIX_ENTRIES complete entries counting the one about to be built; removes incomplete leftovers.
+// False when anything that had to go could not be removed: the caller then builds nothing.
+bool makeRoomFor(const std::string& key) {
     std::error_code ec;
     std::map<std::string, fs::file_time_type> complete;
-    std::vector<std::string> incomplete;
+    std::vector<std::string> owners;
     for (const auto& item : fs::directory_iterator(g_prefixDir, ec)) {
         const std::string name = item.path().filename().string();
         if (name.size() < 18 || name[0] != 'p') continue;
         const std::string owner = name.substr(0, 17);
         if (owner == key) continue;
-        if (name == owner + SIDECAR) complete[owner] = item.last_write_time(ec);
-        else if (std::find(incomplete.begin(), incomplete.end(), owner) == incomplete.end()) incomplete.push_back(owner);
+        if (std::find(owners.begin(), owners.end(), owner) == owners.end()) owners.push_back(owner);
     }
-    for (const auto& owner : incomplete) {
-        if (!complete.count(owner)) removeEntry(owner);
+    if (ec) return false;
+    for (const auto& owner : owners) {
+        if (entryTrusted(owner)) {
+            complete[owner] = fs::last_write_time(fs::path(g_prefixDir) / (owner + SIDECAR), ec);
+        } else if (!removeEntry(owner)) {
+            return false;
+        }
     }
     std::vector<std::pair<fs::file_time_type, std::string>> byAge;
     for (const auto& [owner, time] : complete) byAge.emplace_back(time, owner);
     std::sort(byAge.begin(), byAge.end());
     while (byAge.size() + 1 > MAX_PREFIX_ENTRIES) {
-        removeEntry(byAge.front().second);
+        if (!removeEntry(byAge.front().second) || !entryFiles(byAge.front().second).empty()) return false;
         byAge.erase(byAge.begin());
     }
+    return true;
 }
+
+enum class Entry { TRUSTED, BUILD, REFUSED };
+
+// Decides whether this key's entry can be read, must be built (after making room), or cannot be built here.
+Entry prepareEntry(const std::string& key) {
+    if (entryTrusted(key)) return Entry::TRUSTED;
+    if (!removeEntry(key)) return Entry::REFUSED;
+    if (!roomForEntry()) return Entry::REFUSED;
+    if (!makeRoomFor(key)) return Entry::REFUSED;
+    return Entry::BUILD;
+}
+
+#ifdef EW_MNN_TEST_SWITCHES
+std::atomic<bool> g_testAbortAfterPrefixCall{false};
+#endif
 
 // One prefix session: entry check, MNN's call 1 (prefix) and call 2 (rest), both prefill only. Every request runs one,
 // because a plain generate after prefix mode is on would be read as part of a stale session (plan §3.6).
-// Returns false when aborted or failed before the step loop.
+// Returns false when aborted, refused or failed before the step loop.
 bool prefixSession(const std::vector<int>& ids, size_t n, std::ostringstream& text) {
     const std::string key = entryKey(ids, n);
-    const bool trusted = entryTrusted(key);
-    if (!trusted) {
-        removeEntry(key);
-        makeRoomFor(key);
-    }
+    const Entry entry = prepareEntry(key);
+    if (entry == Entry::REFUSED) return false;
     g_llm->reset();
     g_llm->setPrefixCacheFile(key);
     g_llm->generate_init(&text, nullptr);
     if (g_abort.load()) return false;
     g_llm->generate(std::vector<int>(ids.begin(), ids.begin() + n), 0);
     if (g_llm->getContext()->status == LlmStatus::INTERNAL_ERROR) return false;
-    if (!trusted) publishEntry(key);
+    if (entry == Entry::BUILD && !publishEntry(key)) {
+        removeEntry(key);
+        return false;
+    }
+#ifdef EW_MNN_TEST_SWITCHES
+    if (g_testAbortAfterPrefixCall.exchange(false)) g_abort.store(true);
+#endif
     if (g_abort.load()) return false;
     g_llm->generate(std::vector<int>(ids.begin() + n, ids.end()), 0);
     return g_llm->getContext()->status != LlmStatus::INTERNAL_ERROR;
@@ -259,7 +341,7 @@ JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_generate(JNIEnv* env
         if (n == 0) return toJava(env, "ERROR: no shared prefix");
         if (!prefixSession(ids, n, text)) {
             g_last[0] = g_abort.load() ? END_ABORTED : END_ENGINE_ERROR;
-            return toJava(env, g_abort.load() ? "ERROR: aborted" : "ERROR: engine error");
+            return toJava(env, g_abort.load() ? "ERROR: aborted" : "ERROR: prefix session failed");
         }
     }
     const auto* context = g_llm->getContext();
@@ -288,9 +370,9 @@ JNIEXPORT jboolean JNICALL Java_com_envi_wispr_mnn_MnnNative_warmPrefix(JNIEnv* 
     const size_t n = prefixLength(system, ids);
     if (n == 0) return JNI_FALSE;
     const std::string key = entryKey(ids, n);
-    if (entryTrusted(key)) return JNI_TRUE;
-    removeEntry(key);
-    makeRoomFor(key);
+    const Entry entry = prepareEntry(key);
+    if (entry == Entry::TRUSTED) return JNI_TRUE;
+    if (entry == Entry::REFUSED) return JNI_FALSE;
     std::ostringstream ignored;
     g_llm->reset();
     g_llm->setPrefixCacheFile(key);
@@ -298,8 +380,9 @@ JNIEXPORT jboolean JNICALL Java_com_envi_wispr_mnn_MnnNative_warmPrefix(JNIEnv* 
     if (g_abort.load()) return JNI_FALSE;
     g_llm->generate(std::vector<int>(ids.begin(), ids.begin() + n), 0);
     if (g_llm->getContext()->status == LlmStatus::INTERNAL_ERROR) return JNI_FALSE;
-    publishEntry(key);
-    return entryTrusted(key) ? JNI_TRUE : JNI_FALSE;
+    if (publishEntry(key)) return JNI_TRUE;
+    removeEntry(key);
+    return JNI_FALSE;
 }
 
 JNIEXPORT jintArray JNICALL Java_com_envi_wispr_mnn_MnnNative_lastEnd(JNIEnv* env, jobject) {
@@ -318,6 +401,11 @@ JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_unload(JNIEnv*, jobject
 }
 
 #ifdef EW_MNN_TEST_SWITCHES
+// Debug libraries only: raise the abort flag right after the next prefix call, to stage an abort between the prefills.
+JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_testAbortAfterPrefixCall(JNIEnv*, jobject) {
+    g_testAbortAfterPrefixCall.store(true);
+}
+
 // Debug libraries only: MNN's own one-call generation, the oracle the step loop must match token for token. Valid only
 // on a model loaded WITHOUT a prefix folder: with prefix mode on, a plain call could join a stale session.
 JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_referenceResponse(JNIEnv* env, jobject, jstring jSystem,

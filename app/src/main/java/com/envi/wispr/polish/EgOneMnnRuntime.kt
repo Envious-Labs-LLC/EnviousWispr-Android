@@ -57,9 +57,11 @@ internal class EgOneMnnRuntime(
                 check(cache.isDirectory || cache.mkdirs()) { "cache folder unavailable" }
                 check(cache.canWrite()) { "cache folder not writable" }
                 check((prefix.isDirectory || prefix.mkdirs()) && prefix.canWrite()) { "prefix folder unavailable" }
-                check(cacheBuilt(cache) || StatFs(cache.path).availableBytes >= ModelManifest.eg1Micro.engineCacheBytes + MARGIN_BYTES) {
-                    "not enough storage for the weight cache"
-                }
+                // Room for whatever this load and later prefix entries still have to write: the whole engine cache when
+                // the weights are not built yet, otherwise one prefix entry plus KV scratch (the native side re-checks
+                // before each new entry).
+                val needed = if (cacheBuilt(cache)) PREFIX_AND_SCRATCH_BYTES else ModelManifest.eg1Micro.engineCacheBytes
+                check(StatFs(cache.path).availableBytes >= needed + MARGIN_BYTES) { "not enough storage for the engine cache" }
                 val status = try {
                     MnnNative.loadModel(model.path, if (unit == GPU) "opencl" else "cpu", threads(), cache.path, prefix.path)
                 } catch (error: Throwable) {
@@ -130,6 +132,8 @@ internal class EgOneMnnRuntime(
         /** MNN's OpenCL mode word passed as `thread_num` (buffer memory, tuned kernels), as the 2026-11-15 study ran it. */
         private const val OPENCL_MODE = 68
         private const val MARGIN_BYTES = 128L * 1024L * 1024L
+        // One saved prefix entry and the KV scratch, measured on the arm64 emulator 2026-11-15 (`mnn_jni.cpp` ENTRY_BYTES).
+        private const val PREFIX_AND_SCRATCH_BYTES = 14_527_238L + 9_437_184L
         // `mnn_jni.cpp` END_* codes.
         const val END_STOP = 0
         const val END_CAP = 1

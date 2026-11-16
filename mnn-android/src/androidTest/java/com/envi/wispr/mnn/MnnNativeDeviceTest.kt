@@ -170,20 +170,61 @@ class MnnNativeDeviceTest {
         assertEquals("an unpublished entry is rebuilt", expected, MnnNative.generate(system, probe.getString("input"), probe.optInt("cap", 512), 2048))
         assertTrue("the rebuilt entry is published again", prefixDir().listFiles().orEmpty().any { it.name.endsWith(".ok") })
 
+        // A sidecar cut short is not trusted: the entry is rebuilt and published again.
+        val sidecar = prefixDir().listFiles().orEmpty().first { it.name.endsWith(".ok") }
+        sidecar.writeText(sidecar.readLines().take(2).joinToString("\n"))
+        MnnNative.resetAbort()
+        assertEquals("a partial sidecar is rebuilt", expected, MnnNative.generate(system, probe.getString("input"), probe.optInt("cap", 512), 2048))
+        assertTrue("the rebuilt sidecar is complete again", sidecar.readLines().size > 2)
+
         // An abort raised before the request runs stops it before either prefill.
         MnnNative.abort()
         assertEquals("ERROR: aborted", MnnNative.generate(system, probe.getString("input"), 64, 2048))
         assertEquals("end code", 2, MnnNative.lastEnd()[0])
+
+        // An abort landing between the two prefills stops the request there, and the next request is unaffected.
+        MnnNative.resetAbort()
+        MnnNative.testAbortAfterPrefixCall()
+        assertEquals("ERROR: aborted", MnnNative.generate(system, probe.getString("input"), 64, 2048))
+        assertEquals("end code", 2, MnnNative.lastEnd()[0])
+        MnnNative.resetAbort()
+        assertEquals("the request after an abort is whole", expected, MnnNative.generate(system, probe.getString("input"), probe.optInt("cap", 512), 2048))
         MnnNative.unload()
     }
 
-    /** An abort from another thread stops generation before the next token (plan §3.1, P6). */
+    /** Five distinct prefixes keep only four whole entries: the oldest goes entirely, the newest stays (plan §3.6). */
+    @Test fun aFifthPrefixEvictsTheOldestWholeEntryAndKeepsTheNewest() {
+        assertTrue("model and fixtures not staged in $dir", staged())
+        val base = File("$dir/system.txt").readText()
+        clearPrefix()
+        load(prefix = true)
+        val keysInOrder = mutableListOf<String>()
+        for (variant in 1..5) {
+            MnnNative.resetAbort()
+            val out = MnnNative.generate("$base Variant $variant.", "<TRANSCRIPT>\nok see you at five\n</TRANSCRIPT>", 32, 2048)
+            assertFalse("variant $variant failed: $out", out.startsWith("ERROR:"))
+            val sidecars = prefixDir().listFiles().orEmpty().filter { it.name.endsWith(".ok") }.map { it.name.removeSuffix(".ok") }
+            val newest = sidecars.first { it !in keysInOrder }
+            keysInOrder += newest
+            // Entries are ordered by sidecar time; stamp each a second apart instead of waiting for the clock.
+            File(prefixDir(), "$newest.ok").setLastModified(1_700_000_000_000L + variant * 1_000L)
+        }
+        val left = prefixDir().listFiles().orEmpty().filter { it.name.endsWith(".ok") }.map { it.name.removeSuffix(".ok") }.toSet()
+        File(out, "eviction.txt").writeText("order=$keysInOrder left=$left\n")
+        MnnNative.unload()
+        assertEquals("four whole entries kept", 4, left.size)
+        assertFalse("the oldest entry was evicted", keysInOrder.first() in left)
+        assertTrue("the newest entry stays", keysInOrder.last() in left)
+        assertTrue("nothing of the evicted entry remains", prefixDir().listFiles().orEmpty().none { it.name.startsWith(keysInOrder.first()) })
+    }
+
+    /** An abort from another thread stops generation before the next token, with prefix reuse on (plan §3.1, P6). */
     @Test fun abortStopsGenerationBetweenTokens() {
         assertTrue("model and fixtures not staged in $dir", staged())
         val system = File("$dir/system.txt").readText()
         val longest = File("$dir/cases.jsonl").readLines().filter { it.isNotBlank() }
             .map { JSONObject(it) }.maxBy { it.getString("input").length }
-        load()
+        load(prefix = true)
         MnnNative.resetAbort()
         val abortedAt = AtomicLong(0)
         val aborter = thread {

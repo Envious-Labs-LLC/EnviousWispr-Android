@@ -12,9 +12,14 @@ object MnnNative {
 
     /**
      * Loads the model whose folder holds [configPath] (must be that folder's `config.json`) on [backend] ("cpu" or
-     * "opencl"), keeping the weight cache in [cacheDir], which must exist outside the model folder. Returns "" or an error.
+     * "opencl"), keeping the weight cache in [cacheDir], which must exist outside the model folder. A non-empty
+     * [prefixDir] (an existing folder) turns on prefix reuse: every request then runs as its own prefix session and
+     * reuses the saved system-prompt state (#531 plan §3.6). Returns "" or an error.
      */
-    external fun loadModel(configPath: String, backend: String, threads: Int, cacheDir: String): String
+    external fun loadModel(configPath: String, backend: String, threads: Int, cacheDir: String, prefixDir: String): String
+
+    /** Builds or confirms the saved prefix state for [systemPrompt]; false when prefix reuse is off or it failed. */
+    external fun warmPrefix(systemPrompt: String): Boolean
 
     /** Generates up to [maxTokens], refusing a prompt whose tokens plus [maxTokens] exceed [contextLimit]. */
     external fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, contextLimit: Int): String
@@ -32,6 +37,9 @@ object MnnNative {
     external fun abort()
     external fun unload()
 
-    /** Debug libraries only: MNN's own one-call generation, the oracle for the step loop. Throws in release. */
+    /**
+     * Debug libraries only: MNN's own one-call generation, the oracle for the step loop, on a model loaded without
+     * prefix reuse. Throws in release.
+     */
     external fun referenceResponse(systemPrompt: String, userPrompt: String, maxTokens: Int): String
 }

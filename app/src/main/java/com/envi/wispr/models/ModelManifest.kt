@@ -99,8 +99,9 @@ internal object ModelManifest {
             ModelFile("tokenizer.mtok", 7_337_120L, "bdf181ec543983404765394d682a25ecb95360172fa7e91b1a2573e0b632c34b", hosted("eg1", eg1Revision, "tokenizer.mtok")),
         ),
         previous = emptyList(),
-        // Allocated size of MNN's built cache for this revision: 591,132 KiB measured on the arm64 emulator, 2026-11-15.
-        engineCacheBytes = 605_319_168L,
+        // Measured on the arm64 emulator, 2026-11-15 (#531): the built weight cache allocates 605,319,168 bytes; each saved
+        // system-prompt entry takes 14,527,238; at most four are kept, plus one being rebuilt and 9,437,184 of KV scratch.
+        engineCacheBytes = 605_319_168L + 5L * 14_527_238L + 9_437_184L,
     )
     val ONBOARDING = listOf(parakeet, s1)
     val LOCAL_POLISH = listOf(s1, eg1Micro)

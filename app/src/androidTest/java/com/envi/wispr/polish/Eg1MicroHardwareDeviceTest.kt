@@ -127,6 +127,11 @@ class Eg1MicroHardwareDeviceTest {
             assertEquals(PolishReason.POLISHED, s1Warm.reason)
             assertEquals(s1ColdLoadMs, s1Warm.diagnostics?.lastLoadMs)
             val polishPid = readPolishPid()
+            // The same meter with only S1-mini resident, so EG-1's windows below can be read against it (#531).
+            val s1OnlyMemory = PolishMemorySampler(polishPid).apply { start() }
+            val s1Measured = requestTake(proxy, 20L, "please send the report tomorrow morning", s1Policy, "uat-s1-memory")
+            val s1Only = s1OnlyMemory.stop()
+            assertEquals(PolishReason.POLISHED, s1Measured.reason)
 
             // Live runtime swap: S1-mini -> EG-1 Micro. The first EG-1 load may build MNN's weight cache.
             val firstLoadMemory = PolishMemorySampler(polishPid).apply { start() }
@@ -228,7 +233,7 @@ class Eg1MicroHardwareDeviceTest {
                     "eg1ColdLoadMs=${eg1Cold.diagnostics?.lastLoadMs} eg1WarmP50Ms=$warmP50Ms " +
                     "eg1EmailLatencyMs=${d4Email.latencyMs} polishPid=$polishPid " +
                     "rssKb=$eg1RssKb hwmKb=$eg1HwmKb s1CacheParity=true " +
-                    "eg1FirstLoadMemory=[$firstLoad] eg1DictationMemory=[$dictations]",
+                    "s1OnlyMemory=[$s1Only] eg1FirstLoadMemory=[$firstLoad] eg1DictationMemory=[$dictations]",
             )
             listOf("first EG-1 load" to firstLoad, "EG-1 dictations" to dictations).forEach { (window, memory) ->
                 assertTrue("No memory samples during $window", memory.samples > 0)
@@ -398,8 +403,11 @@ class Eg1MicroHardwareDeviceTest {
     }
 
     /** Peak resident (kernel high-water mark) and the maximum sampled private and file-backed memory of one window. */
-    private data class MemoryWindow(val samples: Int, val hwmKb: Long, val maxPrivateKb: Long, val maxFileKb: Long) {
-        override fun toString() = "samples=$samples intervalMs=$SAMPLE_INTERVAL_MS hwmKb=$hwmKb maxRssAnonKb=$maxPrivateKb maxRssFileKb=$maxFileKb"
+    private data class MemoryWindow(
+        val samples: Int, val hwmKb: Long, val firstPrivateKb: Long, val maxPrivateKb: Long, val maxFileKb: Long,
+    ) {
+        override fun toString() =
+            "samples=$samples intervalMs=$SAMPLE_INTERVAL_MS hwmKb=$hwmKb firstRssAnonKb=$firstPrivateKb maxRssAnonKb=$maxPrivateKb maxRssFileKb=$maxFileKb"
     }
 
     /**
@@ -411,6 +419,7 @@ class Eg1MicroHardwareDeviceTest {
         @Volatile private var running = true
         private var samples = 0
         private var hwm = 0L
+        private var firstAnon = -1L
         private var maxAnon = 0L
         private var maxFile = 0L
         private val thread = Thread {
@@ -420,6 +429,7 @@ class Eg1MicroHardwareDeviceTest {
                 val anon = fields["RssAnon"]
                 if (anon != null) {
                     samples++
+                    if (firstAnon < 0) firstAnon = anon
                     hwm = maxOf(hwm, fields["VmHWM"] ?: 0L)
                     maxAnon = maxOf(maxAnon, anon)
                     maxFile = maxOf(maxFile, fields["RssFile"] ?: 0L)
@@ -433,7 +443,7 @@ class Eg1MicroHardwareDeviceTest {
         fun stop(): MemoryWindow {
             running = false
             thread.join()
-            return MemoryWindow(samples, hwm, maxAnon, maxFile)
+            return MemoryWindow(samples, hwm, firstAnon, maxAnon, maxFile)
         }
     }
 

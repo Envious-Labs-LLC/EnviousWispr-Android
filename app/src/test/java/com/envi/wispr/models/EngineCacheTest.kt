@@ -48,6 +48,31 @@ class EngineCacheTest {
         assertTrue("removing an absent cache is fine", EngineCache.removeAll(root, model))
     }
 
+    @Test fun thePrefixSubfolderIsCountedAndRemovedButNothingDeeper() {
+        val root = temp.newFolder("model-cache")
+        val stale = cacheWith(root, "0000000")
+        val prefix = File(stale, EngineCache.PREFIX_FOLDER).apply { mkdirs() }
+        File(prefix, "p0123456789abcdef_0.k").writeBytes(ByteArray(500))
+        assertEquals(1_500L, EngineCache.bytes(root, model))
+        assertTrue(EngineCache.removeAll(root, model))
+        assertFalse(stale.exists())
+
+        val again = cacheWith(root, "0000000")
+        File(File(again, EngineCache.PREFIX_FOLDER), "deeper").mkdirs()
+        assertFalse("a folder inside the prefix folder is reported", EngineCache.removeAll(root, model))
+        assertTrue(again.isDirectory)
+    }
+
+    @Test fun leftoverScratchFilesAreSweptAndNothingElse() {
+        val root = temp.newFolder("model-cache")
+        val cache = cacheWith(root, "b6a3216")
+        File(cache, "0000000102EB50C0.k").writeBytes(ByteArray(10))
+        File(cache, "0000000102EB50C0.v").writeBytes(ByteArray(10))
+        assertEquals(2, EngineCache.sweepScratch(cache))
+        assertTrue("the weight cache stays", File(cache, "0_0_0_0_0.static").isFile)
+        assertTrue("its completion marker stays", File(cache, "0_0_0_0_sync.static").isFile)
+    }
+
     @Test fun aLinkOrSubfolderInsideACacheIsNeverFollowedAndIsReported() {
         val root = temp.newFolder("model-cache")
         val outside = temp.newFolder("user-data").apply { File(this, "keep.txt").writeText("mine") }

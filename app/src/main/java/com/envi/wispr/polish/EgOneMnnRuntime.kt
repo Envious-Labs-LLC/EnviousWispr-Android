@@ -47,17 +47,21 @@ internal class EgOneMnnRuntime(
         val model = File(modelPath)
         val cache = EngineCache.folder(context, ModelManifest.eg1Micro, MNN_VERSION)
         EngineCache.sweepExcept(context, ModelManifest.eg1Micro, keep = cache)
+        val prefix = File(cache, EngineCache.PREFIX_FOLDER)
+        // KV scratch files a killed process left behind; MNN names new ones per run and never reuses these.
+        EngineCache.sweepScratch(cache)
         val loaded = try {
             loadFirstS1Backend(computeUnits) { requested ->
                 check(requested == unit) { "${kind.identity} runs on $unit only" }
                 check(model.name == CONFIG_FILE) { "not an MNN model folder" }
                 check(cache.isDirectory || cache.mkdirs()) { "cache folder unavailable" }
                 check(cache.canWrite()) { "cache folder not writable" }
+                check((prefix.isDirectory || prefix.mkdirs()) && prefix.canWrite()) { "prefix folder unavailable" }
                 check(cacheBuilt(cache) || StatFs(cache.path).availableBytes >= ModelManifest.eg1Micro.engineCacheBytes + MARGIN_BYTES) {
                     "not enough storage for the weight cache"
                 }
                 val status = try {
-                    MnnNative.loadModel(model.path, if (unit == GPU) "opencl" else "cpu", threads(), cache.path)
+                    MnnNative.loadModel(model.path, if (unit == GPU) "opencl" else "cpu", threads(), cache.path, prefix.path)
                 } catch (error: Throwable) {
                     initializationFailed = true
                     throw S1RuntimeInitializationException(error)
@@ -67,6 +71,18 @@ internal class EgOneMnnRuntime(
         } catch (error: S1BackendLoadException) { failedComputeUnits = error.failedCodes; throw error }
         activeComputeUnit = loaded.backend; failedComputeUnits = loaded.failedCodes
         return "MNN $MNN_VERSION on ${loaded.backend}"
+    }
+
+    /** Builds the saved system-prompt state before the first request (#531 plan §3.6), bounded by [timeoutMs]. */
+    override fun warmPrefix(systemPrompt: String, timeoutMs: Long): Boolean {
+        if (activeComputeUnit != unit) return false
+        MnnNative.resetAbort()
+        val timer = abortTimer.schedule({ MnnNative.abort() }, timeoutMs, TimeUnit.MILLISECONDS)
+        return try {
+            MnnNative.warmPrefix(systemPrompt)
+        } finally {
+            timer.cancel(false)
+        }
     }
 
     override fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String? {

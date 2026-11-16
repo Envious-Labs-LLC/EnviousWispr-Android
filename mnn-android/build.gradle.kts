@@ -57,3 +57,25 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("junit:junit:4.13.2")
 }
+
+// MNN fixes this app carries on top of the pinned submodule (#531): each patch is applied once, before CMake
+// configures, and a patch that is already applied is recognised and left alone. A patch that neither applies nor is
+// already applied fails the build rather than building an engine without the fix.
+val mnnSource = rootProject.file("third_party/MNN")
+val applyMnnPatches by tasks.registering {
+    val patches = fileTree("patches") { include("*.patch") }.sortedBy { it.name }
+    inputs.files(patches)
+    doLast {
+        patches.forEach { patch ->
+            fun git(vararg args: String) = ProcessBuilder(listOf("git", "-C", mnnSource.path) + args).redirectErrorStream(true).start().waitFor()
+            when {
+                git("apply", "--reverse", "--check", patch.path) == 0 -> logger.info("MNN patch already applied: ${patch.name}")
+                git("apply", patch.path) == 0 -> logger.lifecycle("Applied MNN patch ${patch.name}")
+                else -> throw GradleException("MNN patch ${patch.name} neither applies nor is already applied to ${mnnSource.path}")
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("configureCMake") || name.startsWith("buildCMake")) dependsOn(applyMnnPatches)
+}

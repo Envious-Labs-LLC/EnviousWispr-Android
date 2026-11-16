@@ -333,19 +333,44 @@ reuses the prefix (`matrix-2eflk07wcq3l2`). Without it, goal 2 fails on the slow
 and `prefix_cache_path` set: call 1 of `generate(ids, 0)` with the prefix tokens writes the prefix state to disk if
 absent (`completePrefixWrite`, `llm.cpp:1623+`) or skips execution if present; call 2 with the remaining tokens loads
 it (`PendingRead`) and continues. The linear-attention layers save and restore their recurrent state through the same
-flags (`source/backend/cpu/CPULinearAttention.cpp:511-620`). Files are validated against the model graph and wiped
-when unusable (`llm.cpp:1588-1617`).
+flags (`source/backend/cpu/CPULinearAttention.cpp:511-620`). MNN itself rejects missing markers, missing or empty
+files and incompatible layer layouts (`prompt_cache_utils.hpp:119-144`); it does NOT check per-layer state sizes or
+contents (`CPULinearAttention.cpp:563-583` copies whatever size the file has), and `completePrefixWrite` creates its
+markers from file existence (`llm.cpp:1633-1645`). Prefix mode, once on, stays on: `reset()` and `generate_init()`
+do not clear it (`llm.cpp:967-1013`), and the call counter decides what the next `generate(ids, ...)` does
+(`llm.cpp:1139-1162`).
 
-**Design.**
-- The static prefix is the common token prefix of two renders of the same system prompt with different user turns,
-  so it is exactly the tokens every request with that system prompt shares (no hand-written template split).
-- `warmPrefix(systemPrompt)` (called by `PolishService` during warm-up, as for llama.cpp) writes the English prefix
-  file before the first request. Each request uses the prefix file for ITS system prompt (the 17 language variants
-  append a sentence, so each language gets its own file on first use).
-- Files live in the EG-1 cache folder (`EngineCache`, per revision and MNN build), named by a hash of the system
-  prompt; at most 4 prefix files are kept (oldest by modification time deleted file by file); each is about 15.6 MB
-  (Mac measurement), so `engineCacheBytes` rises by 4 x 16 MB plus the KV scratch files (about 10 MB).
-- A prompt that does not start with its prefix runs the plain path.
+**Design (revised after grounded round 5).**
+- **Every request is its own prefix session; there is no plain path once the engine is loaded.** A plain
+  `generate(ids)` after prefix mode is on could be read as call 1 or call 2 of a stale session (skipping or loading a
+  prefix it does not own), so the runtime never issues one. Each request calls `setPrefixCacheFile(key)` first, which
+  resets the call counter (`llm.cpp:1573`), then prefills the prefix (call 1) and the suffix (call 2) with zero
+  output tokens, then runs the existing abort-checked `generate(1)` loop. The abort flag is checked before call 1,
+  between the calls and in the loop; one cooperative deadline covers all of it.
+- **The prefix is computed per request.** Two renders of the request's system prompt with different user turns give
+  a candidate; the request uses the longest common prefix of that candidate and its own rendered tokens, which must
+  leave a non-empty suffix (a request whose common prefix is empty is refused with `ERROR:`, deterministic text).
+  The cache key is a hash of the prefix TOKEN sequence, so an entry can only ever be reused for exactly those tokens.
+- **Our own publication record.** After the prefix call that wrote an entry returns (MNN has published its markers)
+  without an abort or error, the runtime writes a sidecar `<key>.ok` listing each entry file and its size. An entry is trusted only when its sidecar exists and every
+  listed file has the listed size; otherwise every file of that key is deleted (file by file) before
+  `setPrefixCacheFile`, so MNN sees a missing entry and rebuilds it. A kill mid-write leaves no sidecar, so the
+  partial entry is rebuilt, never reused.
+- **Warm-up** (`warmPrefix(systemPrompt)`, called by `PolishService` during load as for llama.cpp) builds the English
+  entry before the first request using the same session code; it leaves no pending state that matters because the
+  next request starts its own session.
+- **Configuration** (supersedes §3.1's): before `load()`, `kvcache_mmap: true`, `prefix_cache_path` = the EG-1 cache
+  folder's `prefix/` subfolder, `tmp_path` = the cache folder, both created and probed writable by the runtime.
+- **Cap and accounting.** At most four complete logical entries (all layer data, marker and sidecar files of a key),
+  counting the entry being built; on the worker, before a new entry is built, the oldest complete entries by sidecar
+  time are evicted, never the active one, and incomplete entries are deleted. `engineCacheBytes` adds four entries
+  plus KV scratch plus one rebuild (Mac: 15.6 MB per entry, 9.4 MB scratch; phone sizes NOT VERIFIED, measured in the
+  chunk 2b device run and the descriptor value set from that measurement). `EngineCache` gains the `prefix/` subfolder
+  (still files only, one level).
+- **Tests (chunk 2b):** existing-entry warm-up followed by a request whose prefix differs; abort before, between and
+  after the two prefills; a truncated non-empty entry file and a missing sidecar both rebuild; a kill during an entry
+  write rebuilds on the next request; four-entry eviction never removes the active entry; outputs on the 45 fixtures
+  equal the same build's no-prefix outputs except for recorded punctuation drift.
 
 **Measured on the Mac (45 fixtures, same build):** p50 616 ms to 294 ms with the prefix reused; 41 of 45 outputs
 identical, 4 differ by punctuation only (a comma for a full stop, one capital), no word changes, which is the split

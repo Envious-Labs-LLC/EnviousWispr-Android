@@ -40,8 +40,8 @@ class MnnNativeDeviceTest {
 
     /** Empties the test's own cache folder entry by entry (no recursive delete) and asserts it is empty. */
     private fun clearCache() {
-        cacheDir().listFiles()?.forEach { entry -> assertTrue("cache entry is a file", entry.isFile); entry.delete() }
-        assertEquals("cache folder emptied", 0, cacheDir().listFiles()?.size ?: 0)
+        cacheDir().listFiles()?.filter { it.name != "prefix" }?.forEach { entry -> assertTrue("cache entry is a file", entry.isFile); entry.delete() }
+        assertEquals("cache folder emptied", 0, cacheDir().listFiles()?.count { it.name != "prefix" } ?: 0)
     }
 
     private fun log(file: String, line: String) {
@@ -49,9 +49,29 @@ class MnnNativeDeviceTest {
         android.util.Log.i("MnnNativeDeviceTest", line)
     }
 
-    private fun load(): Long {
+    private fun prefixDir(): File = File(cacheDir(), "prefix").apply { mkdirs() }
+
+    private fun clearPrefix() {
+        prefixDir().listFiles()?.forEach { entry -> assertTrue("prefix entry is a file", entry.isFile); entry.delete() }
+        assertEquals("prefix folder emptied", 0, prefixDir().listFiles()?.size ?: 0)
+    }
+
+    private fun openFiles(): Int = File("/proc/self/fd").list()?.size ?: -1
+
+    private fun words(text: String): List<String> =
+        text.lowercase().split(Regex("\\s+")).map { it.trim { c -> !c.isLetterOrDigit() } }.filter { it.isNotEmpty() }
+
+    /** Shared words over the longer answer's word count, counting repeats: 1.0 is the same words in any order. */
+    private fun overlap(a: String, b: String): Double {
+        val left = words(a).groupingBy { it }.eachCount()
+        val right = words(b).groupingBy { it }.eachCount()
+        val shared = left.entries.sumOf { (w, n) -> minOf(n, right[w] ?: 0) }
+        return shared.toDouble() / maxOf(left.values.sum(), right.values.sum(), 1)
+    }
+
+    private fun load(prefix: Boolean = false): Long {
         val started = System.nanoTime()
-        val error = MnnNative.loadModel("$dir/model/config.json", "cpu", 4, cacheDir().path)
+        val error = MnnNative.loadModel("$dir/model/config.json", "cpu", 4, cacheDir().path, if (prefix) prefixDir().path else "")
         assertEquals("load error", "", error)
         return (System.nanoTime() - started) / 1_000_000
     }
@@ -94,6 +114,67 @@ class MnnNativeDeviceTest {
         log("equivalence.jsonl", "{\"second_load_ms_cache_reused\":$secondLoadMs,\"mem\":\"${memory()}\"}")
         MnnNative.unload()
         assertEquals("step loop differs from MNN's own generation", 0, mismatches)
+    }
+
+    /**
+     * Prefix reuse (plan §3.6): the split prefill drifts numerically, so greedy text can take another valid path (seen on
+     * LONG-01: "Third, the budget" became a third list item). Every changed answer is recorded and must keep at least
+     * 90% of the plain answer's words; quality itself is judged by the graded exam, not here. open files stay flat across many requests (the MNN handle leak this app patches), at most four
+     * saved entries, and a damaged or unpublished entry is rebuilt rather than trusted.
+     */
+    @Test fun prefixReuseKeepsTheWordsHoldsOpenFilesFlatAndRebuildsDamagedEntries() {
+        assertTrue("model and fixtures not staged in $dir", staged())
+        val system = File("$dir/system.txt").readText()
+        val cases = File("$dir/cases.jsonl").readLines().filter { it.isNotBlank() }.map { JSONObject(it) }
+        File(out, "prefix.jsonl").delete()
+        load(prefix = false)
+        val plain = cases.associate { c -> MnnNative.resetAbort(); c.getString("id") to MnnNative.generate(system, c.getString("input"), c.optInt("cap", 512), 2048) }
+        MnnNative.unload()
+
+        clearPrefix()
+        load(prefix = true)
+        assertTrue("warm-up built the entry", MnnNative.warmPrefix(system))
+        val firstPass = cases.associate { c -> MnnNative.resetAbort(); c.getString("id") to MnnNative.generate(system, c.getString("input"), c.optInt("cap", 512), 2048) }
+        val filesAfterFirst = openFiles()
+        val secondPass = cases.associate { c -> MnnNative.resetAbort(); c.getString("id") to MnnNative.generate(system, c.getString("input"), c.optInt("cap", 512), 2048) }
+        val filesAfterSecond = openFiles()
+        var wordChanges = 0
+        var punctuationOnly = 0
+        var lowestOverlap = 1.0
+        cases.forEach { c ->
+            val id = c.getString("id")
+            assertFalse("error in $id: ${secondPass[id]}", secondPass.getValue(id).startsWith("ERROR:"))
+            assertEquals("the second pass over a saved entry matches the first, $id", firstPass[id], secondPass[id])
+            if (words(plain.getValue(id)) != words(secondPass.getValue(id))) {
+                wordChanges++
+                lowestOverlap = minOf(lowestOverlap, overlap(plain.getValue(id), secondPass.getValue(id)))
+                log("prefix.jsonl", JSONObject().put("word_change", id).put("plain", plain[id]).put("prefix", secondPass[id]).toString())
+            }
+            else if (plain[id] != secondPass[id]) punctuationOnly++
+        }
+        val entries = prefixDir().listFiles().orEmpty().count { it.name.endsWith(".ok") }
+        log("prefix.jsonl", "{\"lowest_overlap\":$lowestOverlap,\"word_changes\":$wordChanges,\"punctuation_only\":$punctuationOnly,\"open_files_after_first\":$filesAfterFirst,\"open_files_after_second\":$filesAfterSecond,\"entries\":$entries,\"prefix_bytes\":${prefixDir().listFiles().orEmpty().sumOf { it.length() }}}")
+        assertTrue("prefix reuse kept only ${"%.2f".format(lowestOverlap)} of an answer's words", lowestOverlap >= 0.9)
+        assertTrue("open files grew across ${cases.size} requests: $filesAfterFirst -> $filesAfterSecond", filesAfterSecond - filesAfterFirst <= 2)
+        assertTrue("at most four saved entries, found $entries", entries in 1..4)
+
+        // A truncated entry file and a missing sidecar are both rebuilt, and the answer stays the same.
+        val probe = cases.first()
+        val expected = secondPass.getValue(probe.getString("id"))
+        val dataFile = prefixDir().listFiles().orEmpty().first { it.name.endsWith("_0.v") || it.name.endsWith("_0.k") }
+        dataFile.writeBytes(dataFile.readBytes().copyOf(maxOf(1, (dataFile.length() / 2).toInt())))
+        MnnNative.resetAbort()
+        assertEquals("a truncated entry is rebuilt", expected, MnnNative.generate(system, probe.getString("input"), probe.optInt("cap", 512), 2048))
+        prefixDir().listFiles().orEmpty().filter { it.name.endsWith(".ok") }.forEach { it.delete() }
+        MnnNative.resetAbort()
+        assertEquals("an unpublished entry is rebuilt", expected, MnnNative.generate(system, probe.getString("input"), probe.optInt("cap", 512), 2048))
+        assertTrue("the rebuilt entry is published again", prefixDir().listFiles().orEmpty().any { it.name.endsWith(".ok") })
+
+        // An abort raised before the request runs stops it before either prefill.
+        MnnNative.abort()
+        assertEquals("ERROR: aborted", MnnNative.generate(system, probe.getString("input"), 64, 2048))
+        assertEquals("end code", 2, MnnNative.lastEnd()[0])
+        MnnNative.unload()
     }
 
     /** An abort from another thread stops generation before the next token (plan §3.1, P6). */

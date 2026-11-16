@@ -182,6 +182,7 @@ class ModelBootstrapApplication : Application() {
             runCatching { ModelDeliveryWorker.reapplyNetwork(app, onlyLegacyWifi = true) }
                 .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
             SpeechModelUpgrade.run(app)
+            Eg1ModelUpgrade.run(app)
             ModelUpdates.run(app)
         }
     }

@@ -50,6 +50,9 @@ internal class EgOneMnnRuntime(
         val prefix = File(cache, EngineCache.PREFIX_FOLDER)
         // KV scratch files a killed process left behind; MNN names new ones per run and never reuses these.
         EngineCache.sweepScratch(cache)
+        val threads = if (unit == GPU) OPENCL_MODE else MnnCpuThreads.forThisProcess().also {
+            com.envi.wispr.debug.DebugLogger.log("EgOneMnnRuntime", it.logLine())
+        }.threads
         val loaded = try {
             loadFirstS1Backend(computeUnits) { requested ->
                 check(requested == unit) { "${kind.identity} runs on $unit only" }
@@ -63,7 +66,7 @@ internal class EgOneMnnRuntime(
                 val needed = if (cacheBuilt(cache)) PREFIX_AND_SCRATCH_BYTES else ModelManifest.eg1Micro.engineCacheBytes
                 check(StatFs(cache.path).availableBytes >= needed + MARGIN_BYTES) { "not enough storage for the engine cache" }
                 val status = try {
-                    MnnNative.loadModel(model.path, if (unit == GPU) "opencl" else "cpu", threads(), cache.path, prefix.path)
+                    MnnNative.loadModel(model.path, if (unit == GPU) "opencl" else "cpu", threads, cache.path, prefix.path)
                 } catch (error: Throwable) {
                     initializationFailed = true
                     throw S1RuntimeInitializationException(error)
@@ -122,8 +125,6 @@ internal class EgOneMnnRuntime(
         activeComputeUnit = UNLOADED
     }
 
-    private fun threads(): Int = if (unit == GPU) OPENCL_MODE else S1Config.THREAD_COUNT
-
     internal companion object {
         const val CPU = "cpu"
         const val GPU = "gpu"
@@ -132,8 +133,8 @@ internal class EgOneMnnRuntime(
         /** MNN's OpenCL mode word passed as `thread_num` (buffer memory, tuned kernels), as the 2026-11-15 study ran it. */
         private const val OPENCL_MODE = 68
         private const val MARGIN_BYTES = 128L * 1024L * 1024L
-        // One saved prefix entry and the KV scratch, measured on the arm64 emulator 2026-11-15 (`mnn_jni.cpp` ENTRY_BYTES).
-        private const val PREFIX_AND_SCRATCH_BYTES = 14_527_238L + 9_437_184L
+        // One saved prefix entry and the KV scratch at one thread, the larger case (`mnn_jni.cpp` ENTRY_BYTES, SCRATCH_BYTES).
+        private const val PREFIX_AND_SCRATCH_BYTES = 24_750_854L + 16_777_216L
         // `mnn_jni.cpp` END_* codes.
         const val END_STOP = 0
         const val END_CAP = 1

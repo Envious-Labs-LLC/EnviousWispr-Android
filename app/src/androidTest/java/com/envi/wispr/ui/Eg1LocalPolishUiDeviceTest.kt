@@ -123,8 +123,8 @@ class Eg1LocalPolishUiDeviceTest {
         compose.onNode(modelTile("S1-mini") and hasText("Active")).assertIsNotSelected()
         compose.onNodeWithText("Casual").assertDoesNotExist()
         compose.onNodeWithText("Turn spoken thoughts into finished text").assertDoesNotExist()
-        // #531: model files (560.4 MB) plus MNN's weight cache (605.3 MB).
-        compose.onNodeWithText("1.2 GB on this phone").assertIsDisplayed()
+        // #531: model files (607.4 MB) plus the engine cache MNN builds (weights 700.0 MB, saved prompts, scratch).
+        compose.onNodeWithText("1.4 GB on this phone").assertIsDisplayed()
         compose.onNodeWithText("Envious Labs").assertIsDisplayed()
         compose.onNodeWithText("Not downloaded").assertIsDisplayed()
 

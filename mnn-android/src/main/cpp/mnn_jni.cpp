@@ -31,10 +31,14 @@ std::unique_ptr<Llm> g_llm;
 std::atomic<bool> g_abort{false};
 // Prefix reuse (#531 plan §3.6): on when the model was loaded with a prefix folder.
 std::string g_prefixDir;
+// The engine settings a saved entry was built under (backend and thread count). Measured 2026-11-15 on the S26: an
+// entry built with 4 threads and read with 1 produced runaway text, so the settings are part of every entry's key.
+std::string g_engineTag;
 constexpr size_t MAX_PREFIX_ENTRIES = 4;
-// Measured on the arm64 emulator, 2026-11-15 (#531): one saved entry 14,527,238 bytes, KV scratch 9,437,184.
-constexpr uint64_t ENTRY_BYTES = 14527238ULL;
-constexpr uint64_t SCRATCH_BYTES = 9437184ULL;
+// Measured on the S26 with one engine thread, 2026-11-15 (#531): one saved entry 24,750,854 bytes (files plus sidecar);
+// KV scratch peaked at 15,138,816, rounded up to 16 MiB. Both grow as the thread count falls (4 threads: 14,527,238).
+constexpr uint64_t ENTRY_BYTES = 24750854ULL;
+constexpr uint64_t SCRATCH_BYTES = 16777216ULL;
 constexpr uint64_t MARGIN_BYTES = 128ULL * 1024ULL * 1024ULL;
 const char* const SIDECAR = ".ok";
 
@@ -162,9 +166,14 @@ size_t prefixLength(const std::string& system, const std::vector<int>& ids) {
     return n < ids.size() ? n : 0;
 }
 
-// Names an entry by its exact prefix tokens (FNV-1a 64), so an entry is only ever reused for those tokens.
+// Names an entry by the engine settings and its exact prefix tokens (FNV-1a 64), so an entry is only ever reused for
+// those tokens under the settings that built it.
 std::string entryKey(const std::vector<int>& ids, size_t n) {
     uint64_t h = 1469598103934665603ULL;
+    for (const unsigned char c : g_engineTag) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
     for (size_t i = 0; i < n; i++) {
         h ^= static_cast<uint32_t>(ids[i]);
         h *= 1099511628211ULL;
@@ -362,6 +371,7 @@ JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_loadModel(JNIEnv* en
     if (cacheDir.empty()) return toJava(env, "ERROR: no cache folder");
     g_llm.reset();
     g_prefixDir.clear();
+    g_engineTag.clear();
     std::unique_ptr<Llm> llm(Llm::createLLM(configPath));
     if (!llm) return toJava(env, "ERROR: createLLM failed");
     std::ostringstream config;
@@ -375,6 +385,7 @@ JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_loadModel(JNIEnv* en
     if (!llm->load()) return toJava(env, "ERROR: load failed");
     g_llm = std::move(llm);
     g_prefixDir = prefixDir;
+    g_engineTag = backend + ":" + std::to_string(threads);
     return toJava(env, "");
 }
 
@@ -466,6 +477,7 @@ JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_abort(JNIEnv*, jobject)
 JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_unload(JNIEnv*, jobject) {
     g_llm.reset();
     g_prefixDir.clear();
+    g_engineTag.clear();
 }
 
 #ifdef EW_MNN_TEST_SWITCHES

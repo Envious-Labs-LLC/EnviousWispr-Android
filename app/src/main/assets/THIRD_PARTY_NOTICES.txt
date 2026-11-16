@@ -16,11 +16,11 @@ Changes: exported to ONNX and quantised to int8 (MatMulNBits) by Olicorne, with 
 
 "EG-1 Micro" by "Envious Labs", fine-tuned from "Qwen3.5-0.8B" by Alibaba Cloud (Apache License 2.0)
 Model ID: eg1-micro
-Model host: https://models.enviouslabs.co/eg1/eg1-micro-1.0-g3d-mnn-hqq64
+Model host: https://models.enviouslabs.co/eg1/eg1-micro-1.0-g3d-mnn-b32
 Base model: https://huggingface.co/Qwen/Qwen3.5-0.8B
-Pinned revision: eg1-micro-1.0-g3d-mnn-hqq64
+Pinned revision: eg1-micro-1.0-g3d-mnn-b32
 License: Envious Labs proprietary model weights; Apache-2.0 / MIT runtime dependencies
-Notes: Envious Labs fine-tuned Qwen3.5-0.8B (Apache License 2.0, reproduced in full below) and quantised the combined weights to 4-bit (HQQ, 8-bit output layer) in MNN's format, executed on-device with MNN (Apache License 2.0).
+Notes: Envious Labs fine-tuned Qwen3.5-0.8B (Apache License 2.0, reproduced in full below) and quantised the combined weights to 4-bit (blocks of 32, 8-bit output layer) in MNN's format, executed on-device with MNN (Apache License 2.0).
 
 onnx-asr audio front end (nemo128.onnx)
 Source repository: https://github.com/istupakov/onnx-asr

@@ -40,8 +40,10 @@ internal object Eg1ModelUpgrade {
             // A blocked phone (#449) downloads nothing; the worker would refuse the job at every start.
             val blocked = com.envi.wispr.device.DeviceTier.current == com.envi.wispr.device.DeviceTier.BLOCKED
             if (!blocked && owed(retiredInstalled(root), installed, ModelDeliveryControlStore(root).read(current))) {
-                ModelDeliveryWorker.enqueueUpdate(context, current)
-                DebugLogger.log(TAG, "EG-1 Micro upgrade to the MNN revision queued")
+                // KEEP, and the delivery control is left alone: a running download is never restarted, and a Pause or
+                // Cancel that lands after the check above is never cleared (`enqueueUpdate` would do both).
+                ModelDeliveryWorker.enqueueOwedUpdate(context, current)
+                DebugLogger.log(TAG, "EG-1 Micro upgrade to the current revision queued")
             }
         }.onFailure { DebugLogger.warn(TAG, "EG-1 Micro upgrade check failed: ${it.javaClass.simpleName}") }
     }

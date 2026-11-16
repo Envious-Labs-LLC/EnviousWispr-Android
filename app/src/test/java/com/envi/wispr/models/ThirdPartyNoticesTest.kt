@@ -81,7 +81,7 @@ class ThirdPartyNoticesTest {
     fun theNoticesDoNotStillNameARevisionNothingPins() {
         // The failing shape is not an absent revision, it is a SECOND one left behind beside the right
         // one. Anything shaped like a full commit hash has to be a revision something still pins.
-        val known = ModelManifest.all.map { it.pinnedRevision }.toSet() + SUBMODULE_LLAMA_CPP
+        val known = ModelManifest.all.map { it.pinnedRevision }.toSet() + SUBMODULE_LLAMA_CPP + SUBMODULE_MNN
         listOf("the shipped notices" to shipped, "the root notices" to rootFile.readText())
             .forEach { (label, text) ->
                 val named = Regex("[0-9a-f]{40}").findAll(text).map { it.value }.toSet()
@@ -206,13 +206,14 @@ class ThirdPartyNoticesTest {
         // These ship inside the APK without a Maven coordinate, so nothing in the dependency listing can
         // account for them and only a named entry can. ONNX Runtime has been a Maven dependency since #374.
         val text = rootFile.readText()
-        listOf("onnx-asr audio front end", "llama.cpp").forEach { component ->
+        listOf("onnx-asr audio front end", "llama.cpp", "MNN").forEach { component ->
             assertTrue("the root notices must name $component", text.contains(component))
         }
         assertTrue(
             "the root notices must pin llama.cpp at the commit this checkout builds",
             text.contains(SUBMODULE_LLAMA_CPP),
         )
+        assertTrue("the root notices must pin MNN at the commit this checkout builds (#531)", text.contains(SUBMODULE_MNN))
     }
 
     /**
@@ -255,5 +256,6 @@ class ThirdPartyNoticesTest {
          * reminder to check the rest of the entry too.
          */
         const val SUBMODULE_LLAMA_CPP = "ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc"
+        const val SUBMODULE_MNN = "b6a32165e2855106b76852fba80793d58a829663"
     }
 }

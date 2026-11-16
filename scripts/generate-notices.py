@@ -49,6 +49,7 @@ CACHE_DIR = REPO / "scripts" / ".notices-pom-cache"
 TEXTS = REPO / "scripts" / "license-texts"
 OUTPUT = REPO / "THIRD-PARTY-NOTICES.txt"
 SUBMODULE = "third_party/llama.cpp"
+SUBMODULE_MNN = "third_party/MNN"
 
 # POMs come in two shapes: most declare the Maven namespace on <project>, and older hand-written ones
 # (javax.inject:1 among our dependencies) declare none. A namespaced XPath silently returns nothing for
@@ -109,6 +110,18 @@ BUNDLED = [
             "Commit read from this repository's index entry for the submodule, not from the "
             "working checkout, which can lag it. Licence read from "
             "third_party/llama.cpp/LICENSE in this checkout."
+        ),
+    },
+    {
+        "name": "MNN",
+        "version": "(read from the submodule at generation time)",
+        "license": "Apache License 2.0",
+        "source": "https://github.com/alibaba/MNN",
+        "note": "Built from source as the :mnn-android module (#531). Runs EG-1 Micro.",
+        "evidence": (
+            "Commit read from this repository's index entry for the submodule, not from the "
+            "working checkout. Licence read from third_party/MNN/LICENSE.txt in this checkout; "
+            "the pinned tree has no NOTICE file."
         ),
     },
 ]
@@ -360,28 +373,28 @@ def git(*arguments: str) -> str:
     return finished.stdout
 
 
-def submodule_commit() -> str:
-    """The llama.cpp commit this repository PINS, from the index, not from the working checkout.
+def submodule_commit(path: str = SUBMODULE) -> str:
+    """The commit this repository PINS for a submodule (llama.cpp by default), from the index, not from the working checkout.
 
     `git submodule status` answers a different question: it reports the CHECKED-OUT commit, prefixed
     with `+` when that differs from the pin. A regex for a hash reads the same either way, so a
     checkout left behind an updated pin published the old commit and every check agreed with it.
     The index entry is the pin itself, and it has no second reading.
     """
-    staged = [line for line in git("ls-files", "--stage", "--", SUBMODULE).splitlines() if line.strip()]
+    staged = [line for line in git("ls-files", "--stage", "--", path).splitlines() if line.strip()]
     if len(staged) != 1:
-        fail(f"expected exactly one index entry for {SUBMODULE}, found {len(staged)}")
+        fail(f"expected exactly one index entry for {path}, found {len(staged)}")
     match = re.match(r"^160000 ([0-9a-f]{40}) ", staged[0])
     if not match:
-        fail(f"{SUBMODULE} is not recorded as a submodule in the index: {staged[0]}")
+        fail(f"{path} is not recorded as a submodule in the index: {staged[0]}")
     pinned = match.group(1)
 
     # The licence text is read from the working checkout, so a checkout that is not AT the pin would
     # have its licence attributed to a commit it does not belong to.
-    head = git("-C", SUBMODULE, "rev-parse", "HEAD").strip()
+    head = git("-C", path, "rev-parse", "HEAD").strip()
     if head != pinned:
         fail(
-            f"{SUBMODULE} is checked out at {head} but this repository pins {pinned}; run "
+            f"{path} is checked out at {head} but this repository pins {pinned}; run "
             "`git submodule update --init` before generating notices"
         )
     return pinned
@@ -494,6 +507,8 @@ def main() -> None:
     for item in bundled:
         if item["name"] == "llama.cpp":
             item["version"] = submodule_commit()
+        if item["name"] == "MNN":
+            item["version"] = submodule_commit(SUBMODULE_MNN)
 
     out: list[str] = [
         "THIRD-PARTY NOTICES - EnviousWispr Android",

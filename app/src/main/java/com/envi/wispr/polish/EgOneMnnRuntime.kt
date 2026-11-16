@@ -53,7 +53,7 @@ internal class EgOneMnnRuntime(
                 check(model.name == CONFIG_FILE) { "not an MNN model folder" }
                 check(cache.isDirectory || cache.mkdirs()) { "cache folder unavailable" }
                 check(cache.canWrite()) { "cache folder not writable" }
-                check(cacheBuilt(cache) || StatFs(cache.path).availableBytes >= cacheBytesNeeded(model.parentFile)) {
+                check(cacheBuilt(cache) || StatFs(cache.path).availableBytes >= ModelManifest.eg1Micro.engineCacheBytes + MARGIN_BYTES) {
                     "not enough storage for the weight cache"
                 }
                 val status = try {
@@ -111,7 +111,6 @@ internal class EgOneMnnRuntime(
         const val GPU = "gpu"
         const val UNLOADED = "unloaded"
         const val CONFIG_FILE = "config.json"
-        private const val WEIGHT_FILE = "llm.mnn.weight"
         /** MNN's OpenCL mode word passed as `thread_num` (buffer memory, tuned kernels), as the 2026-11-15 study ran it. */
         private const val OPENCL_MODE = 68
         private const val MARGIN_BYTES = 128L * 1024L * 1024L
@@ -122,11 +121,5 @@ internal class EgOneMnnRuntime(
 
         /** MNN marks a complete cache with a `*sync.static` file it writes once the cache is fully built. */
         fun cacheBuilt(cache: File): Boolean = cache.listFiles().orEmpty().any { it.isFile && it.name.endsWith("sync.static") }
-
-        /** Room for the repacked weights (measured at about 1.05x the weight file) plus the storage margin. */
-        fun cacheBytesNeeded(modelFolder: File?): Long {
-            val weights = modelFolder?.let { File(it, WEIGHT_FILE).length() } ?: 0L
-            return weights + weights / 10 + MARGIN_BYTES
-        }
     }
 }

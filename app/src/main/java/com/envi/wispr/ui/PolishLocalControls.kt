@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.models.ModelDownloadPolicy
+import com.envi.wispr.models.ModelFootprint
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.ui.theme.brandButtonColors
 import com.envi.wispr.models.ModelDeliveryWorker
@@ -89,7 +90,7 @@ internal fun LocalPolishModelSelector(
                     verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
                     Text(model.displayName, style = MaterialTheme.typography.titleSmall)
-                    Text(formatModelBytes(descriptor.files.sumOf { it.expectedBytes }), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Text("${formatModelBytes(ModelFootprint.onPhoneBytes(descriptor))} on this phone", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     Text(descriptor.creator, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                     val status = when {
                         running -> "Active"
@@ -199,7 +200,7 @@ internal fun LocalPolishDeliveryActions(
             text = {
                 val after = fallback?.let { "${it.displayName} will be used for polish." }
                     ?: "Basic cleanup will continue until you install a model."
-                Text("Frees ${formatModelBytes(descriptor.files.sumOf { it.expectedBytes })} on this phone. $after")
+                Text("Frees ${formatModelBytes(ModelFootprint.onPhoneBytes(descriptor))} on this phone. $after")
             },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Keep model") } },
             confirmButton = {

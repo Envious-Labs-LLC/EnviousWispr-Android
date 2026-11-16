@@ -190,6 +190,20 @@ class MnnNativeDeviceTest {
         MnnNative.unload()
     }
 
+    /**
+     * The bridge hands MNN standard UTF-8 (JNI's own "UTF" calls produce modified UTF-8, which splits emoji and other
+     * supplementary characters into surrogates MNN's tokenizer rejects), and converts its output back losslessly.
+     */
+    @Test fun textCrossesTheBridgeAsStandardUtf8() {
+        assertEquals("f09f9880", MnnNative.testUtf8Hex("\uD83D\uDE00"))
+        assertEquals("e4b8ad", MnnNative.testUtf8Hex("中"))
+        assertEquals("f0a0ae9f", MnnNative.testUtf8Hex("\uD842\uDF9F"))
+        for (text in listOf("plain", "Grüße, Frau Krüger", "中文 名字", "😀 ok 👍🏽", "\uD842\uDF9F 吉")) {
+            assertEquals(text, MnnNative.testTextRoundTrip(text))
+        }
+        assertEquals("an unpaired surrogate becomes U+FFFD", "a\uFFFDb", MnnNative.testTextRoundTrip("a\uD83Db"))
+    }
+
     /** Five distinct prefixes keep only four whole entries: the oldest goes entirely, the newest stays (plan §3.6). */
     @Test fun aFifthPrefixEvictsTheOldestWholeEntryAndKeepsTheNewest() {
         assertTrue("model and fixtures not staged in $dir", staged())

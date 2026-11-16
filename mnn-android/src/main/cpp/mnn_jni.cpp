@@ -47,15 +47,78 @@ constexpr int END_ENGINE_ERROR = 3;
 constexpr int END_REFUSED = 4;
 int32_t g_last[5] = {END_REFUSED, 0, 0, 0, 0};
 
+// Java strings are UTF-16; JNI's "UTF" calls use modified UTF-8, which encodes characters outside the Basic
+// Multilingual Plane (emoji, some CJK name characters) as two surrogates that MNN's tokenizer rejects. These convert
+// to and from standard UTF-8 explicitly; an unpaired surrogate or invalid byte becomes U+FFFD.
 std::string fromJava(JNIEnv* env, jstring value) {
     if (value == nullptr) return {};
-    const char* chars = env->GetStringUTFChars(value, nullptr);
-    std::string out(chars == nullptr ? "" : chars);
-    if (chars != nullptr) env->ReleaseStringUTFChars(value, chars);
+    const jsize length = env->GetStringLength(value);
+    const jchar* chars = env->GetStringChars(value, nullptr);
+    if (chars == nullptr) return {};
+    std::string out;
+    out.reserve(static_cast<size_t>(length) * 3);
+    for (jsize i = 0; i < length; i++) {
+        uint32_t cp = chars[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < length && chars[i + 1] >= 0xDC00 && chars[i + 1] <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (chars[i + 1] - 0xDC00);
+            i++;
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+        }
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    env->ReleaseStringChars(value, chars);
     return out;
 }
 
-jstring toJava(JNIEnv* env, const std::string& value) { return env->NewStringUTF(value.c_str()); }
+jstring toJava(JNIEnv* env, const std::string& value) {
+    std::u16string out;
+    out.reserve(value.size());
+    const auto* b = reinterpret_cast<const unsigned char*>(value.data());
+    const size_t n = value.size();
+    for (size_t i = 0; i < n;) {
+        uint32_t cp = 0xFFFD;
+        size_t extra = 0;
+        if (b[i] < 0x80) { cp = b[i]; }
+        else if ((b[i] & 0xE0) == 0xC0) { cp = b[i] & 0x1F; extra = 1; }
+        else if ((b[i] & 0xF0) == 0xE0) { cp = b[i] & 0x0F; extra = 2; }
+        else if ((b[i] & 0xF8) == 0xF0) { cp = b[i] & 0x07; extra = 3; }
+        else { out += u'�'; i++; continue; }
+        bool valid = i + extra < n;
+        for (size_t k = 1; valid && k <= extra; k++) {
+            if ((b[i + k] & 0xC0) != 0x80) valid = false; else cp = (cp << 6) | (b[i + k] & 0x3F);
+        }
+        const bool overlong = (extra == 1 && cp < 0x80) || (extra == 2 && cp < 0x800) || (extra == 3 && cp < 0x10000);
+        if (!valid || overlong || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            out += u'�';
+            i++;
+            continue;
+        }
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out += static_cast<char16_t>(0xD800 + (cp >> 10));
+            out += static_cast<char16_t>(0xDC00 + (cp & 0x3FF));
+        } else {
+            out += static_cast<char16_t>(cp);
+        }
+        i += extra + 1;
+    }
+    return env->NewString(reinterpret_cast<const jchar*>(out.data()), static_cast<jsize>(out.size()));
+}
 
 // JSON string escaping for the paths and words this file puts into set_config. Every byte below 0x20 is escaped.
 std::string jsonString(const std::string& value) {
@@ -406,6 +469,19 @@ JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_unload(JNIEnv*, jobject
 }
 
 #ifdef EW_MNN_TEST_SWITCHES
+// Debug libraries only: the bridge's own text conversion, Java -> UTF-8 -> Java, for the encoding test.
+JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_testTextRoundTrip(JNIEnv* env, jobject, jstring value) {
+    return toJava(env, fromJava(env, value));
+}
+
+// Debug libraries only: the UTF-8 bytes the bridge hands MNN, as lowercase hex.
+JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_testUtf8Hex(JNIEnv* env, jobject, jstring value) {
+    static const char* digits = "0123456789abcdef";
+    std::string hex;
+    for (unsigned char c : fromJava(env, value)) { hex += digits[c >> 4]; hex += digits[c & 15]; }
+    return toJava(env, hex);
+}
+
 // Debug libraries only: raise the abort flag once the next generation has produced [tokens] tokens (a real decode step).
 JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_testAbortAfterTokens(JNIEnv*, jobject, jint tokens) {
     g_testAbortAfterTokens.store(tokens);

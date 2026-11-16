@@ -37,6 +37,12 @@ object MnnNative {
     external fun abort()
     external fun unload()
 
+    /** Debug libraries only: the bridge's text conversion Java -> UTF-8 -> Java. */
+    external fun testTextRoundTrip(value: String): String
+
+    /** Debug libraries only: the UTF-8 bytes the bridge hands MNN, as lowercase hex. */
+    external fun testUtf8Hex(value: String): String
+
     /** Debug libraries only: raises the abort flag once the next generation has produced [tokens] tokens. */
     external fun testAbortAfterTokens(tokens: Int)
 

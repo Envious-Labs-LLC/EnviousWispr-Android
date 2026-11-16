@@ -34,6 +34,20 @@ internal object EngineCache {
     internal fun bytes(root: File, model: ModelDescriptor): Long =
         modelFolder(root, model).listFiles().orEmpty().sumOf { sub -> filesIn(sub).sumOf { it.length() } + filesIn(File(sub, PREFIX_FOLDER)).sumOf { it.length() } }
 
+    /**
+     * What [model]'s engine cache still has to write for this revision and [engineBuild]: its allowance less what the
+     * matching cache folder already holds. Another revision's or build's cache is never credited (#531).
+     */
+    fun remainingBytes(context: Context, model: ModelDescriptor, engineBuild: String): Long =
+        remainingBytes(root(context), model, engineBuild)
+
+    internal fun remainingBytes(root: File, model: ModelDescriptor, engineBuild: String): Long {
+        if (model.engineCacheBytes <= 0L) return 0L
+        val current = folder(root, model, engineBuild)
+        val held = filesIn(current).sumOf { it.length() } + filesIn(File(current, PREFIX_FOLDER)).sumOf { it.length() }
+        return (model.engineCacheBytes - held).coerceAtLeast(0L)
+    }
+
     /** Deletes KV scratch files a killed process left in [cacheFolder]; returns how many were removed. */
     fun sweepScratch(cacheFolder: File): Int =
         filesIn(cacheFolder).count { it.name.matches(SCRATCH) && it.delete() }

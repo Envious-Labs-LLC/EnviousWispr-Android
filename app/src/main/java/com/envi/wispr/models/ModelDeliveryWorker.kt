@@ -1,5 +1,6 @@
 package com.envi.wispr.models
 
+import com.envi.wispr.polish.MNN_VERSION
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.StatFs
@@ -104,7 +105,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         if (inputData.getBoolean(KEY_ADOPT_ONLY, false)) {
             if (!legacy.isDirectory) return@withContext Result.success(Data.Builder().putBoolean(KEY_NO_LEGACY, true).build())
             enterForeground(model, 0, model.files.sumOf { it.expectedBytes }, adoptionWorkName(model))
-            val required = model.files.sumOf { it.expectedBytes } + model.engineCacheBytes + 128L * 1024L * 1024L
+            val required = model.files.sumOf { it.expectedBytes } + EngineCache.remainingBytes(applicationContext, model, MNN_VERSION) + 128L * 1024L * 1024L
             if (StatFs(root.path).availableBytes < required) {
                 ModelDeliveryNotification.clear(applicationContext, model)
                 return@withContext failure("not enough storage to adopt ${model.displayName}")
@@ -121,8 +122,9 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         enterForeground(model, 0, totalBytes)
         val partial = store.resumableBytes(model)
         // A complete download waiting to be applied needs no more space: only renames remain (#108).
-        // #531: the engine cache is built on first load, so a download also needs room for it afterwards.
-        val required = if (store.hasVerifiedDownload(model)) 0L else (model.files.sumOf { it.expectedBytes } - partial).coerceAtLeast(0L) + model.engineCacheBytes + 128L * 1024L * 1024L
+        // #531: the engine cache is built on first load, so a download also needs room for what it still has to write
+        // (a repair keeps a matching cache, which is credited; another revision's never is).
+        val required = if (store.hasVerifiedDownload(model)) 0L else (model.files.sumOf { it.expectedBytes } - partial).coerceAtLeast(0L) + EngineCache.remainingBytes(applicationContext, model, MNN_VERSION) + 128L * 1024L * 1024L
         val firstRun = !store.finalDirectory(model).exists()
         val startedAtMs = System.currentTimeMillis()
         if (StatFs(ModelStorage.root(applicationContext).path).availableBytes < required) {

@@ -63,6 +63,16 @@ class EngineCacheTest {
         assertTrue(again.isDirectory)
     }
 
+    @Test fun aRepairCreditsOnlyTheMatchingCacheAgainstTheAllowance() {
+        val root = temp.newFolder("model-cache")
+        assertEquals("nothing built: the whole allowance is still owed", model.engineCacheBytes, EngineCache.remainingBytes(root, model, "b6a3216"))
+        cacheWith(root, "0000000")
+        assertEquals("another build's cache is never credited", model.engineCacheBytes, EngineCache.remainingBytes(root, model, "b6a3216"))
+        cacheWith(root, "b6a3216")
+        assertEquals("the matching cache's 1,000 bytes are credited", model.engineCacheBytes - 1_000L, EngineCache.remainingBytes(root, model, "b6a3216"))
+        assertEquals("a model with no engine cache owes nothing", 0L, EngineCache.remainingBytes(root, ModelManifest.s1, "b6a3216"))
+    }
+
     @Test fun leftoverScratchFilesAreSweptAndNothingElse() {
         val root = temp.newFolder("model-cache")
         val cache = cacheWith(root, "b6a3216")

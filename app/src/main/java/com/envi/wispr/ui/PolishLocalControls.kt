@@ -30,6 +30,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import com.envi.wispr.models.ModelStorage
+import com.envi.wispr.models.EngineCache
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.runtime.key
@@ -193,6 +195,13 @@ internal fun LocalPolishDeliveryActions(
             }) { Text("Download now on mobile data") }
         }
     }
+    // What uninstalling actually frees: the model's files and the engine cache it built, measured when asked (#531),
+    // never the space-planning allowance, which counts cache that may not exist yet.
+    val freed by produceState<Long?>(initialValue = null, confirm) {
+        value = if (!confirm) null else withContext(Dispatchers.IO) {
+            runCatching { ModelFootprint.bytesUnder(ModelStorage.directory(context, descriptor)) + EngineCache.bytes(context, descriptor) }.getOrNull()
+        }
+    }
     if (confirm && action == ModelUiAction.REMOVE) {
         AlertDialog(
             onDismissRequest = { confirm = false },
@@ -200,7 +209,8 @@ internal fun LocalPolishDeliveryActions(
             text = {
                 val after = fallback?.let { "${it.displayName} will be used for polish." }
                     ?: "Basic cleanup will continue until you install a model."
-                Text("Frees ${formatModelBytes(ModelFootprint.onPhoneBytes(descriptor))} on this phone. $after")
+                val frees = freed?.takeIf { it > 0L }?.let { "Frees ${formatModelBytes(it)} on this phone." } ?: "Frees the space this model uses on this phone."
+                Text("$frees $after")
             },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Keep model") } },
             confirmButton = {

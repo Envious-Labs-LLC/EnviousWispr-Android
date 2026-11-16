@@ -43,9 +43,9 @@ import org.junit.runner.RunWith
  * take through the real `:polish` binder returns POLISHED (when this fails, a typical long dictation on this phone
  * comes back unpolished).
  *
- * Runner args: `model` = `s1` (default) or `eg1`; `firebaseS1Fixture` / `firebaseEg1Fixture` stage Test Lab files.
- * Copy-ahead runs on transformer models only, so with `model=eg1` run `onlyTransformerModelsSpeculate` (and the
- * product row as a measurement); the speculation rows refuse a non-speculating model.
+ * Runner args: `model` = `s1` (default); `firebaseS1Fixture` stages Test Lab files. Since #531 EG-1 Micro runs on
+ * MNN, not on `S1Native`, so `model=eg1` is refused: its files are not a GGUF this harness can load. EG-1's own
+ * device coverage is `Eg1MicroHardwareDeviceTest` and `:mnn-android`'s `MnnNativeDeviceTest`.
  * Not stageable deterministically: EOS arriving inside an accepted guess run (the model decides where it stops);
  * the fidelity report counts natural EOS ends instead.
  */
@@ -55,8 +55,8 @@ class CopyAheadDeviceTest {
     private val args = InstrumentationRegistry.getArguments()
     private val model = when (val name = args.getString("model") ?: "s1") {
         "s1" -> LocalPolishModel.S1_MINI
-        "eg1" -> LocalPolishModel.EG1_MICRO
-        else -> error("model must be s1 or eg1, got $name")
+        "eg1" -> error("EG-1 Micro runs on MNN since #531; this llama.cpp harness covers S1-mini only")
+        else -> error("model must be s1, got $name")
     }
     private val fixture: JSONObject by lazy {
         val assets = InstrumentationRegistry.getInstrumentation().context.assets

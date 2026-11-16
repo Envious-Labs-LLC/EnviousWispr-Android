@@ -131,8 +131,7 @@ blind exam, Test Lab speed and memory on four phones, and a phone pass on the S2
 - Copy-ahead decoding for Qwen 3.5 (blocked in both engines; follow-up issue).
 - Moving S1-mini to MNN (follow-up, measured separately).
 - Making EG-1 Micro the default (founder product decision after the speed comparison).
-- MNN prompt prefix cache (`warmPrefix`): v1 returns `false` (§3.6); the study's times already include re-reading
-  the instructions on every request.
+- (Moved into scope by amendment 1: MNN prompt prefix cache, §3.6.)
 - NPU backends (MNN neuropilot / QNN).
 - Releasing the speech model before polish on low-memory phones. Only if §11's memory numbers show pressure on a
   6 GB phone, as its own issue (heart path).
@@ -322,11 +321,38 @@ fallback counts as a failed GPU qualification); (d) require a measured speed adv
 below CPU total); (e) key the evidence by `s1ContextId`-style identity including the MNN kind, so evidence for one
 kind is never read as the other's, and stale or rejected evidence keeps CPU.
 
-### 3.6 Prefix cache
+### 3.6 Prefix cache (amendment 1, 2026-11-15, after chunk 4 measurements)
 
-`EgOneMnnRuntime.warmPrefix` returns `false` (interface default). MNN's prefix cache needs `kvcache_mmap` and a
-disk state file; it is a separate optimisation, filed as a follow-up. #529's llama.cpp `warmPrefix` code stays for
-S1-mini's portable path.
+**Why it moved into v1.** Matched app runs (same test, same 50 ms meter, `Eg1MicroHardwareDeviceTest`) showed the
+#529 llama.cpp path keeps a pre-computed system-prompt state (`warmPrefix`) that MNN v1 lacked. On the Galaxy A15
+that state saves about 3 s a request: llama.cpp in the app 5.27 s typical / 5.27 s email versus MNN 5.49 s / 7.16 s
+(matrices `matrix-35r597n7glrcm`, `matrix-15il76y5epq0a`), although MNN is 1.5x faster than llama.cpp when neither
+reuses the prefix (`matrix-2eflk07wcq3l2`). Without it, goal 2 fails on the slowest phone class inside the app.
+
+**Mechanism (MNN's own, pinned tree).** `Llm::setPrefixCacheFile(name)` (`llm.cpp:1561-1621`) with `kvcache_mmap`
+and `prefix_cache_path` set: call 1 of `generate(ids, 0)` with the prefix tokens writes the prefix state to disk if
+absent (`completePrefixWrite`, `llm.cpp:1623+`) or skips execution if present; call 2 with the remaining tokens loads
+it (`PendingRead`) and continues. The linear-attention layers save and restore their recurrent state through the same
+flags (`source/backend/cpu/CPULinearAttention.cpp:511-620`). Files are validated against the model graph and wiped
+when unusable (`llm.cpp:1588-1617`).
+
+**Design.**
+- The static prefix is the common token prefix of two renders of the same system prompt with different user turns,
+  so it is exactly the tokens every request with that system prompt shares (no hand-written template split).
+- `warmPrefix(systemPrompt)` (called by `PolishService` during warm-up, as for llama.cpp) writes the English prefix
+  file before the first request. Each request uses the prefix file for ITS system prompt (the 17 language variants
+  append a sentence, so each language gets its own file on first use).
+- Files live in the EG-1 cache folder (`EngineCache`, per revision and MNN build), named by a hash of the system
+  prompt; at most 4 prefix files are kept (oldest by modification time deleted file by file); each is about 15.6 MB
+  (Mac measurement), so `engineCacheBytes` rises by 4 x 16 MB plus the KV scratch files (about 10 MB).
+- A prompt that does not start with its prefix runs the plain path.
+
+**Measured on the Mac (45 fixtures, same build):** p50 616 ms to 294 ms with the prefix reused; 41 of 45 outputs
+identical, 4 differ by punctuation only (a comma for a full stop, one capital), no word changes, which is the split
+prefill's numerical drift. Because the shipped output changes, the full exam grades a third arm generated WITH prefix
+reuse (§11.2), and that arm is the one the ship criterion judges.
+
+#529's llama.cpp `warmPrefix` stays for S1-mini's portable path.
 
 ### 3.7 Alternatives rejected
 

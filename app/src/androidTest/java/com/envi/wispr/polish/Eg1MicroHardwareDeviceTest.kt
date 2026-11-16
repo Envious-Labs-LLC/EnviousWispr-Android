@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -270,10 +272,21 @@ class Eg1MicroHardwareDeviceTest {
         var progressSamples = 0
         val expectedTotal = model.files.sumOf { it.expectedBytes }
         var targetId: UUID? = null
+        var lastProgressAt = System.currentTimeMillis()
         val finished = runBlocking {
             ModelDownloadPolicy.allowMobileData(context, model)
             ModelDeliveryWorker.enqueue(context, model)
-            withTimeout(R2_DOWNLOAD_TIMEOUT_MS) {
+            // Completion is the worker's own finished state. The failure bound is a stall: no new bytes for
+            // R2_STALL_MS. A fixed 180 s budget failed a download that was still moving at ~1.8 MB/s (Galaxy A15,
+            // Test Lab 2026-11-15: all 607 MB arrived, after the deadline), so it measured the lab's bandwidth.
+            val stallWatch = launch {
+                while (true) {
+                    delay(1_000L)
+                    val idleMs = System.currentTimeMillis() - lastProgressAt
+                    check(idleMs < R2_STALL_MS) { "EG-1 Micro download made no progress for $idleMs ms (at $lastBytes of $expectedTotal bytes)" }
+                }
+            }
+            try { withTimeout(R2_DOWNLOAD_CEILING_MS) {
                 workManager.getWorkInfosForUniqueWorkFlow(workName)
                     .map { infos ->
                         val match = if (targetId != null) {
@@ -293,6 +306,7 @@ class Eg1MicroHardwareDeviceTest {
                                     "Progress decreased from $lastBytes to $reported",
                                     reported >= lastBytes,
                                 )
+                                if (reported > lastBytes) lastProgressAt = System.currentTimeMillis()
                                 lastBytes = reported
                             }
                         }
@@ -300,7 +314,7 @@ class Eg1MicroHardwareDeviceTest {
                     }
                     .filterNotNull()
                     .first { it.state.isFinished }
-            }
+            } } finally { stallWatch.cancel() }
         }
         assertEquals(
             "EG-1 Micro R2 worker ended in ${finished.state} (${finished.outputData.getString(ModelDeliveryWorker.KEY_REASON)})",
@@ -468,6 +482,8 @@ class Eg1MicroHardwareDeviceTest {
         const val FIRST_LOAD_HWM_LIMIT_KB = 1_835_008L // 1.75 GiB
         const val SAMPLE_INTERVAL_MS = 50L
         const val EG1_EMAIL_MAX_LATENCY_MS = 10_000L // LocalPolishBudget.COOPERATIVE_MS, #510
-        const val R2_DOWNLOAD_TIMEOUT_MS = 180_000L
+        const val R2_STALL_MS = 60_000L
+        // Outer ceiling only, so a download that keeps trickling cannot hold the matrix for its whole 30 min.
+        const val R2_DOWNLOAD_CEILING_MS = 900_000L
     }
 }

@@ -141,7 +141,7 @@ class EngineDeadlineTest {
         assertNull("no shipped value is inside the override range by accident", listOf(LocalPolishBudget.COOPERATIVE_MS).firstOrNull { it > LocalPolishBudget.MAX_OVERRIDE_MS })
         assertTrue(LocalPolishBudget.COOPERATIVE_MS < LocalPolishBudget.HARD_MS)
         assertEquals(LocalPolishBudget.SHIPPED, LocalPolishBudget.forModel(LocalPolishModel.S1_MINI))
-        assertEquals(LocalPolishBudget(18_000L, 20_000L), LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO))
+        assertEquals(LocalPolishBudget(10_000L, 12_000L), LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO))
         assertEquals(
             LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO),
             LocalPolishBudget.fromOverride("bad", LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO)),

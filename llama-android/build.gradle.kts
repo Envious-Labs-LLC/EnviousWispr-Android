@@ -37,6 +37,17 @@ android {
         }
     }
 
+    buildTypes {
+        debug {
+            externalNativeBuild {
+                cmake {
+                    // Copy-ahead test switches (#510, s1_jni.cpp): debug libraries only, never a release one.
+                    cppFlags += "-DEW_COPY_AHEAD_TEST_SWITCHES"
+                }
+            }
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

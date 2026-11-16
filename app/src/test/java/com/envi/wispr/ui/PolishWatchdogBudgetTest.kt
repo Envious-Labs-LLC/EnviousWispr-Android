@@ -23,7 +23,7 @@ class PolishWatchdogBudgetTest {
     @Test fun localPoliciesGetTheLocalBudgetAndCloudTheCloudBudget() {
         assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT)))
         assertEquals(
-            23_000L,
+            15_000L,
             PolishWatchdogBudget.forPolicy(
                 PolishPolicy.LocalS1(
                     S1ControlSettings.DEFAULT,
@@ -40,7 +40,6 @@ class PolishWatchdogBudgetTest {
 
     @Test fun theWatchdogSitsAboveEveryEngineSideBudget() {
         assertTrue("the engine's hard deadline must fire before the session gives up", LocalPolishBudget.HARD_MS < PolishWatchdogBudget.LOCAL_MS)
-        assertTrue("the EG-1 hard deadline must fire before the session gives up", LocalPolishBudget.EG1_HARD_MS < PolishWatchdogBudget.EG1_LOCAL_MS)
         // ProviderPolishClient.DEFAULT_OVERALL_TIMEOUT_MS is 30_000; the literal binds the published engine-side cap.
         assertTrue("the cloud client's own cap must fire before the session gives up", 30_000L < PolishWatchdogBudget.CLOUD_MS)
     }

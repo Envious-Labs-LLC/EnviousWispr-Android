@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.work.WorkInfo
 import com.envi.wispr.models.ModelDeliveryControlStore
+import com.envi.wispr.models.EngineCache
 import com.envi.wispr.models.ModelFootprint
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.models.ModelDeliveryWorker
@@ -209,7 +210,7 @@ private fun ModelStorageLine(model: com.envi.wispr.models.ModelDescriptor, state
         // showing a zero, because "0 KB on this phone" is a claim, and a wrong one for a model not yet measured.
         produceState<Long?>(initialValue = null, state.bytes) {
             value = withContext(Dispatchers.IO) {
-                runCatching { ModelFootprint.bytesUnder(ModelStorage.directory(context, model)) }
+                runCatching { ModelFootprint.bytesUnder(ModelStorage.directory(context, model)) + EngineCache.bytes(context, model) }
                     .getOrNull()
             } ?: value // A re-measure that fails keeps the last number rather than removing the line.
         }

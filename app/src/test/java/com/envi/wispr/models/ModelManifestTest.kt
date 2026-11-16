@@ -30,9 +30,10 @@ class ModelManifestTest {
         assertTrue(ModelManifest.eg1Micro.isAvailable)
         assertEquals("3b80a92332b5d34c364a35a880ef049c7fede9f2", ModelManifest.parakeet.pinnedRevision)
         assertEquals("34add00a48a2e5d24e5a4ee5405a99620a3a240c", ModelManifest.s1.pinnedRevision)
-        assertEquals("eg1-micro-1.0-g3d", ModelManifest.eg1Micro.pinnedRevision)
-        assertEquals(2, ModelManifest.eg1Micro.files.size)
-        assertEquals(287_622_528L + 254_275_712L, ModelManifest.eg1Micro.files.sumOf { it.expectedBytes })
+        assertEquals("eg1-micro-1.0-g3d-mnn-b32", ModelManifest.eg1Micro.pinnedRevision)
+        assertEquals("mnn", ModelManifest.eg1Micro.engineId)
+        assertEquals(listOf("config.json", "llm_config.json", "llm.mnn", "llm.mnn.weight", "tokenizer.mtok"), ModelManifest.eg1Micro.files.map { it.name })
+        assertEquals(254L + 4_138L + 2_603_920L + 597_498_250L + 7_337_120L, ModelManifest.eg1Micro.files.sumOf { it.expectedBytes })
         assertTrue(ModelManifest.eg1Micro.previous.isEmpty())
         assertEquals(listOf(ModelManifest.parakeet, ModelManifest.s1), ModelManifest.ONBOARDING)
         assertEquals(listOf(ModelManifest.s1, ModelManifest.eg1Micro), ModelManifest.LOCAL_POLISH)
@@ -148,8 +149,11 @@ class ModelManifestTest {
             listOf(
                 "parakeet-ultra/encoder-model.int8.onnx",
                 "parakeet-ultra/decoder_joint-model.int8.onnx",
-                "eg1-micro/eg1-micro-1.0-g3d-Q4_K_M-00001-of-00002.gguf",
-                "eg1-micro/eg1-micro-1.0-g3d-Q4_K_M-00002-of-00002.gguf",
+                "eg1-micro/config.json",
+                "eg1-micro/llm_config.json",
+                "eg1-micro/llm.mnn",
+                "eg1-micro/llm.mnn.weight",
+                "eg1-micro/tokenizer.mtok",
             ),
             withoutFallback,
         )

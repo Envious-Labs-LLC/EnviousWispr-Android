@@ -150,7 +150,7 @@ class PolishSettingsViewModelTest {
         )
         val eg1Ctx = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(
             com.envi.wispr.polish.LocalPolishModel.EG1_MICRO.descriptor(),
-            com.envi.wispr.polish.S1RuntimeKind.PORTABLE_CPU,
+            com.envi.wispr.polish.S1RuntimeKind.MNN_CPU,
         )
         settingsPrefs.values["s1_processing"] = customOrder.encode()
         settingsPrefs.values["s1_processing_qualification"] = com.envi.wispr.processing.ProcessingQualification.of(

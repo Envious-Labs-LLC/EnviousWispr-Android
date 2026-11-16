@@ -190,6 +190,14 @@ class PostHogSchemaTest {
         assertKept("polish_policy", AppLaunchFacts.UNKNOWN)
     }
 
+    /** Drift Guard (#531): EG-1 Micro's MNN runtimes leave under `polish_runtime` by these literal names, and nothing near them does. */
+    @Test
+    fun theMnnRuntimeNamesLeaveUnderPolishRuntime() {
+        assertKept("polish_runtime", "mnn-b6a3216-cpu")
+        assertKept("polish_runtime", "mnn-b6a3216-opencl")
+        assertTrue("an unknown engine name is dropped", !kept("polish_runtime", "mnn-0000000-cpu"))
+    }
+
     @Test
     fun theLaunchProjectionLeavesForOnOffAndAnUnreadableStore() {
         val on = AppPreferencesState(

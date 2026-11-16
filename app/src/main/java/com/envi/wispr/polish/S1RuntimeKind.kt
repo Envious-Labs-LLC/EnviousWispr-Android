@@ -15,10 +15,14 @@ import java.nio.ByteOrder
  * - [PORTABLE_CPU]: the repository's own llama.cpp build (`:llama-android`), which picks a processor variant at
  *   runtime. Same model file, prompts and sampling; processor only. Anything unknown lands here: it cannot run
  *   an instruction the phone lacks, so failing toward it is the safe direction.
+ * - [MNN_CPU], [MNN_OPENCL]: EG-1 Micro's engine (#531), Alibaba MNN from `:mnn-android`. Chosen only by
+ *   [runtimeKindFor] for EG-1 Micro, never by [decide], which answers for S1-mini.
  */
 internal enum class S1RuntimeKind(val identity: String, val backends: Set<ProcessingBackend>) {
     GENIEX("geniex-$GENIEX_VERSION-llama_cpp", setOf(ProcessingBackend.GPU, ProcessingBackend.CPU)),
-    PORTABLE_CPU("llama_cpp-portable-cpu", setOf(ProcessingBackend.CPU));
+    PORTABLE_CPU("llama_cpp-portable-cpu", setOf(ProcessingBackend.CPU)),
+    MNN_CPU("mnn-$MNN_VERSION-cpu", setOf(ProcessingBackend.CPU)),
+    MNN_OPENCL("mnn-$MNN_VERSION-opencl", setOf(ProcessingBackend.GPU));
 
     companion object {
         /** This process's answer. A `val`: processor features cannot change while the process lives. */
@@ -31,7 +35,7 @@ internal enum class S1RuntimeKind(val identity: String, val backends: Set<Proces
             hardware: () -> S1RuntimeKind = { current },
         ): S1RuntimeKind = when (model) {
             LocalPolishModel.S1_MINI -> hardware()
-            LocalPolishModel.EG1_MICRO -> PORTABLE_CPU
+            LocalPolishModel.EG1_MICRO -> MNN_CPU
         }
 
         /**
@@ -68,6 +72,13 @@ internal enum class S1RuntimeKind(val identity: String, val backends: Set<Proces
  * Regenerate the masks with the instruction census (`docs/feature-requests/issue-449-2026-10-19-portable-local-polish.md` §1.2, §3).
  */
 internal const val GENIEX_VERSION = "0.4.0"
+
+/**
+ * The pinned MNN build (`third_party/MNN` submodule commit, short form). It names the runtime in telemetry and keys
+ * EG-1's weight cache folder (`models/EngineCache`): a cache built by one MNN build is never read by another.
+ * Change it whenever the submodule moves.
+ */
+internal const val MNN_VERSION = "b6a3216"
 
 /**
  * Linux arm64 `AT_HWCAP` bits for every instruction family the GenieX 0.4.0 libraries on the processor and

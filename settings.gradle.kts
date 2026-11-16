@@ -17,4 +17,5 @@ dependencyResolutionManagement {
 rootProject.name = "EnviousWispr"
 include(":app")
 include(":llama-android")
+include(":mnn-android")
 include(":accelerator-benchmark")

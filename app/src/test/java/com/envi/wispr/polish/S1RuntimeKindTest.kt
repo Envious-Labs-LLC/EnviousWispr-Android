@@ -80,6 +80,18 @@ class S1RuntimeKindTest {
         assertFalse(S1RuntimeKind.PORTABLE_CPU.identity == S1RuntimeKind.GENIEX.identity)
     }
 
+    /** Drift Guard (#531): EG-1's engine names itself in telemetry with these literals and never answers for S1-mini. */
+    @Test fun theMnnRuntimesHaveLiteralIdentitiesAndAreNeverChosenForS1() {
+        assertEquals("mnn-b6a3216-cpu", S1RuntimeKind.MNN_CPU.identity)
+        assertEquals("mnn-b6a3216-opencl", S1RuntimeKind.MNN_OPENCL.identity)
+        assertEquals(setOf(ProcessingBackend.CPU), S1RuntimeKind.MNN_CPU.backends)
+        assertEquals(setOf(ProcessingBackend.GPU), S1RuntimeKind.MNN_OPENCL.backends)
+        for (opencl in listOf(true, false)) {
+            val chosen = S1RuntimeKind.decide(features(pixel8)) { opencl }
+            assertFalse("S1-mini's choice never lands on MNN", chosen == S1RuntimeKind.MNN_CPU || chosen == S1RuntimeKind.MNN_OPENCL)
+        }
+    }
+
     /** Drift Guard: a GenieX upgrade must re-run the instruction census before these masks are trusted. */
     @Test fun theMasksAreRecordedAgainstTheGenieXVersionGradlePackages() {
         val gradle = File("build.gradle.kts").readText()

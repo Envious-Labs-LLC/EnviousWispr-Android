@@ -99,10 +99,9 @@ class PolishService : Service() {
         activeRuntime = created
         activeRuntimeKind = kind
         selectedRuntime = kind
-        val reason = if (model == LocalPolishModel.EG1_MICRO) {
-            "model requires portable llama.cpp CPU"
-        } else {
-            S1RuntimeKind.reason
+        val reason = when (model) {
+            LocalPolishModel.EG1_MICRO -> "EG-1 Micro runs on MNN"
+            LocalPolishModel.S1_MINI -> S1RuntimeKind.reason
         }
         DebugLogger.log(TAG, "Local S1 runtime: ${kind.identity} ($reason)")
         return created

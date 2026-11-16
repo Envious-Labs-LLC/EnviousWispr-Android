@@ -4,8 +4,8 @@ import android.content.Context
 import java.util.concurrent.ScheduledExecutorService
 
 /**
- * The one surface `PolishService` drives for local S1 inference (#449). Two implementations, chosen once per
- * process by [S1RuntimeKind.current]: [S1GenieXRuntime] and [S1PortableRuntime]. PolishService serializes every
+ * The one surface `PolishService` drives for local inference (#449, #531). Three implementations: [S1GenieXRuntime]
+ * and [S1PortableRuntime] for S1-mini (chosen by [S1RuntimeKind.current]), and [EgOneMnnRuntime] for EG-1 Micro. PolishService serializes every
  * call onto one worker thread.
  */
 internal interface S1Runtime {
@@ -34,6 +34,7 @@ internal interface S1Runtime {
         fun create(kind: S1RuntimeKind, context: Context, deadlines: ScheduledExecutorService): S1Runtime = when (kind) {
             S1RuntimeKind.GENIEX -> S1GenieXRuntime(context)
             S1RuntimeKind.PORTABLE_CPU -> S1PortableRuntime(context, deadlines)
+            S1RuntimeKind.MNN_CPU, S1RuntimeKind.MNN_OPENCL -> EgOneMnnRuntime(context, deadlines, kind)
         }
     }
 }

@@ -36,9 +36,15 @@ internal object ProcessingEnvironment {
             model.pinnedRevision,
             model.files.joinToString { checkNotNull(it.sha256) },
             runtime.identity, Build.FINGERPRINT, Build.VERSION.SDK_INT.toString(),
-            "${S1Config.CONTEXT_SIZE}:${S1Config.THREAD_COUNT}:${S1Config.BATCH_SIZE}:${S1Config.UBATCH_SIZE}",
+            engineSettings(runtime),
         ).joinToString("|"),
     )
+    /** The engine settings a qualification was gathered under; llama.cpp's batch sizes mean nothing to MNN (#531). */
+    private fun engineSettings(runtime: S1RuntimeKind): String = when (runtime) {
+        S1RuntimeKind.GENIEX, S1RuntimeKind.PORTABLE_CPU ->
+            "${S1Config.CONTEXT_SIZE}:${S1Config.THREAD_COUNT}:${S1Config.BATCH_SIZE}:${S1Config.UBATCH_SIZE}"
+        S1RuntimeKind.MNN_CPU, S1RuntimeKind.MNN_OPENCL -> "mnn:${S1Config.CONTEXT_SIZE}:auto-threads:mmap"
+    }
     internal fun identity(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }
 }

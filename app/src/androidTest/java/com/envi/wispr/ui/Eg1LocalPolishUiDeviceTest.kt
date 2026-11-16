@@ -104,7 +104,7 @@ class Eg1LocalPolishUiDeviceTest {
         assertTrue("Expected S1-mini tile touch target >= 48.dp, got $s1Height", s1Height >= 48.dp)
         assertTrue("Expected EG-1 Micro tile touch target >= 48.dp, got $eg1Height", eg1Height >= 48.dp)
 
-        compose.onNodeWithText("484.2 MB").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("484.2 MB on this phone").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Casual").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Semi-casual").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Semi-formal").performScrollTo().assertIsDisplayed()
@@ -123,7 +123,8 @@ class Eg1LocalPolishUiDeviceTest {
         compose.onNode(modelTile("S1-mini") and hasText("Active")).assertIsNotSelected()
         compose.onNodeWithText("Casual").assertDoesNotExist()
         compose.onNodeWithText("Turn spoken thoughts into finished text").assertDoesNotExist()
-        compose.onNodeWithText("541.9 MB").assertIsDisplayed()
+        // #531: model files (607.4 MB) plus the engine cache MNN builds (weights 700.0 MB, saved prompts, scratch).
+        compose.onNodeWithText("1.4 GB on this phone").assertIsDisplayed()
         compose.onNodeWithText("Envious Labs").assertIsDisplayed()
         compose.onNodeWithText("Not downloaded").assertIsDisplayed()
 

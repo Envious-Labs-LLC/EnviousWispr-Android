@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.envi.wispr.models.EngineCache
 import com.envi.wispr.models.ModelFolderFootprint
 import com.envi.wispr.models.ModelFootprint
 import com.envi.wispr.models.ModelManifest
@@ -54,7 +55,8 @@ internal fun StoragePage() {
             value = withContext(Dispatchers.IO) {
                 try {
                     StorageReading.Measured(
-                        ModelFootprint.measureFolder(ModelStorage.root(context), ModelManifest.all),
+                        ModelFootprint.measureFolder(ModelStorage.root(context), ModelManifest.all)
+                            .withEngineCaches { model -> EngineCache.bytes(context, model) },
                     )
                 } catch (cancellation: CancellationException) {
                     // Cancellation is the page going away, not a measurement failure. Rethrowing keeps
@@ -106,7 +108,8 @@ internal fun StoragePage() {
                     StorageRow(title = "Total", value = formatModelBytes(footprint.total), emphasise = true)
                 }
                 Text(
-                    "This total covers the models folder, including files outside known model folders. " +
+                    "This total covers the models folder and the working files a model builds when first used, " +
+                        "including files outside known model folders. " +
                         "It excludes the app itself and data stored elsewhere. Removing a model can " +
                         "free space, and you can download it again later.",
                     style = MaterialTheme.typography.bodyMedium,

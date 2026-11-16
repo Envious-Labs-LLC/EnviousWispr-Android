@@ -10,8 +10,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.concurrent.thread
 
 /**
  * Chunk 1 engine proof for #531 (Product Outcome at the polish boundary: the shipped model on the real runtime).
@@ -225,21 +223,20 @@ class MnnNativeDeviceTest {
         val longest = File("$dir/cases.jsonl").readLines().filter { it.isNotBlank() }
             .map { JSONObject(it) }.maxBy { it.getString("input").length }
         load(prefix = true)
+        // The abort is raised after three real decode steps, so the loop's own check is what stops it (not a prefill).
         MnnNative.resetAbort()
-        val abortedAt = AtomicLong(0)
-        val aborter = thread {
-            Thread.sleep(1_500)
-            abortedAt.set(System.nanoTime())
-            MnnNative.abort()
-        }
+        MnnNative.testAbortAfterTokens(3)
         val result = MnnNative.generate(system, longest.getString("input"), 1024, 2048)
-        val returnedAt = System.nanoTime()
-        aborter.join()
         val end = MnnNative.lastEnd()
-        File(out, "abort.txt").writeText("end=${end.toList()} lag_ms=${(returnedAt - abortedAt.get()) / 1_000_000}\n")
+        MnnNative.resetAbort()
+        val next = MnnNative.generate(system, longest.getString("input"), 1024, 2048)
+        val nextEnd = MnnNative.lastEnd()
+        File(out, "abort.txt").writeText("end=${end.toList()} next=${nextEnd.toList()}\n")
         MnnNative.unload()
         assertEquals("ERROR: aborted", result)
         assertEquals("end code", 2, end[0])
-        assertTrue("abort took effect before it was requested", abortedAt.get() in 1 until returnedAt)
+        assertEquals("stopped after the third decode step, not later", 3, end[1])
+        assertFalse("the request after an abort completes: $next", next.startsWith("ERROR:"))
+        assertTrue("the request after an abort ends normally", nextEnd[0] == 0 || nextEnd[0] == 1)
     }
 }

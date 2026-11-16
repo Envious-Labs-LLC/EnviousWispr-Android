@@ -253,6 +253,7 @@ Entry prepareEntry(const std::string& key) {
 
 #ifdef EW_MNN_TEST_SWITCHES
 std::atomic<bool> g_testAbortAfterPrefixCall{false};
+std::atomic<int> g_testAbortAfterTokens{0};
 #endif
 
 // One prefix session: entry check, MNN's call 1 (prefix) and call 2 (rest), both prefill only. Every request runs one,
@@ -352,6 +353,10 @@ JNIEXPORT jstring JNICALL Java_com_envi_wispr_mnn_MnnNative_generate(JNIEnv* env
         if (context->gen_seq_len >= maxTokens) { end = END_CAP; break; }
         if (g_abort.load()) { end = END_ABORTED; break; }
         g_llm->generate(1);
+#ifdef EW_MNN_TEST_SWITCHES
+        const int after = g_testAbortAfterTokens.load();
+        if (after > 0 && context->gen_seq_len >= after && g_testAbortAfterTokens.exchange(0) > 0) g_abort.store(true);
+#endif
     }
     g_last[0] = end;
     g_last[1] = context->gen_seq_len;
@@ -401,6 +406,11 @@ JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_unload(JNIEnv*, jobject
 }
 
 #ifdef EW_MNN_TEST_SWITCHES
+// Debug libraries only: raise the abort flag once the next generation has produced [tokens] tokens (a real decode step).
+JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_testAbortAfterTokens(JNIEnv*, jobject, jint tokens) {
+    g_testAbortAfterTokens.store(tokens);
+}
+
 // Debug libraries only: raise the abort flag right after the next prefix call, to stage an abort between the prefills.
 JNIEXPORT void JNICALL Java_com_envi_wispr_mnn_MnnNative_testAbortAfterPrefixCall(JNIEnv*, jobject) {
     g_testAbortAfterPrefixCall.store(true);

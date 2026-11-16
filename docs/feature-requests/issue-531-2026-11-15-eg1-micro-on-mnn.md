@@ -372,6 +372,17 @@ do not clear it (`llm.cpp:967-1013`), and the call counter decides what the next
   write rebuilds on the next request; four-entry eviction never removes the active entry; outputs on the 45 fixtures
   equal the same build's no-prefix outputs except for recorded punctuation drift.
 
+**MNN defect found and carried as a patch.** The full-exam run with prefix reuse returned empty answers from request
+1,366 on: every prefix load opened two files per attention layer and never closed them
+(`source/backend/cpu/CPUKVCacheManager.cpp` `onAlloc` PendingRead; `source/core/KVCacheManager.cpp`
+`createKVCacheFile` also reassigned open handles). 100 prefix requests left 2,397 open handles, and destroying the
+`Llm` did not free them, so in the app the `:polish` process would eventually hit its open-file limit. The two-line
+fix is `mnn-android/patches/0001-close-prefix-cache-file-handles.patch`, applied to the pinned submodule by the
+`applyMnnPatches` Gradle task before CMake configures (an already-applied patch is recognised; a patch that neither
+applies nor is applied fails the build). With it the count stays at 21 over 400 mixed-language requests on the Mac
+and flat (105 to 105) across 45 requests on the emulator, with identical outputs. Offering the fix upstream to MNN is
+an outward action left for the founder.
+
 **Measured on the Mac (45 fixtures, same build):** p50 616 ms to 294 ms with the prefix reused; 41 of 45 outputs
 identical, 4 differ by punctuation only (a comma for a full stop, one capital), no word changes, which is the split
 prefill's numerical drift. Because the shipped output changes, the full exam grades a third arm generated WITH prefix
@@ -521,6 +532,7 @@ this phone"), checked against `content-brand.md`.
   evidence, preserved across repository recreation (§5.1).
 - UI size lines (`ModelCards.kt`, `PolishLocalControls.kt`, `StoragePage`).
 - `app/src/main/assets/THIRD_PARTY_NOTICES.txt`, `scripts/generate-notices.py` if it enumerates libraries.
+- `mnn-android/patches/` and the `applyMnnPatches` task in `mnn-android/build.gradle.kts` (§3.6).
 - Tests listed in §11. `Eg1MicroHardwareDeviceTest`: assert MNN kinds, drop the `S1Native` prefix-parity block for
   EG-1 (S1-mini keeps its own), add the memory split.
 - `docs/` R2 publish recipe for the MNN files.

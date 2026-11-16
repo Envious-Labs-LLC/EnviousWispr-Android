@@ -43,7 +43,7 @@ internal object ProcessingEnvironment {
     private fun engineSettings(runtime: S1RuntimeKind): String = when (runtime) {
         S1RuntimeKind.GENIEX, S1RuntimeKind.PORTABLE_CPU ->
             "${S1Config.CONTEXT_SIZE}:${S1Config.THREAD_COUNT}:${S1Config.BATCH_SIZE}:${S1Config.UBATCH_SIZE}"
-        S1RuntimeKind.MNN_CPU, S1RuntimeKind.MNN_OPENCL -> "mnn:${S1Config.CONTEXT_SIZE}:${S1Config.THREAD_COUNT}:mmap"
+        S1RuntimeKind.MNN_CPU, S1RuntimeKind.MNN_OPENCL -> "mnn:${S1Config.CONTEXT_SIZE}:auto-threads:mmap"
     }
     internal fun identity(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }

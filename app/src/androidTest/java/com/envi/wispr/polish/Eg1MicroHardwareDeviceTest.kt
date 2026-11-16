@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -152,7 +154,7 @@ class Eg1MicroHardwareDeviceTest {
             val firstLoad = firstLoadMemory.stop()
             val (eg1RssKb, eg1HwmKb) = readPolishMemoryKb(polishPid)
             assertTrue("Expected :polish VmRSS in 1..1_572_864 kB, got $eg1RssKb", eg1RssKb in 1L..RSS_LIMIT_KB)
-            assertTrue("Expected :polish VmHWM in 1..1_572_864 kB, got $eg1HwmKb", eg1HwmKb in 1L..RSS_LIMIT_KB)
+            assertTrue("Expected :polish VmHWM in 1..$FIRST_LOAD_HWM_LIMIT_KB kB, got $eg1HwmKb", eg1HwmKb in 1L..FIRST_LOAD_HWM_LIMIT_KB)
 
             // Live swap back: EG-1 Micro -> S1-mini.
             proxy.warmUpWithPolicy(s1Policy)
@@ -235,11 +237,14 @@ class Eg1MicroHardwareDeviceTest {
                     "rssKb=$eg1RssKb hwmKb=$eg1HwmKb s1CacheParity=true " +
                     "s1OnlyMemory=[$s1Only] eg1FirstLoadMemory=[$firstLoad] eg1DictationMemory=[$dictations]",
             )
-            listOf("first EG-1 load" to firstLoad, "EG-1 dictations" to dictations).forEach { (window, memory) ->
+            listOf(
+                Triple("first EG-1 load", firstLoad, FIRST_LOAD_PRIVATE_LIMIT_KB),
+                Triple("EG-1 dictations", dictations, PRIVATE_LIMIT_KB),
+            ).forEach { (window, memory, limit) ->
                 assertTrue("No memory samples during $window", memory.samples > 0)
                 assertTrue(
-                    "EG-1 on MNN held ${memory.maxPrivateKb} kB the phone cannot free during $window (limit $PRIVATE_LIMIT_KB kB)",
-                    memory.maxPrivateKb in 1L..PRIVATE_LIMIT_KB,
+                    "EG-1 on MNN held ${memory.maxPrivateKb} kB the phone cannot free during $window (limit $limit kB)",
+                    memory.maxPrivateKb in 1L..limit,
                 )
             }
         } finally {
@@ -267,10 +272,21 @@ class Eg1MicroHardwareDeviceTest {
         var progressSamples = 0
         val expectedTotal = model.files.sumOf { it.expectedBytes }
         var targetId: UUID? = null
+        var lastProgressAt = System.currentTimeMillis()
         val finished = runBlocking {
             ModelDownloadPolicy.allowMobileData(context, model)
             ModelDeliveryWorker.enqueue(context, model)
-            withTimeout(R2_DOWNLOAD_TIMEOUT_MS) {
+            // Completion is the worker's own finished state. The failure bound is a stall: no new bytes for
+            // R2_STALL_MS. A fixed 180 s budget failed a download that was still moving at ~1.8 MB/s (Galaxy A15,
+            // Test Lab 2026-11-15: all 607 MB arrived, after the deadline), so it measured the lab's bandwidth.
+            val stallWatch = launch {
+                while (true) {
+                    delay(1_000L)
+                    val idleMs = System.currentTimeMillis() - lastProgressAt
+                    check(idleMs < R2_STALL_MS) { "EG-1 Micro download made no progress for $idleMs ms (at $lastBytes of $expectedTotal bytes)" }
+                }
+            }
+            try { withTimeout(R2_DOWNLOAD_CEILING_MS) {
                 workManager.getWorkInfosForUniqueWorkFlow(workName)
                     .map { infos ->
                         val match = if (targetId != null) {
@@ -290,6 +306,7 @@ class Eg1MicroHardwareDeviceTest {
                                     "Progress decreased from $lastBytes to $reported",
                                     reported >= lastBytes,
                                 )
+                                if (reported > lastBytes) lastProgressAt = System.currentTimeMillis()
                                 lastBytes = reported
                             }
                         }
@@ -297,7 +314,7 @@ class Eg1MicroHardwareDeviceTest {
                     }
                     .filterNotNull()
                     .first { it.state.isFinished }
-            }
+            } } finally { stallWatch.cancel() }
         }
         assertEquals(
             "EG-1 Micro R2 worker ended in ${finished.state} (${finished.outputData.getString(ModelDeliveryWorker.KEY_REASON)})",
@@ -457,8 +474,16 @@ class Eg1MicroHardwareDeviceTest {
         // #531: EG-1 on MNN keeps its weights in a memory-mapped cache, so its private memory stays far below the
         // 1.3 GiB llama.cpp peak #528 measured; 768 MiB bounds a regression to whole-model private memory.
         const val PRIVATE_LIMIT_KB = 786_432L
+        // The first EG-1 load builds MNN's weight cache once; the b32 file holds about 110 MB more private memory while
+        // it does (Galaxy A15 812,708 kB, Test Lab 2026-11-15) and peaks higher overall (A26 1,675,348 kB, Pixel 7
+        // 1,671,304 kB VmHWM). Founder 2026-11-15 accepted that one-time spike for b32's quality ("b32, accept spike").
+        // These still catch a regression to whole-model private memory (weights alone are 597 MB).
+        const val FIRST_LOAD_PRIVATE_LIMIT_KB = 901_120L // 880 MiB
+        const val FIRST_LOAD_HWM_LIMIT_KB = 1_835_008L // 1.75 GiB
         const val SAMPLE_INTERVAL_MS = 50L
         const val EG1_EMAIL_MAX_LATENCY_MS = 10_000L // LocalPolishBudget.COOPERATIVE_MS, #510
-        const val R2_DOWNLOAD_TIMEOUT_MS = 180_000L
+        const val R2_STALL_MS = 60_000L
+        // Outer ceiling only, so a download that keeps trickling cannot hold the matrix for its whole 30 min.
+        const val R2_DOWNLOAD_CEILING_MS = 900_000L
     }
 }

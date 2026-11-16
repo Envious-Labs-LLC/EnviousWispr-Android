@@ -50,7 +50,7 @@ internal object ModelManifest {
     private const val parakeetRevision = "3b80a92332b5d34c364a35a880ef049c7fede9f2"
     private const val s1Repo = "superwhisper/s1-mini-GGUF"
     private const val s1Revision = "34add00a48a2e5d24e5a4ee5405a99620a3a240c"
-    private const val eg1Revision = "eg1-micro-1.0-g3d-mnn-hqq64"
+    private const val eg1Revision = "eg1-micro-1.0-g3d-mnn-b32"
     private fun resolve(repo: String, revision: String, file: String) = "https://huggingface.co/$repo/resolve/$revision/$file?download=true"
 
     /**
@@ -77,11 +77,13 @@ internal object ModelManifest {
         ModelFile("s1-mini-q4_k_m.gguf", 484219808, "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634", hosted("s1", s1Revision, "s1-mini-q4_k_m.gguf"), resolve(s1Repo, s1Revision, "s1-mini-q4_k_m.gguf")),
     ))
     /**
-     * EG-1 Micro (#528), Envious Labs' Qwen 3.5 0.8B polish fine-tune, run by MNN (#531): HQQ 4-bit with an 8-bit output
-     * layer (`llmexport.py --quant_bit 4 --hqq --quant_block 64 --lm_quant_bit 8`), graded level or better than the
-     * Q4_K_M file it replaced. `config.json` comes first because the runtime loads the folder through it. No
-     * `previous`: the GGUF revision ran on another engine (`previous` means "this engine still loads it", #108), and it
-     * never reached production, so a phone holding it downloads this revision again.
+     * EG-1 Micro (#528), Envious Labs' Qwen 3.5 0.8B polish fine-tune, run by MNN (#531): 4-bit in blocks of 32 with an
+     * 8-bit output layer (`llmexport.py --quant_bit 4 --quant_block 32 --lm_quant_bit 8`), `llm_config.json` with
+     * `is_visual` false. On the full 4,352-case exam (2026-11-15) it passed 76.3% against the Q4_K_M file's 75.5% with no
+     * language significantly worse; the HQQ block-64 export (74.0%) failed that bar. `config.json` comes first because
+     * the runtime loads the folder through it. No `previous`: the GGUF revision ran on another engine (`previous` means
+     * "this engine still loads it", #108), and neither retired revision reached production; `Eg1ModelUpgrade` moves a
+     * phone holding either one to this revision.
      */
     val eg1Micro = ModelDescriptor(
         id = "eg1-micro",
@@ -93,15 +95,16 @@ internal object ModelManifest {
         pinnedRevision = eg1Revision,
         files = listOf(
             ModelFile("config.json", 254L, "062163f9685988f05c5c56c7a5e5883b15027fff74cd3020614d06addca54e74", hosted("eg1", eg1Revision, "config.json")),
-            ModelFile("llm_config.json", 4_138L, "9b2093a3c788ecce57581c74cb194806b3ac6a90a43f8d3f541b54f62f6a4e8c", hosted("eg1", eg1Revision, "llm_config.json")),
-            ModelFile("llm.mnn", 2_603_920L, "d5dc9193ecf0274c8e6af83a83147efe87a1440ad42b8afcff037f0d3fe48214", hosted("eg1", eg1Revision, "llm.mnn")),
-            ModelFile("llm.mnn.weight", 550_504_842L, "31d473d0b496920d5eac24568bdfd5574fd329ee7af32339169136c4c7950153", hosted("eg1", eg1Revision, "llm.mnn.weight")),
+            ModelFile("llm_config.json", 4_138L, "849428542b980b4b031fd8861ecdb1c5af749e6fc74173a3bdc19f584a700340", hosted("eg1", eg1Revision, "llm_config.json")),
+            ModelFile("llm.mnn", 2_603_920L, "1f11f3f9e8ff0cfd6f70b01a4eaa26cff3d243a24937a26652834a8fa5e588ab", hosted("eg1", eg1Revision, "llm.mnn")),
+            ModelFile("llm.mnn.weight", 597_498_250L, "ac5614feae191a289706930c62775087954dff30f91b0e87b6f812b74251e6af", hosted("eg1", eg1Revision, "llm.mnn.weight")),
             ModelFile("tokenizer.mtok", 7_337_120L, "bdf181ec543983404765394d682a25ecb95360172fa7e91b1a2573e0b632c34b", hosted("eg1", eg1Revision, "tokenizer.mtok")),
         ),
         previous = emptyList(),
-        // Measured on the arm64 emulator, 2026-11-15 (#531): the built weight cache allocates 605,319,168 bytes; each saved
-        // system-prompt entry takes 14,527,238; at most four are kept, plus one being rebuilt and 9,437,184 of KV scratch.
-        engineCacheBytes = 605_319_168L + 5L * 14_527_238L + 9_437_184L,
+        // Measured on the S26 with one engine thread, 2026-11-15 (#531): the built weight cache allocates 699,969,536 bytes;
+        // each saved system-prompt entry takes 24,750,854 (files plus sidecar); at most four are kept, plus one being
+        // rebuilt and 16 MiB of KV scratch (peak seen 15,138,816).
+        engineCacheBytes = 699_969_536L + 5L * 24_750_854L + 16_777_216L,
     )
     val ONBOARDING = listOf(parakeet, s1)
     val LOCAL_POLISH = listOf(s1, eg1Micro)

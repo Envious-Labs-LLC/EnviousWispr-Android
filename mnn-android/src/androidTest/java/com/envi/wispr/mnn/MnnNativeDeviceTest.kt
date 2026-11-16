@@ -67,9 +67,9 @@ class MnnNativeDeviceTest {
         return shared.toDouble() / maxOf(left.values.sum(), right.values.sum(), 1)
     }
 
-    private fun load(prefix: Boolean = false): Long {
+    private fun load(prefix: Boolean = false, threads: Int = 4): Long {
         val started = System.nanoTime()
-        val error = MnnNative.loadModel("$dir/model/config.json", "cpu", 4, cacheDir().path, if (prefix) prefixDir().path else "")
+        val error = MnnNative.loadModel("$dir/model/config.json", "cpu", threads, cacheDir().path, if (prefix) prefixDir().path else "")
         assertEquals("load error", "", error)
         return (System.nanoTime() - started) / 1_000_000
     }
@@ -202,6 +202,41 @@ class MnnNativeDeviceTest {
             assertEquals(text, MnnNative.testTextRoundTrip(text))
         }
         assertEquals("an unpaired surrogate becomes U+FFFD", "a\uFFFDb", MnnNative.testTextRoundTrip("a\uD83Db"))
+    }
+
+    /**
+     * A saved entry is never read under a thread count other than the one that built it: on the S26 (2026-11-15) a
+     * 4-thread entry read with 1 thread produced runaway text. The 1-thread load must build its own entry and answer as
+     * a 1-thread load without prefix reuse does.
+     */
+    @Test fun anEntryBuiltWithOtherThreadsIsNeverReused() {
+        assertTrue("model and fixtures not staged in $dir", staged())
+        val system = File("$dir/system.txt").readText()
+        val input = "<TRANSCRIPT>\nThe purple lantern is beside the quiet garden.\n</TRANSCRIPT>"
+        load(prefix = false, threads = 1)
+        MnnNative.resetAbort()
+        val plain = MnnNative.generate(system, input, 128, 2048)
+        MnnNative.unload()
+        assertFalse("plain 1-thread answer failed: $plain", plain.startsWith("ERROR:"))
+
+        clearPrefix()
+        load(prefix = true, threads = 4)
+        assertTrue("4-thread warm-up built its entry", MnnNative.warmPrefix(system))
+        MnnNative.unload()
+        val fourThreadKeys = prefixDir().listFiles().orEmpty().filter { it.name.endsWith(".ok") }.map { it.name }.toSet()
+        assertEquals("one 4-thread entry", 1, fourThreadKeys.size)
+
+        load(prefix = true, threads = 1)
+        MnnNative.resetAbort()
+        val reused = MnnNative.generate(system, input, 128, 2048)
+        val end = MnnNative.lastEnd()
+        MnnNative.unload()
+        val keys = prefixDir().listFiles().orEmpty().filter { it.name.endsWith(".ok") }.map { it.name }.toSet()
+        log("threads.txt", "plain=${plain.length} reused=${reused.length} end=${end.toList()} keys=$keys")
+        assertEquals("the 1-thread load built a second entry of its own", 2, keys.size)
+        assertTrue("the 4-thread entry is still there", keys.containsAll(fourThreadKeys))
+        assertEquals("the answer stopped at end of text, not the cap", 0, end[0])
+        assertTrue("the answer matches the 1-thread plain answer: '$reused' vs '$plain'", overlap(plain, reused) >= 0.9)
     }
 
     /** Five distinct prefixes keep only four whole entries: the oldest goes entirely, the newest stays (plan §3.6). */

@@ -76,6 +76,9 @@ internal object ModelFootprint {
     /** What the manifest says this model weighs once every file is present and verified. */
     fun expectedBytes(model: ModelDescriptor): Long = model.files.sumOf { it.expectedBytes }
 
+    /** What the model costs on the phone once in use: its files plus any engine cache it needs (#531). */
+    fun onPhoneBytes(model: ModelDescriptor): Long = expectedBytes(model) + model.engineCacheBytes
+
     /**
      * Every model's bytes AND the folder's bytes, from ONE traversal.
      *
@@ -139,4 +142,10 @@ internal data class ModelFolderFootprint(
 ) {
     /** Bytes under the root that no model's own directory accounts for. */
     val unclaimed: Long get() = total - perModel.values.sum()
+
+    /** Adds each model's engine cache (kept outside the models folder, #531) to its row and to the total. */
+    fun withEngineCaches(cacheBytes: (ModelDescriptor) -> Long): ModelFolderFootprint {
+        val caches = perModel.keys.associateWith(cacheBytes)
+        return ModelFolderFootprint(perModel.mapValues { (model, bytes) -> bytes + caches.getValue(model) }, total + caches.values.sum())
+    }
 }

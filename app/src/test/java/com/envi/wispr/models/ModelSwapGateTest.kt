@@ -100,7 +100,8 @@ class ModelSwapGateTest {
         val binders = sources.filter { Regex("""bindService\(Intent\([^)]*(AsrService|PolishService)::class""").containsMatchIn(it.readText()) }.map { it.name }
         assertEquals("no engine bind outside the registry", emptyList<String>(), binders)
         val worker = File("src/main/java/com/envi/wispr/models/ModelDeliveryWorker.kt").readText()
-        assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) { store.remove(model) }"))
+        // #531: the engine cache is removed inside the same exclusive section as the model files.
+        assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) { store.remove(model) && EngineCache.removeAll(applicationContext, model) }"))
         assertTrue(worker.contains("exclusive = { mutation -> ModelSwap.exclusive(applicationContext, mutation) }"))
         assertEquals("download and adoption admit through the swap", 2, Regex("""admission = \{ mutation -> gatedAdmission\(model, controls, mutation\) \}""").findAll(worker).count())
         assertTrue(worker.contains("ModelSwap.exclusive(applicationContext) {\n            if (isStopped || controls.read(model) != ModelDeliveryControlState.ACTIVE) false else mutation()"))

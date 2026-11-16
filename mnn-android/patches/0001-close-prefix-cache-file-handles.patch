@@ -1,0 +1,28 @@
+diff --git a/source/backend/cpu/CPUKVCacheManager.cpp b/source/backend/cpu/CPUKVCacheManager.cpp
+index 061d40e..874f588 100644
+--- a/source/backend/cpu/CPUKVCacheManager.cpp
++++ b/source/backend/cpu/CPUKVCacheManager.cpp
+@@ -392,6 +392,9 @@ void CPUKVCacheManager::onAlloc(KVMeta* meta, int seq_len) {
+         createKVCacheFile();
+         resetKVCacheFileSize(keySize, valueSize);
+         expandKVCacheInDisk(oldMaxLength, oldKeySize, oldValueSize, keySize, valueSize, old_key_fd, old_value_fd);
++        // The saved prefix files are only read here; close them so every prefix load does not leak two handles.
++        if (old_key_fd != INVALID_FILE) { MNNCloseFile(old_key_fd); }
++        if (old_value_fd != INVALID_FILE) { MNNCloseFile(old_value_fd); }
+         mPastLength = meta->seqlen_in_disk;
+         mKVCacheInDisk = true;
+ 
+diff --git a/source/core/KVCacheManager.cpp b/source/core/KVCacheManager.cpp
+index 5ff3a1f..22f91c0 100644
+--- a/source/core/KVCacheManager.cpp
++++ b/source/core/KVCacheManager.cpp
+@@ -32,6 +32,9 @@ void KVCacheManager::createKVCacheFile(std::string keyPath, std::string valuePat
+ 
+     std::string pathk    = keyPath.size() > 0 ? keyPath : mBaseFileName + ".k";
+     std::string pathv    = valuePath.size() > 0 ? valuePath : mBaseFileName + ".v";
++    // A layer re-creating its files (a later prefix load) must not orphan the handles it already holds.
++    if (mKeyCacheFD != INVALID_FILE) { MNNCloseFile(mKeyCacheFD); mKeyCacheFD = INVALID_FILE; }
++    if (mValueCacheFD != INVALID_FILE) { MNNCloseFile(mValueCacheFD); mValueCacheFD = INVALID_FILE; }
+     mKeyCacheFD   = MNNCreateFile(pathk.c_str());
+     mValueCacheFD = MNNCreateFile(pathv.c_str());
+     if (mKeyCacheFD == INVALID_FILE) {

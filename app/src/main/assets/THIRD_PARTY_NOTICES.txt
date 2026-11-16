@@ -16,16 +16,21 @@ Changes: exported to ONNX and quantised to int8 (MatMulNBits) by Olicorne, with 
 
 "EG-1 Micro" by "Envious Labs", fine-tuned from "Qwen3.5-0.8B" by Alibaba Cloud (Apache License 2.0)
 Model ID: eg1-micro
-Model host: https://models.enviouslabs.co/eg1/eg1-micro-1.0-g3d
+Model host: https://models.enviouslabs.co/eg1/eg1-micro-1.0-g3d-mnn-hqq64
 Base model: https://huggingface.co/Qwen/Qwen3.5-0.8B
-Pinned revision: eg1-micro-1.0-g3d
+Pinned revision: eg1-micro-1.0-g3d-mnn-hqq64
 License: Envious Labs proprietary model weights; Apache-2.0 / MIT runtime dependencies
-Notes: Envious Labs fine-tuned Qwen3.5-0.8B (Apache License 2.0, reproduced in full below) and quantised the combined weights to Q4_K_M across two GGUF shards, executed on-device with llama.cpp (MIT License).
+Notes: Envious Labs fine-tuned Qwen3.5-0.8B (Apache License 2.0, reproduced in full below) and quantised the combined weights to 4-bit (HQQ, 8-bit output layer) in MNN's format, executed on-device with MNN (Apache License 2.0).
 
 onnx-asr audio front end (nemo128.onnx)
 Source repository: https://github.com/istupakov/onnx-asr
 Version: 0.12.0, file taken unmodified from the package
 License: MIT License, Copyright (c) 2025 Ilya Stupakov; full text in the root THIRD-PARTY-NOTICES.txt
+
+MNN
+Source repository: https://github.com/alibaba/MNN
+Pinned revision: b6a32165e2855106b76852fba80793d58a829663
+License: Apache License 2.0
 
 llama.cpp
 Source repository: https://github.com/ggml-org/llama.cpp

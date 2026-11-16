@@ -38,6 +38,15 @@ llama.cpp
   Read from: Commit read from this repository's index entry for the submodule, not from the working checkout, which can lag it. Licence read from third_party/llama.cpp/LICENSE in this checkout.
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+MNN
+  Version: b6a32165e2855106b76852fba80793d58a829663
+  License: Apache License 2.0
+  Source:  https://github.com/alibaba/MNN
+  Note:    Built from source as the :mnn-android module (#531). Runs EG-1 Micro.
+  Read from: Commit read from this repository's index entry for the submodule, not from the working checkout. Licence read from third_party/MNN/LICENSE.txt in this checkout; the pinned tree has no NOTICE file.
+--------------------------------------------------------------------------------
+
 
 PART 2 - MAVEN DEPENDENCIES ON THE RELEASE RUNTIME CLASSPATH
 ===========================================================

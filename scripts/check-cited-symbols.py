@@ -71,6 +71,7 @@ BASE_SUFFIXES = (".kt", ".java", ".cpp", ".h", ".hpp", ".c", ".cc", ".aidl", ".k
 SOURCE_CONFIG = {
     "app/src": BASE_SUFFIXES,
     "llama-android": BASE_SUFFIXES,
+    "mnn-android": BASE_SUFFIXES,  # #531: EG-1 Micro's engine module, the same kind of root as llama-android
     "third_party": BASE_SUFFIXES,
     "accelerator-benchmark": BASE_SUFFIXES,
     "scripts": BASE_SUFFIXES + (".py", ".sh"),

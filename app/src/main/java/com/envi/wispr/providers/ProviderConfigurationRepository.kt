@@ -9,6 +9,7 @@ import com.envi.wispr.processing.ProcessingQualification
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1Context
 import com.envi.wispr.polish.S1ControlSettings
@@ -150,64 +151,134 @@ internal class ProviderConfigurationRepository internal constructor(
     /** The persisted S1-mini picks for the screen (#152). The engine never calls this; it reads [loadPolicy]. */
     fun loadS1Control(): S1ControlSettings = decodeS1Control(preferences.all)
 
-    fun loadS1Processing(): ProcessingPreference = synchronized(PROCESSING_LOCK) { ProcessingPreference.decode(storedProcessingString(preferences.all, KEY_S1_PROCESSING)) }
-    fun loadS1Qualification(): ProcessingQualification = synchronized(PROCESSING_LOCK) { ProcessingQualification.decode(storedProcessingString(preferences.all, KEY_S1_QUALIFICATION)) }
-    fun loadProcessingDetails(): ProcessingDetails = synchronized(PROCESSING_LOCK) {
+    fun loadLocalPolishModel(): LocalPolishModel = synchronized(PROCESSING_LOCK) {
+        decodeLocalPolishModel(preferences.all)
+    }
+
+    fun setLocalPolishModel(model: LocalPolishModel) = synchronized(PROCESSING_LOCK) {
+        writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to model.wire, KEY_LOCAL_POLISH_DOWNLOAD to ""))
+    }
+
+    /** The download worker owns completion. Persist only the choice it is allowed to apply. */
+    fun requestLocalPolishDownload(model: LocalPolishModel) = synchronized(PROCESSING_LOCK) {
+        if (decodeMode(preferences.all) == PolishMode.OFFLINE_S1) {
+            writeProcessing(mapOf(KEY_LOCAL_POLISH_DOWNLOAD to model.wire))
+        }
+    }
+
+    fun cancelLocalPolishDownload(model: LocalPolishModel) = synchronized(PROCESSING_LOCK) {
+        if (preferences.all[KEY_LOCAL_POLISH_DOWNLOAD] == model.wire) {
+            writeProcessing(mapOf(KEY_LOCAL_POLISH_DOWNLOAD to ""))
+        }
+    }
+
+    fun completeLocalPolishDownload(model: LocalPolishModel): Boolean = synchronized(PROCESSING_LOCK) {
         val values = preferences.all
+        if (decodeMode(values) != PolishMode.OFFLINE_S1 || values[KEY_LOCAL_POLISH_DOWNLOAD] != model.wire) {
+            return@synchronized false
+        }
+        writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to model.wire, KEY_LOCAL_POLISH_DOWNLOAD to ""))
+    }
+
+    fun fallbackAfterLocalPolishRemoval(removed: LocalPolishModel, fallback: LocalPolishModel): Boolean =
+        synchronized(PROCESSING_LOCK) {
+            val values = preferences.all
+            if (decodeLocalPolishModel(values) != removed) return@synchronized false
+            writeProcessing(mapOf(KEY_LOCAL_POLISH_MODEL to fallback.wire))
+        }
+
+    fun loadS1Processing(): ProcessingPreference = synchronized(PROCESSING_LOCK) { ProcessingPreference.decode(storedProcessingString(preferences.all, KEY_S1_PROCESSING)) }
+
+    fun loadS1Qualification(model: LocalPolishModel? = null): ProcessingQualification = synchronized(PROCESSING_LOCK) {
+        val values = preferences.all
+        val selected = model ?: decodeLocalPolishModel(values)
+        ProcessingQualification.decode(storedProcessingString(values, qualificationKeyFor(selected)))
+    }
+
+    fun loadProcessingDetails(model: LocalPolishModel? = null): ProcessingDetails = synchronized(PROCESSING_LOCK) {
+        val values = preferences.all
+        val resolvedModel = runCatching { model ?: decodeLocalPolishModel(values) }
         ProcessingDetails(
-            runCatching { ProcessingPreference.decode(storedProcessingString(values, KEY_S1_PROCESSING)) },
-            runCatching { ProcessingQualification.decode(storedProcessingString(values, KEY_S1_QUALIFICATION)) },
+            resolvedModel.mapCatching { decodeProcessingPreference(values, it) },
+            resolvedModel.mapCatching { ProcessingQualification.decode(storedProcessingString(values, qualificationKeyFor(it))) },
             runCatching { ProcessingObservation.decode(storedProcessingString(values, KEY_PROCESSING_RESULT)) },
+            resolvedModel.getOrDefault(com.envi.wispr.polish.LocalPolishModel.S1_MINI),
         )
     }
+
     fun loadProcessingResult(): ProcessingObservation? = synchronized(PROCESSING_LOCK) { ProcessingObservation.decode(storedProcessingString(preferences.all, KEY_PROCESSING_RESULT)) }
+
     fun processingChanges() = callbackFlow {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == KEY_S1_QUALIFICATION || key == KEY_PROCESSING_RESULT) trySend(Unit)
+            if (key == KEY_S1_QUALIFICATION || key == KEY_EG1_QUALIFICATION || key == KEY_LOCAL_POLISH_MODEL || key == KEY_PROCESSING_RESULT) trySend(Unit)
         }
         preferences.registerOnSharedPreferenceChangeListener(listener)
         trySend(Unit)
         awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
+
     fun setS1Processing(value: ProcessingPreference) = synchronized(PROCESSING_LOCK) {
         writeProcessing(mapOf(KEY_S1_PROCESSING to value.encode()))
     }
-    fun setS1Qualification(value: ProcessingQualification) = synchronized(PROCESSING_LOCK) {
-        writeProcessing(mapOf(KEY_S1_QUALIFICATION to value.encode()))
+
+    fun setS1Qualification(value: ProcessingQualification, model: LocalPolishModel = LocalPolishModel.S1_MINI) = synchronized(PROCESSING_LOCK) {
+        writeProcessing(mapOf(qualificationKeyFor(model) to value.encode()))
     }
+
     /** Cancellation can win while the store is suspended; readers see either the previous or accepted snapshot. */
-    fun acceptQualification(result: ProcessingCheckResult, stillCurrent: () -> Boolean): ProcessingQualification? = synchronized(PROCESSING_LOCK) {
+    fun acceptQualification(
+        result: ProcessingCheckResult,
+        stillCurrent: () -> Boolean,
+    ): ProcessingQualification? = acceptQualification(result, LocalPolishModel.S1_MINI, stillCurrent)
+
+    fun acceptQualification(
+        result: ProcessingCheckResult,
+        model: LocalPolishModel,
+        stillCurrent: () -> Boolean,
+    ): ProcessingQualification? = synchronized(PROCESSING_LOCK) {
         if (!stillCurrent()) return null
-        val previous = loadS1Qualification().takeIf { it.contextId == result.contextId }
+        val key = qualificationKeyFor(model)
+        val values = preferences.all
+        val previous = ProcessingQualification.decode(storedProcessingString(values, key))
+            .takeIf { it.contextId == result.contextId }
             ?: ProcessingQualification.of(result.contextId, emptySet())
         val stamp = result.evidenceStamp ?: return previous
-        val revision = runCatching { loadS1Processing().retryRevision }.getOrDefault(0)
+        val revision = runCatching { decodeProcessingPreference(values, model).retryRevision }.getOrDefault(0)
         val next = when (result.status) {
             ProcessingCheckStatus.AVAILABLE -> previous.observed(setOf(result.backend), emptySet(), false, revision, stamp)
             ProcessingCheckStatus.RUNTIME_FAILED -> previous.observed(emptySet(), emptySet(), true, revision, stamp)
             ProcessingCheckStatus.MODEL_MISSING, ProcessingCheckStatus.NOT_IMPLEMENTED, ProcessingCheckStatus.LOAD_FAILED,
             ProcessingCheckStatus.CANARY_FAILED, ProcessingCheckStatus.CANCELLED, ProcessingCheckStatus.EXPIRED -> previous.observed(emptySet(), setOf(result.backend), false, revision, stamp)
         }
-        if (!writeProcessing(mapOf(KEY_S1_QUALIFICATION to next.encode()), stillCurrent)) null else next
+        if (!writeProcessing(mapOf(key to next.encode()), stillCurrent)) null else next
     }
+
     /** Called by the existing application write queue, never before a take's publication commit. */
     fun recordProcessing(observation: ProcessingObservation): Unit = synchronized(PROCESSING_LOCK) {
-        val previousResult = runCatching { loadProcessingResult() }.getOrNull()
+        val values = preferences.all
+        val previousResult = runCatching {
+            ProcessingObservation.decode(storedProcessingString(values, KEY_PROCESSING_RESULT))
+        }.getOrNull()
         val olderUserTake = previousResult != null && previousResult.processEpoch == observation.processEpoch && previousResult.takeAcceptedAtMs > observation.takeAcceptedAtMs
-        val values = mutableMapOf<String, String>()
-        if (!olderUserTake) values[KEY_PROCESSING_RESULT] = observation.encode()
+        val writes = mutableMapOf<String, String>()
+        if (!olderUserTake) writes[KEY_PROCESSING_RESULT] = observation.encode()
         observation.local?.let { usage ->
-            var evidence = runCatching { loadS1Qualification() }.getOrNull()?.takeIf { it.contextId == usage.contextId } ?: ProcessingQualification.of(usage.contextId, emptySet())
+            val model = LocalPolishModel.fromWire(usage.modelId)
+            val key = qualificationKeyFor(model)
+            var evidence = runCatching {
+                ProcessingQualification.decode(storedProcessingString(values, key))
+            }.getOrNull()?.takeIf { it.contextId == usage.contextId }
+                ?: ProcessingQualification.of(usage.contextId, emptySet())
             val generationFailure = if (usage.generationFailed && usage.backend != null) setOf(usage.backend) else emptySet()
             usage.loadStamp?.let { stamp -> evidence = evidence.observed(emptySet(), usage.failedBackends - generationFailure, usage.runtimeFailed && usage.generationStamp == null, usage.preferenceRevision, stamp) }
             usage.generationStamp?.let { stamp ->
                 val success = if (usage.acceptedLocalText && usage.backend != null && observation.reason == PolishReason.POLISHED) setOf(usage.backend) else emptySet()
                 evidence = evidence.observed(success, generationFailure, usage.runtimeFailed, usage.preferenceRevision, stamp)
             }
-            values[KEY_S1_QUALIFICATION] = evidence.encode()
+            writes[key] = evidence.encode()
         }
-        if (values.isEmpty()) return
-        writeProcessing(values)
+        if (writes.isEmpty()) return
+        writeProcessing(writes)
         Unit
     }
     /** SharedPreferences changes memory even when commit fails. Roll back before releasing our readers. */
@@ -303,7 +374,7 @@ internal class ProviderConfigurationRepository internal constructor(
             .putString(KEY_PROTOCOL, selfHostedProtocol.name)
         if (provider.capabilities().requiresEndpoint) values.putString(KEY_ENDPOINT, endpoint)
         else values.remove(KEY_ENDPOINT)
-        if (!values.commit()) {
+        if (!synchronized(PROCESSING_LOCK) { values.remove(KEY_LOCAL_POLISH_DOWNLOAD).commit() }) {
             // Compensation: the metadata did not change, so the key must not have either. A compensation
             // that fails is reported as what it is; "nothing changed" would be a lie the UI repeats.
             if (suppliedKey != null) {
@@ -323,8 +394,10 @@ internal class ProviderConfigurationRepository internal constructor(
         selfHostedProtocol: SelfHostedProtocol = SelfHostedProtocol.OPENAI_COMPATIBLE,
     ) = saveProvider(provider, model, endpoint, apiKey, selfHostedProtocol)
 
-    fun setMode(mode: PolishMode) {
-        check(preferences.edit().putString(KEY_MODE, mode.name).commit()) {
+    fun setMode(mode: PolishMode) = synchronized(PROCESSING_LOCK) {
+        val editor = preferences.edit().putString(KEY_MODE, mode.name)
+        if (mode != PolishMode.OFFLINE_S1) editor.remove(KEY_LOCAL_POLISH_DOWNLOAD)
+        check(editor.commit()) {
             "could not persist polish mode"
         }
     }
@@ -397,11 +470,15 @@ internal class ProviderConfigurationRepository internal constructor(
          */
         fun decodePolicy(values: Map<String, *>): PolishPolicy = when (decodeMode(values)) {
             PolishMode.OFF -> PolishPolicy.Off
-            PolishMode.OFFLINE_S1 -> PolishPolicy.LocalS1(
-                decodeS1Control(values),
-                ProcessingPreference.decode(storedProcessingString(values, KEY_S1_PROCESSING)),
-                ProcessingQualification.decode(storedProcessingString(values, KEY_S1_QUALIFICATION)),
-            )
+            PolishMode.OFFLINE_S1 -> {
+                val model = decodeLocalPolishModel(values)
+                PolishPolicy.LocalS1(
+                    decodeS1Control(values),
+                    decodeProcessingPreference(values, model),
+                    ProcessingQualification.decode(storedProcessingString(values, qualificationKeyFor(model))),
+                    model,
+                )
+            }
             PolishMode.PROVIDER -> decodeSelection(values)?.let { selection ->
                 PolishPolicy.Cloud(selection.provider, selection.model, selection.endpoint, selection.protocol)
             } ?: PolishPolicy.CloudUnconfigured
@@ -459,10 +536,29 @@ internal class ProviderConfigurationRepository internal constructor(
         private const val KEY_PROCESSING_RESULT = "latest_processing_result"
         private const val KEY_S1_PROCESSING = "s1_processing"
         private const val KEY_S1_QUALIFICATION = "s1_processing_qualification"
+        private const val KEY_LOCAL_POLISH_DOWNLOAD = "local_polish_download"
+        private const val KEY_LOCAL_POLISH_MODEL = "local_polish_model"
+        private const val KEY_EG1_QUALIFICATION = "eg1_processing_qualification"
         private const val KEY_S1_STYLING = "s1_styling"
         private const val KEY_S1_STRUCTURE = "s1_structure"
         private const val KEY_S1_CONTEXT = "s1_context"
         private const val MAX_MODEL_CHARS = 256
+
+        internal fun decodeLocalPolishModel(values: Map<String, *>): com.envi.wispr.polish.LocalPolishModel =
+            com.envi.wispr.polish.LocalPolishModel.fromWire(storedProcessingString(values, KEY_LOCAL_POLISH_MODEL))
+
+        internal fun qualificationKeyFor(model: com.envi.wispr.polish.LocalPolishModel): String = when (model) {
+            com.envi.wispr.polish.LocalPolishModel.S1_MINI -> KEY_S1_QUALIFICATION
+            com.envi.wispr.polish.LocalPolishModel.EG1_MICRO -> KEY_EG1_QUALIFICATION
+        }
+
+        private fun decodeProcessingPreference(
+            values: Map<String, *>,
+            model: com.envi.wispr.polish.LocalPolishModel,
+        ): ProcessingPreference = when (model) {
+            com.envi.wispr.polish.LocalPolishModel.S1_MINI -> ProcessingPreference.decode(storedProcessingString(values, KEY_S1_PROCESSING))
+            com.envi.wispr.polish.LocalPolishModel.EG1_MICRO -> ProcessingPreference.DEFAULT
+        }
     }
 }
 
@@ -504,4 +600,5 @@ internal data class ProcessingDetails(
     val preference: Result<ProcessingPreference>,
     val qualification: Result<ProcessingQualification>,
     val observation: Result<ProcessingObservation?>,
+    val localPolishModel: com.envi.wispr.polish.LocalPolishModel = com.envi.wispr.polish.LocalPolishModel.S1_MINI,
 )

@@ -93,6 +93,7 @@ internal class TranscriptionActions(
 
 internal class PolishActions(
     val onSetMode: (PolishMode) -> Int,
+    val onSetLocalModel: (com.envi.wispr.polish.LocalPolishModel) -> Int = { 0 },
     val onSetS1Control: (S1ControlSettings) -> Int,
     val onSetProcessing: (ProcessingPreference) -> Int = { 0 },
     val onCheckProcessing: (ProcessingBackend) -> Unit = {},

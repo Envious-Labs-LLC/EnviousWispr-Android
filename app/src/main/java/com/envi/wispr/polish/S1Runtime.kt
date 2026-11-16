@@ -21,6 +21,9 @@ internal interface S1Runtime {
     /** Loads the model on the first unit in [computeUnits] that constructs; returns a content-free description. */
     fun load(modelPath: String, computeUnits: List<String>): String
 
+    /** Optionally pre-computes and snapshots the static system-prompt KV/recurrent state before the first request. */
+    fun warmPrefix(systemPrompt: String, timeoutMs: Long): Boolean = false
+
     /** The generated text, or null when [timeoutMs] expired first (treated as a hard expiry, #75). */
     fun generate(systemPrompt: String, userPrompt: String, maxTokens: Int, timeoutMs: Long): String?
 

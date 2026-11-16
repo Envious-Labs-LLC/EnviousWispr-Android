@@ -50,7 +50,7 @@ internal object PayloadSanitizer {
         "mic_granted", "onboarding_complete", "custom_words_count", "install_source", "test_lab", "filler_removal", "emoji_formatter",
         "spoken_punctuation", "auto_copy_to_clipboard", "restore_clipboard_after_paste", "smart_insertion",
         "auto_stop_on_silence", "silence_pause_seconds", "show_bluetooth_tips", "keep_earbuds_ready",
-        "dynamic_color", "bubble_look", "polish_policy", "setting", "from", "to",
+        "dynamic_color", "bubble_look", "polish_policy", "local_polish_model", "setting", "from", "to",
         // onboarding, model delivery, providers
         "elapsed_s", "lesson", "outcome", "model", "source_host", "bytes_bucket", "duration_s", "first_run",
         "provider", "action",

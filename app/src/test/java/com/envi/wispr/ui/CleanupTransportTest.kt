@@ -25,6 +25,7 @@ class CleanupTransportTest {
             override fun isLocalModelReady() = false
             override fun localModelStatus() = "unused"
             override fun qualifyProcessing(id: Long, backend: String?, callback: com.envi.wispr.processing.IProcessingCheckCallback?) = error("unused qualification")
+            override fun qualifyProcessingForModel(id: Long, backend: String?, modelWire: String?, callback: com.envi.wispr.processing.IProcessingCheckCallback?) = error("unused qualification")
             override fun cancelQualification(id: Long) = Unit
         }
         val options = CleanupOptions(false, false, true, EnglishSpelling.BRITISH, setOf("center", "kennedy"))

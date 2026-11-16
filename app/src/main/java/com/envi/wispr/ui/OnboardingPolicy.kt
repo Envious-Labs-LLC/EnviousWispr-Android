@@ -74,7 +74,7 @@ internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows:
 internal fun onboardingStage(step: Int, readiness: AppReadiness, autoPaste: AutoPasteAvailability): OnboardingStage {
     val requested = OnboardingStage.entries.getOrElse(step) { OnboardingStage.WELCOME }
     if (requested == OnboardingStage.WELCOME) return requested
-    if (!readiness.requiredModelsReady) return OnboardingStage.DOWNLOADS
+    if (!(readiness.speechModelReady && readiness.onboardingPolishModelReady)) return OnboardingStage.DOWNLOADS
     if (requested == OnboardingStage.DOWNLOADS) return OnboardingStage.PERMISSIONS
     if ((requested == OnboardingStage.DEMO || requested == OnboardingStage.PRACTICE) &&
         (!readiness.microphoneGranted || autoPaste != AutoPasteAvailability.LIVE)
@@ -86,5 +86,7 @@ internal fun onboardingStage(step: Int, readiness: AppReadiness, autoPaste: Auto
 internal fun AppReadiness.withVerifiedModels(checked: AppReadiness): AppReadiness = copy(
     speechModelReady = checked.speechModelReady,
     polishModelReady = checked.polishModelReady,
+    onboardingPolishModelReady = checked.onboardingPolishModelReady,
+    eg1PolishModelReady = checked.eg1PolishModelReady,
     modelsChecked = checked.modelsChecked,
 )

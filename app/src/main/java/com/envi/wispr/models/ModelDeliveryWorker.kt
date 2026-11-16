@@ -8,6 +8,8 @@ import androidx.work.WorkerParameters
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.envi.wispr.debug.DebugLogger
+import com.envi.wispr.polish.LocalPolishModel
+import com.envi.wispr.providers.ProviderConfigurationRepository
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import com.envi.wispr.telemetry.AnalyticsEvent
@@ -34,6 +36,19 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         if (inputData.getBoolean(KEY_REMOVE, false)) {
             // With dictation paused and the engines stopped (#108); a take in progress finishes first.
             val removed = whenIdle { ModelSwap.exclusive(applicationContext) { store.remove(model) } } ?: return@withContext Result.retry()
+            val removedPolish = localPolishModel(model)
+            if (removedPolish != null && ModelStorage.usable(applicationContext, model) == null) {
+                val fallback = LocalPolishModel.entries.firstOrNull {
+                    it != removedPolish && ModelStorage.usable(applicationContext, it.descriptor()) != null
+                }
+                if (fallback != null) {
+                    try {
+                        ProviderConfigurationRepository(applicationContext).fallbackAfterLocalPolishRemoval(removedPolish, fallback)
+                    } catch (_: IllegalStateException) {
+                        return@withContext Result.retry()
+                    }
+                }
+            }
             controls.clear(model)
             // #458: removing the speech model also frees the retired one, so the upgrade check stops fetching Ultra.
             SpeechModelUpgrade.afterRemove(root, model)
@@ -61,16 +76,19 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         setProgressAsync(Data.Builder().putString(KEY_STATE, DownloadState.VERIFYING.name).build())
         if (store.isVerified(model)) {
+            if (!completePolishDownload(model, controls)) return@withContext Result.retry()
             controls.clear(model)
             ModelDeliveryNotification.clear(applicationContext, model)
             return@withContext Result.success()
         }
         when (controls.read(model)) {
             ModelDeliveryControlState.PAUSED -> {
-                val status = DownloadStatus(DownloadState.PAUSED, 0L, model.files.sumOf { it.expectedBytes })
-                setProgressAsync(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_TOTAL, status.total).build())
-                ModelDeliveryNotification.notify(applicationContext, model, 0L, status.total, status.state)
-                return@withContext Result.success(Data.Builder().putString(KEY_STATE, status.state.name).build())
+                val total = model.files.sumOf { it.expectedBytes }
+                val staged = store.stagedBytes(model).coerceAtMost(total)
+                val status = DownloadStatus(DownloadState.PAUSED, staged, total)
+                setProgressAsync(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_BYTES, status.bytes).putLong(KEY_TOTAL, status.total).build())
+                ModelDeliveryNotification.notify(applicationContext, model, status.bytes, status.total, status.state)
+                return@withContext Result.success(Data.Builder().putString(KEY_STATE, status.state.name).putLong(KEY_BYTES, status.bytes).putLong(KEY_TOTAL, status.total).build())
             }
             ModelDeliveryControlState.CANCELLED -> {
                 return@withContext failure("cancelled", DownloadState.CANCELLED)
@@ -109,17 +127,13 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         var lastProgress = 0L
         var lastProgressTime = 0L
-        var completedBytes = 0L
         var lastHost: String? = null
-        // Through the network WorkManager assigned (#108): a Wi-Fi-only download never falls over to mobile data.
-        // WorkManager's in-process scheduler can start work without naming a network; a Wi-Fi-only download then
-        // finds a validated Wi-Fi network itself, or waits, and never rides the default (possibly mobile) one.
-        val transferNetwork = network ?: if (inputData.getBoolean(KEY_WIFI_ONLY, false)) {
-            ModelDownloadPolicy.wifiNetwork(applicationContext) ?: run {
+        val transferNetwork = if (inputData.getBoolean(KEY_WIFI_ONLY, false)) {
+            ModelDownloadPolicy.wifiNetwork(applicationContext, network) ?: run {
                 ModelDeliveryNotification.clear(applicationContext, model)
                 return@withContext Result.retry()
             }
-        } else null
+        } else network
         val transport = HttpsRangeTransport(transferNetwork)
         // A finished download is applied with dictation paused and the engines stopped (#108). While a take runs it
         // ends STAGED, the complete revision waits in staging, and the next idle moment applies it without a refetch.
@@ -129,9 +143,9 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             override fun isCancelled() = controls.read(model) == ModelDeliveryControlState.CANCELLED
         }, onProgress = { status ->
             val now = System.currentTimeMillis()
-            if (status.state != DownloadState.DOWNLOADING || status.bytes - lastProgress >= 1024L * 1024L || now - lastProgressTime >= 500L) {
-                val progressBytes = (completedBytes + status.bytes).coerceAtMost(totalBytes)
-                lastProgress = status.bytes
+            val progressBytes = status.bytes.coerceAtMost(totalBytes)
+            if (status.state != DownloadState.DOWNLOADING || progressBytes - lastProgress >= 1024L * 1024L || now - lastProgressTime >= 500L) {
+                lastProgress = progressBytes
                 lastProgressTime = now
                 setProgressAsync(
                     Data.Builder()
@@ -143,7 +157,6 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
                 )
                 ModelDeliveryNotification.notify(applicationContext, model, progressBytes, totalBytes, status.state, status.message)
             }
-            if (status.state == DownloadState.VERIFYING) completedBytes += status.bytes
         }, onSource = { file, host ->
             // Which roof served the bytes (#168). The log, never the screen: a user does not choose hosts.
             DebugLogger.log(TAG, "Model source: ${model.id}/$file from ${ModelSourceHost.of(host).wire}")
@@ -156,30 +169,45 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             ModelDeliveryNotification.clear(applicationContext, model)
             return@withContext Result.retry()
         }
-        reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), completedBytes + result.bytes, startedAtMs, firstRun)
+        val reportedBytes = result.bytes.coerceIn(0L, totalBytes)
+        reportDelivery(model, result.state, result.reason, ModelSourceHost.of(lastHost), reportedBytes, startedAtMs, firstRun)
         when (result.state) {
             DownloadState.READY -> {
+                if (!completePolishDownload(model, controls)) return@withContext Result.retry()
                 controls.clear(model)
                 ModelDeliveryNotification.notify(applicationContext, model, totalBytes, totalBytes, DownloadState.READY)
-                Result.success(Data.Builder().putString(KEY_STATE, result.state.name).build())
+                Result.success(
+                    Data.Builder()
+                        .putString(KEY_STATE, result.state.name)
+                        .putLong(KEY_BYTES, totalBytes)
+                        .putLong(KEY_TOTAL, totalBytes)
+                        .build(),
+                )
             }
             DownloadState.PAUSED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state)
-                Result.success(Data.Builder().putString(KEY_STATE, result.state.name).build())
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state)
+                Result.success(
+                    Data.Builder()
+                        .putString(KEY_STATE, result.state.name)
+                        .putLong(KEY_BYTES, reportedBytes)
+                        .putLong(KEY_TOTAL, totalBytes)
+                        .build(),
+                )
             }
             DownloadState.CANCELLED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, "cancelled")
-                failure("cancelled", result.state)
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state, "cancelled")
+                failure("cancelled", result.state, reportedBytes, totalBytes)
             }
             DownloadState.REPAIR_NEEDED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, result.message)
-                failure(result.message ?: "model integrity check failed", result.state)
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state, result.message)
+                failure(result.message ?: "model integrity check failed", result.state, reportedBytes, totalBytes)
             }
             DownloadState.FAILED -> {
-                ModelDeliveryNotification.notify(applicationContext, model, result.bytes, totalBytes, result.state, result.message)
-                failure(result.message ?: "model download failed", result.state)
+                ModelDeliveryNotification.notify(applicationContext, model, reportedBytes, totalBytes, result.state, result.message)
+                failure(result.message ?: "model download failed", result.state, reportedBytes, totalBytes)
             }
-            DownloadState.DOWNLOADING, DownloadState.VERIFYING, DownloadState.STAGED -> failure(result.state.name, result.state)
+            DownloadState.DOWNLOADING, DownloadState.VERIFYING, DownloadState.STAGED ->
+                failure(result.state.name, result.state, reportedBytes, totalBytes)
         }
     }
 
@@ -261,10 +289,33 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         )
     }
 
-    private fun failure(reason: String, state: DownloadState? = null): Result = Result.failure(
+    private fun completePolishDownload(model: ModelDescriptor, controls: ModelDeliveryControlStore): Boolean {
+        val local = localPolishModel(model) ?: return true
+        if (inputData.getBoolean(KEY_ADOPT_ONLY, false) || isStopped ||
+            controls.read(model) != ModelDeliveryControlState.ACTIVE
+        ) return true
+        return try {
+            ProviderConfigurationRepository(applicationContext).completeLocalPolishDownload(local)
+            true
+        } catch (_: IllegalStateException) {
+            // The files are already verified. Retrying returns through the verified-file fast path.
+            false
+        }
+    }
+
+    private fun failure(
+        reason: String,
+        state: DownloadState? = null,
+        bytes: Long? = null,
+        total: Long? = null,
+    ): Result = Result.failure(
         Data.Builder()
             .putString(KEY_STATE, state?.name ?: DownloadState.FAILED.name)
             .putString(KEY_REASON, reason)
+            .apply {
+                if (bytes != null) putLong(KEY_BYTES, bytes)
+                if (total != null) putLong(KEY_TOTAL, total)
+            }
             .build(),
     )
 
@@ -368,8 +419,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
          * Every download, setup, update and repair takes its network from `ModelDownloadPolicy` (#108), so no path
          * can choose its own. Each request carries its kind as a tag, so a changed setting can re-queue it as itself.
          */
-        internal suspend fun enqueue(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, KIND_DOWNLOAD)
+        internal suspend fun enqueue(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueueDownload(context, model, KIND_DOWNLOAD, activateForPolish)
         }
 
         /** Explicit setup action. KEEP makes recreation/repeated Get Started idempotent. */
@@ -378,8 +429,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             submit(context, model, KIND_SETUP, if (restart) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP)
         }
 
-        internal suspend fun enqueueUpdate(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, KIND_UPDATE)
+        internal suspend fun enqueueUpdate(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueueDownload(context, model, KIND_UPDATE, activateForPolish)
         }
 
         /**
@@ -390,26 +441,40 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             submit(context, model, KIND_UPDATE, ExistingWorkPolicy.KEEP)
         }
 
-        internal suspend fun enqueueRepair(context: Context, model: ModelDescriptor) {
-            enqueueDownload(context, model, KIND_REPAIR)
+        internal suspend fun enqueueRepair(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueueDownload(context, model, KIND_REPAIR, activateForPolish)
         }
 
         private val requests = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
         /** For callers with no coroutine (card buttons, the notification's Resume): the policy read suspends. */
-        internal fun launch(block: suspend () -> Unit): kotlinx.coroutines.Job = requests.launch {
+        internal fun launch(
+            onFailure: suspend () -> Unit = {},
+            block: suspend () -> Unit,
+        ): kotlinx.coroutines.Job = requests.launch {
             try { block() } catch (error: kotlinx.coroutines.CancellationException) { throw error } catch (error: Exception) {
                 DebugLogger.warn(TAG, "Model request failed: ${error.javaClass.simpleName}")
+                onFailure()
             }
         }
 
-        private suspend fun enqueueDownload(context: Context, model: ModelDescriptor, kind: String) {
+        private fun localPolishModel(model: ModelDescriptor): LocalPolishModel? =
+            LocalPolishModel.entries.firstOrNull { it.descriptorId == model.id }
+
+        private suspend fun enqueueDownload(context: Context, model: ModelDescriptor, kind: String, activateForPolish: Boolean) {
+            if (activateForPolish) localPolishModel(model)?.let {
+                ProviderConfigurationRepository(context).requestLocalPolishDownload(it)
+            }
             ModelDeliveryControlStore(ModelStorage.root(context)).clear(model)
             submit(context, model, kind, ExistingWorkPolicy.REPLACE)
         }
 
         private suspend fun submit(context: Context, model: ModelDescriptor, kind: String, policy: ExistingWorkPolicy) {
-            WorkManager.getInstance(context).enqueueUniqueWork(downloadWorkName(model), policy, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)))
+            withContext(Dispatchers.IO) {
+                WorkManager.getInstance(context).enqueueUniqueWork(
+                    downloadWorkName(model), policy, request(model, kind, ModelDownloadPolicy.anyNetwork(context, model)),
+                ).result.get()
+            }
         }
 
         private fun request(model: ModelDescriptor, kind: String, anyNetwork: Boolean, id: java.util.UUID = java.util.UUID.randomUUID()) = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
@@ -426,13 +491,14 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
          * queued again as itself under the new rule. Its partial files stay on disk and the transfer resumes from them;
          * a running download already has its network, and a paused or cancelled one is left alone.
          */
-        internal suspend fun reapplyNetwork(context: Context) = withContext(Dispatchers.IO) {
+        internal suspend fun reapplyNetwork(context: Context, onlyLegacyWifi: Boolean = false) = withContext(Dispatchers.IO) {
             val manager = WorkManager.getInstance(context)
             val controls = ModelDeliveryControlStore(ModelStorage.root(context))
             ModelManifest.all.forEach { model ->
                 if (controls.read(model) != ModelDeliveryControlState.ACTIVE) return@forEach
                 val waiting = manager.getWorkInfosForUniqueWork(downloadWorkName(model)).get()
                     .firstOrNull { it.state == androidx.work.WorkInfo.State.ENQUEUED } ?: return@forEach
+                if (onlyLegacyWifi && !ModelDownloadPolicy.excludesVpn(waiting.constraints)) return@forEach
                 // Untagged work was queued by a build before #108; it resumes as a download, never repeating a cleanup.
                 val kind = waiting.tags.firstOrNull { it.startsWith(KIND_TAG_PREFIX) }?.removePrefix(KIND_TAG_PREFIX)?.takeIf { it in KINDS } ?: KIND_DOWNLOAD
                 // The captured request, by its id: a Remove or a newer request queued meanwhile is never replaced.
@@ -451,19 +517,21 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.CANCELLED)
             val manager = WorkManager.getInstance(context)
             // Explicit cancellation makes removal win over a queued or running transfer.
-            manager.cancelUniqueWork(downloadWorkName(model))
-            manager.cancelUniqueWork(adoptionWorkName(model))
+            manager.cancelUniqueWork(downloadWorkName(model)).result.get()
+            manager.cancelUniqueWork(adoptionWorkName(model)).result.get()
             val request = OneTimeWorkRequestBuilder<ModelDeliveryWorker>()
                 .setInputData(Data.Builder().putString(KEY_MODEL_ID, model.id).putBoolean(KEY_REMOVE, true).build())
                 .build()
-            manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request)
+            manager.enqueueUniqueWork(downloadWorkName(model), ExistingWorkPolicy.REPLACE, request).result.get()
+            localPolishModel(model)?.let { ProviderConfigurationRepository(context).cancelLocalPolishDownload(it) }
         }
 
         internal fun cancel(context: Context, model: ModelDescriptor) {
             ModelDeliveryControlStore(ModelStorage.root(context)).write(model, ModelDeliveryControlState.CANCELLED)
             val manager = WorkManager.getInstance(context)
-            manager.cancelUniqueWork(downloadWorkName(model))
-            manager.cancelUniqueWork(adoptionWorkName(model))
+            manager.cancelUniqueWork(downloadWorkName(model)).result.get()
+            manager.cancelUniqueWork(adoptionWorkName(model)).result.get()
+            localPolishModel(model)?.let { ProviderConfigurationRepository(context).cancelLocalPolishDownload(it) }
         }
 
         internal fun pause(context: Context, model: ModelDescriptor) {
@@ -473,8 +541,8 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
             manager.cancelUniqueWork(adoptionWorkName(model))
         }
 
-        internal suspend fun resume(context: Context, model: ModelDescriptor) {
-            enqueue(context, model)
+        internal suspend fun resume(context: Context, model: ModelDescriptor, activateForPolish: Boolean = false) {
+            enqueue(context, model, activateForPolish)
         }
 
         internal fun hasStaleInstallation(context: Context, model: ModelDescriptor): Boolean =

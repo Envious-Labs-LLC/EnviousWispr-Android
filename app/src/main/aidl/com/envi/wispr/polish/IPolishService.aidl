@@ -54,4 +54,7 @@ interface IPolishService {
     // Appended for #429. Qualification is not a user polish request.
     void qualifyProcessing(long operationId, String backend, IProcessingCheckCallback callback);
     oneway void cancelQualification(long operationId);
+
+    // Appended for #528. Qualify the selected local polish model without dropping #429 compatibility.
+    void qualifyProcessingForModel(long operationId, String backend, String modelWire, IProcessingCheckCallback callback);
 }

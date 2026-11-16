@@ -45,6 +45,17 @@ class ModelDeliveryUiTest {
         assertEquals(ModelUiAction.REPAIR, state.action)
     }
 
+    @Test fun failedWorkWithRepairNeededOutputOffersRepairUnlessStaleInstalled() {
+        val failedRepair = modelUiState(false, "FAILED", "REPAIR_NEEDED", bytes = 541_898_240L, total = 541_898_240L, reason = "model integrity check failed")
+        assertEquals("Repair needed", failedRepair.label)
+        assertEquals(ModelHealth.BROKEN, failedRepair.health)
+        assertEquals(ModelUiAction.REPAIR, failedRepair.action)
+        assertEquals(541_898_240L, failedRepair.bytes)
+        val staleUpdateRepair = modelUiState(false, "FAILED", "REPAIR_NEEDED", reason = "model integrity check failed", staleInstalled = true)
+        assertEquals("Update failed", staleUpdateRepair.label)
+        assertEquals(ModelUiAction.UPDATE, staleUpdateRepair.action)
+    }
+
     /**
      * #108: an update whose download failed its check, with the previous revision still installed, must not offer
      * Repair, which deletes the model still dictating. REVERT: drop the `staleInstalled` branch before Repair.

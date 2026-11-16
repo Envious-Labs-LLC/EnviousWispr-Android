@@ -3,6 +3,7 @@ package com.envi.wispr.providers
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1Context
 import com.envi.wispr.polish.S1ControlSettings
@@ -30,6 +31,31 @@ class ProviderConfigurationRepositoryTest {
         secrets = MemorySecrets()
         checker = RecordingChecker()
         repository = ProviderConfigurationRepository(context, secrets, checker)
+    }
+
+    @Test fun verifiedDownloadHonorsTheLatestPolishChoiceEvenAfterSettingsReopens() {
+        val micro = LocalPolishModel.EG1_MICRO
+        val mini = LocalPolishModel.S1_MINI
+        repository.requestLocalPolishDownload(micro)
+        assertEquals(mini, repository.loadLocalPolishModel())
+
+        val reopened = ProviderConfigurationRepository(context, secrets, checker)
+        assertTrue(reopened.completeLocalPolishDownload(micro))
+        assertEquals(micro, repository.loadLocalPolishModel())
+
+        repository.requestLocalPolishDownload(mini)
+        repository.setLocalPolishModel(micro)
+        assertFalse(reopened.completeLocalPolishDownload(mini))
+
+        repository.requestLocalPolishDownload(mini)
+        repository.setMode(PolishMode.OFF)
+        repository.setMode(PolishMode.OFFLINE_S1)
+        assertFalse(reopened.completeLocalPolishDownload(mini))
+
+        repository.requestLocalPolishDownload(mini)
+        repository.cancelLocalPolishDownload(mini)
+        assertFalse(reopened.completeLocalPolishDownload(mini))
+        assertEquals(micro, reopened.loadLocalPolishModel())
     }
 
     @Test fun delayedSuccessfulTakeCannotOverwriteANewerFailedCanary() {
@@ -399,6 +425,59 @@ class ProviderConfigurationRepositoryTest {
         assertEquals("a cloud mode carries no S1 picks", true, repository.loadPolicy().freshPolicy is PolishPolicy.Cloud)
         repository.clearSelection()
         assertEquals(PolishPolicy.LocalS1(picked), repository.loadPolicy().freshPolicy)
+    }
+
+    @Test fun egOneMicroSwitchPreservesS1PreferenceAndIsolatesCrossModelQualification() {
+        val gpu = com.envi.wispr.processing.ProcessingBackend.GPU
+        val cpu = com.envi.wispr.processing.ProcessingBackend.CPU
+        val s1Ctx = "1".repeat(64)
+        val eg1Ctx = "2".repeat(64)
+        val s1Custom = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(listOf(gpu))
+
+        repository.setS1Processing(s1Custom)
+        repository.setS1Qualification(
+            com.envi.wispr.processing.ProcessingQualification.of(s1Ctx, setOf(gpu)),
+            com.envi.wispr.polish.LocalPolishModel.S1_MINI,
+        )
+
+        repository.setLocalPolishModel(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO)
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO, repository.loadLocalPolishModel())
+        val activeEg1Policy = repository.loadPolicy().freshPolicy as PolishPolicy.LocalS1
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO, activeEg1Policy.model)
+        assertEquals(com.envi.wispr.processing.ProcessingPreference.DEFAULT, activeEg1Policy.processing)
+
+        // Qualify EG-1 Micro on CPU under its own slot.
+        repository.acceptQualification(
+            com.envi.wispr.processing.ProcessingCheckResult(
+                10L, cpu, eg1Ctx, com.envi.wispr.processing.ProcessingCheckStatus.AVAILABLE,
+                com.envi.wispr.processing.ProcessingEvidenceStamp(1, 50),
+            ),
+            model = com.envi.wispr.polish.LocalPolishModel.EG1_MICRO,
+        ) { true }
+        assertEquals(setOf(cpu), repository.loadS1Qualification(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO).backends)
+        assertEquals(setOf(gpu), repository.loadS1Qualification(com.envi.wispr.polish.LocalPolishModel.S1_MINI).backends)
+
+        // Delayed S1-mini take arriving while EG-1 Micro is active writes ONLY to S1-mini's slot.
+        val delayedS1 = com.envi.wispr.processing.ProcessingObservation(
+            "delayed-s1", 11L, 2000L, "local", com.envi.wispr.polish.PolishReason.POLISHED,
+            com.envi.wispr.processing.ProcessingPreference.DEFAULT,
+            com.envi.wispr.processing.ProcessingUsage(
+                cpu, s1Ctx, s1Custom, acceptedLocalText = true, failedBackendCodes = "gpu",
+                modelId = com.envi.wispr.polish.LocalPolishModel.S1_MINI.wire,
+                loadStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 90),
+                generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 100),
+            ),
+            takeAcceptedAtMs = 1L,
+        )
+        repository.recordProcessing(delayedS1)
+        assertEquals(setOf(cpu), repository.loadS1Qualification(com.envi.wispr.polish.LocalPolishModel.EG1_MICRO).backends)
+        assertEquals(setOf(cpu), repository.loadS1Qualification(com.envi.wispr.polish.LocalPolishModel.S1_MINI).backends)
+
+        // Switching back to S1-mini restores saved CUSTOM preference intact.
+        repository.setLocalPolishModel(com.envi.wispr.polish.LocalPolishModel.S1_MINI)
+        val restoredS1Policy = repository.loadPolicy().freshPolicy as PolishPolicy.LocalS1
+        assertEquals(com.envi.wispr.polish.LocalPolishModel.S1_MINI, restoredS1Policy.model)
+        assertEquals(s1Custom, restoredS1Policy.processing)
     }
 
     /** Records every ask and answers with [verdict]; Accepted by default so the older cases still save. */

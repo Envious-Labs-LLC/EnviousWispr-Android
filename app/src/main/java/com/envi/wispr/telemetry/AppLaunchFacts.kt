@@ -5,10 +5,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import com.envi.wispr.models.ModelDescriptor
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AccessibilityPermission
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishContext
+import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.providers.ProviderConfigurationRepository
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.settings.AppPreferencesState
@@ -28,31 +31,56 @@ internal object AppLaunchFacts {
 
     suspend fun read(context: Context, freshInstall: Boolean): AnalyticsEvent.AppLaunched {
         val preferences = runCatching { AppPreferences(context).authoritativeState.first() }.getOrNull()
-        val policy = runCatching { ProviderConfigurationRepository(context).loadPolicy().freshPolicy?.let { PolishContext.from(it).encode() } }.getOrNull() ?: UNKNOWN
+        val policyRead = runCatching { ProviderConfigurationRepository(context).loadPolicy() }.getOrNull()
+        val policy = policyRead?.freshPolicy?.let { PolishContext.from(it).encode() } ?: UNKNOWN
+        val selectedLocalModel = when (val fresh = policyRead?.freshPolicy) {
+            is PolishPolicy.LocalS1 -> fresh.model
+            null -> null
+            else -> runCatching { ProviderConfigurationRepository(context).loadLocalPolishModel() }.getOrNull()
+        }
+        val localPolishModel = selectedLocalModel?.wire ?: UNKNOWN
         val customWords = runCatching { CustomTermRepository(context).list().size }.getOrNull()
         return AnalyticsEvent.AppLaunched(
             deviceModel = Build.MODEL.orEmpty(),
             osVersion = Build.VERSION.RELEASE.orEmpty(),
             isFreshInstall = freshInstall,
-            // Whether the phone can dictate and polish now (#108), so a previous revision mid-update counts as ready.
-            modelsReady = runCatching { ModelStorage.usable(context, ModelManifest.parakeet) != null && ModelStorage.usable(context, ModelManifest.s1) != null }.getOrDefault(false),
+            // Whether the phone can dictate and polish now (#108, #528), so a previous revision mid-update counts as ready.
+            modelsReady = runCatching {
+                isModelsReady(selectedLocalModel) { descriptor -> ModelStorage.usable(context, descriptor) != null }
+            }.getOrDefault(false),
             accessibilityGranted = runCatching { AccessibilityPermission.isGranted(context) }.getOrDefault(false),
             micGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             onboardingComplete = preferences?.onboardingComplete ?: false,
             customWordsCount = customWords,
             installSource = InstallSource.of(context),
             testLab = runCatching { Settings.System.getString(context.contentResolver, FIREBASE_TEST_LAB) == "true" }.getOrDefault(false),
-            settings = settingsProjection(preferences, policy),
+            settings = settingsProjection(preferences, policy, localPolishModel),
         )
     }
+
+    /** Whether speech recognition and the selected local polish model are both usable (#528). */
+    internal fun isModelsReady(
+        selectedLocalModel: LocalPolishModel?,
+        isUsable: (ModelDescriptor) -> Boolean,
+    ): Boolean =
+        isUsable(ModelManifest.parakeet) &&
+            selectedLocalModel != null &&
+            isUsable(selectedLocalModel.descriptor())
 
     /** Firebase's documented marker on Test Lab and Play pre-launch report devices (#468). */
     private const val FIREBASE_TEST_LAB = "firebase.test.lab"
 
     /** Pure, so the projection is testable against a literal without a phone. */
-    fun settingsProjection(state: AppPreferencesState?, polishPolicy: String): Map<String, Any> {
+    fun settingsProjection(
+        state: AppPreferencesState?,
+        polishPolicy: String,
+        localPolishModel: String = if (state == null) UNKNOWN else LocalPolishModel.S1_MINI.wire,
+    ): Map<String, Any> {
         if (state == null) {
-            return SETTING_KEYS.associateWith { UNKNOWN } + (POLISH_POLICY to polishPolicy)
+            return SETTING_KEYS.associateWith { UNKNOWN } + mapOf(
+                POLISH_POLICY to polishPolicy,
+                LOCAL_POLISH_MODEL to localPolishModel,
+            )
         }
         return mapOf(
             FILLER_REMOVAL to onOff(state.fillerRemovalEnabled),
@@ -69,6 +97,7 @@ internal object AppLaunchFacts {
             DYNAMIC_COLOR to onOff(state.dynamicColorEnabled),
             BUBBLE_LOOK to state.bubbleLook.name.lowercase(),
             POLISH_POLICY to polishPolicy,
+            LOCAL_POLISH_MODEL to localPolishModel,
         )
     }
 
@@ -92,6 +121,7 @@ internal object AppLaunchFacts {
     const val DYNAMIC_COLOR = "dynamic_color"
     const val BUBBLE_LOOK = "bubble_look"
     const val POLISH_POLICY = "polish_policy"
+    const val LOCAL_POLISH_MODEL = "local_polish_model"
 
     /** The ten settings projected as [ON] or [OFF]. */
     val ON_OFF_SETTINGS: List<String> = listOf(
@@ -99,11 +129,11 @@ internal object AppLaunchFacts {
         SMART_INSERTION, AUTO_STOP_ON_SILENCE, SHOW_BLUETOOTH_TIPS, KEEP_EARBUDS_READY, DYNAMIC_COLOR,
     )
 
-    /** Every persisted setting the projection reports; [POLISH_POLICY] is the repository's, read separately. */
+    /** Every persisted setting the projection reports; [POLISH_POLICY] and [LOCAL_POLISH_MODEL] are the repository's, read separately. */
     private val SETTING_KEYS: List<String> = ON_OFF_SETTINGS + listOf(SILENCE_PAUSE_SECONDS, INPUT_DEVICE, BUBBLE_LOOK)
 
     /** Every name a `settings.changed` row can carry. */
-    val SETTING_NAMES: List<String> = SETTING_KEYS + POLISH_POLICY
+    val SETTING_NAMES: List<String> = SETTING_KEYS + POLISH_POLICY + LOCAL_POLISH_MODEL
 }
 
 /**

@@ -62,6 +62,8 @@ internal fun modelUiState(
             ModelUiState("Cancelled", ModelHealth.NOT_READY, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.RETRY)
         } else if (staleInstalled) {
             ModelUiState("Update failed", ModelHealth.BROKEN, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.UPDATE)
+        } else if (normalizedProgress == DownloadState.REPAIR_NEEDED.name) {
+            ModelUiState("Repair needed", ModelHealth.BROKEN, safeBytes, safeTotal, reason?.takeIf(String::isNotBlank), ModelUiAction.REPAIR)
         } else {
             ModelUiState(
                 label = if (normalizedWork == "CANCELLED") "Cancelled" else "Failed",

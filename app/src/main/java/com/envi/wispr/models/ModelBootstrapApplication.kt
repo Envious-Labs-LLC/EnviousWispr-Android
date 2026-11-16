@@ -179,6 +179,8 @@ class ModelBootstrapApplication : Application() {
                     .onSuccess { if (it) com.envi.wispr.debug.DebugLogger.log("ModelDelivery", "Recovered an interrupted model admission (${model.id})") }
             }
             ModelSwapGate.main.recovered()
+            runCatching { ModelDeliveryWorker.reapplyNetwork(app, onlyLegacyWifi = true) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
             SpeechModelUpgrade.run(app)
             ModelUpdates.run(app)
         }

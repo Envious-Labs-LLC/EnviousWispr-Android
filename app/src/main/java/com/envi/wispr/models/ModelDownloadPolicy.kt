@@ -46,8 +46,8 @@ internal object ModelDownloadPolicy {
         updatePending && !onWifi && !anyNetwork && revisionKey(model) !in answered
 
     /**
-     * Wi-Fi only runs on a validated Wi-Fi network (`setRequiredNetworkRequest`), and the worker's transfer opens through
-     * the network WorkManager assigned it, so a phone that also has mobile data never carries these bytes over it.
+     * Wi-Fi only accepts the Wi-Fi transport, including Wi-Fi advertised by a VPN.
+     * The worker opens the transfer on a validated Wi-Fi network.
      */
     fun constraints(anyNetwork: Boolean): Constraints {
         val builder = Constraints.Builder().setRequiresStorageNotLow(true)
@@ -62,16 +62,29 @@ internal object ModelDownloadPolicy {
     fun requiresWifi(constraints: Constraints): Boolean =
         constraints.requiredNetworkRequest?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
 
-    /** A validated Wi-Fi network with internet, for a Wi-Fi-only transfer WorkManager started without one. */
-    @Suppress("DEPRECATION") // `allNetworks` is the synchronous answer; a callback request would outlive the worker.
-    fun wifiNetwork(context: Context): android.net.Network? = runCatching {
+    fun excludesVpn(constraints: Constraints): Boolean =
+        requiresWifi(constraints) &&
+            constraints.requiredNetworkRequest?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true
+
+    /** Use the app's Wi-Fi VPN when available. Otherwise use the job's Wi-Fi network or find one. */
+    @Suppress("DEPRECATION") // The synchronous fallback does not keep a callback after the worker ends.
+    fun wifiNetwork(context: Context, scheduled: android.net.Network?): android.net.Network? = runCatching {
         val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return null
-        connectivity.allNetworks.firstOrNull { network ->
+        fun usableWifi(network: android.net.Network): Boolean =
             connectivity.getNetworkCapabilities(network)?.let {
-                it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !it.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                    it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                     it.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             } == true
+        val current = connectivity.activeNetwork
+        if (current != null && connectivity.getNetworkCapabilities(current)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        ) {
+            return@runCatching current.takeIf(::usableWifi)
         }
+        current?.takeIf(::usableWifi) ?: scheduled?.takeIf(::usableWifi)
+            ?: connectivity.allNetworks.firstOrNull(::usableWifi)
     }.getOrNull()
 
     fun onWifi(context: Context): Boolean = runCatching {
@@ -81,6 +94,7 @@ internal object ModelDownloadPolicy {
 
     private fun wifiRequest(): NetworkRequest = NetworkRequest.Builder()
         .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         .build()
 }

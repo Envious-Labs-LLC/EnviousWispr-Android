@@ -27,8 +27,19 @@ class ModelManifestTest {
     @Test fun productionDescriptorsCarryPinnedVerifiedReceipts() {
         assertTrue(ModelManifest.parakeet.isAvailable)
         assertTrue(ModelManifest.s1.isAvailable)
+        assertTrue(ModelManifest.eg1Micro.isAvailable)
         assertEquals("3b80a92332b5d34c364a35a880ef049c7fede9f2", ModelManifest.parakeet.pinnedRevision)
         assertEquals("34add00a48a2e5d24e5a4ee5405a99620a3a240c", ModelManifest.s1.pinnedRevision)
+        assertEquals("eg1-micro-1.0-g3d", ModelManifest.eg1Micro.pinnedRevision)
+        assertEquals(2, ModelManifest.eg1Micro.files.size)
+        assertEquals(287_622_528L + 254_275_712L, ModelManifest.eg1Micro.files.sumOf { it.expectedBytes })
+        assertTrue(ModelManifest.eg1Micro.previous.isEmpty())
+        assertEquals(listOf(ModelManifest.parakeet, ModelManifest.s1), ModelManifest.ONBOARDING)
+        assertEquals(listOf(ModelManifest.s1, ModelManifest.eg1Micro), ModelManifest.LOCAL_POLISH)
+        assertEquals(ModelManifest.s1, ModelManifest.localPolish(null))
+        assertEquals(ModelManifest.s1, ModelManifest.localPolish("unknown"))
+        assertEquals(ModelManifest.s1, ModelManifest.localPolish("s1-mini"))
+        assertEquals(ModelManifest.eg1Micro, ModelManifest.localPolish("eg1-micro"))
     }
 
     /**
@@ -106,6 +117,15 @@ class ModelManifestTest {
         assertFalse("another file", ok(own, file = "decoder.int8.onnx"))
     }
 
+    @Test fun eg1ArtifactRevisionsAreAcceptedOnlyUnderOurOwnEg1Prefix() {
+        val eg1Rev = "eg1-micro-1.0-g3d"
+        val eg1File = "eg1-micro-1.0-g3d-Q4_K_M-00001-of-00002.gguf"
+        assertTrue(ok("https://models.enviouslabs.co/eg1/$eg1Rev/$eg1File", revision = eg1Rev, file = eg1File))
+        assertFalse("s1 prefix still requires 40-hex commit hash", ok("https://models.enviouslabs.co/s1/$eg1Rev/$eg1File", revision = eg1Rev, file = eg1File))
+        assertFalse("parakeet prefix still requires 40-hex commit hash", ok("https://models.enviouslabs.co/parakeet-ultra/$eg1Rev/$eg1File", revision = eg1Rev, file = eg1File))
+        assertFalse("Hugging Face still requires 40-hex commit hash", ok("https://huggingface.co/enviouslabs/eg1/resolve/$eg1Rev/$eg1File", revision = eg1Rev, file = eg1File))
+    }
+
     /** Every shipped file has our host first, Hugging Face second, and the pinned revision in both paths. */
     /**
      * Our host first for every file; a Hugging Face fallback wherever one is admissible. The speech model's encoder and
@@ -124,7 +144,15 @@ class ModelManifestTest {
             }
         }
         val withoutFallback = ModelManifest.all.flatMap { m -> m.files.filter { it.fallbackUrl == null }.map { "${m.id}/${it.name}" } }
-        assertEquals(listOf("parakeet-ultra/encoder-model.int8.onnx", "parakeet-ultra/decoder_joint-model.int8.onnx"), withoutFallback)
+        assertEquals(
+            listOf(
+                "parakeet-ultra/encoder-model.int8.onnx",
+                "parakeet-ultra/decoder_joint-model.int8.onnx",
+                "eg1-micro/eg1-micro-1.0-g3d-Q4_K_M-00001-of-00002.gguf",
+                "eg1-micro/eg1-micro-1.0-g3d-Q4_K_M-00002-of-00002.gguf",
+            ),
+            withoutFallback,
+        )
     }
 
     /** #284: a source that carries the revision in the wrong place, or a revision that is not a full hash, makes the model unavailable. */

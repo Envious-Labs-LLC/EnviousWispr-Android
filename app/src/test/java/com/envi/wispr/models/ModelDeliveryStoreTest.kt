@@ -693,6 +693,90 @@ class ModelDeliveryStoreTest {
             assertFalse("nothing to do the second time", ModelDeliveryStore(root).reconcile(model))
         } finally { root.deleteRecursively() }
     }
+
+    @Test fun multiShardProgressReportsCumulativeVerifiedBytesAcrossPauseFailureAndIntegrityMismatch() {
+        val shard1 = "shard-one-bytes".toByteArray()
+        val shard2 = "shard-two-payload".toByteArray()
+        val rev = "eg1-test-1.0"
+        val model = ModelDescriptor(
+            id = "demo-shards",
+            engineId = "test",
+            displayName = "Demo Shards",
+            creator = "Test",
+            license = "Test",
+            notice = "",
+            pinnedRevision = rev,
+            files = listOf(
+                ModelFile("part1.gguf", shard1.size.toLong(), hash(shard1), "https://models.enviouslabs.co/eg1/$rev/part1.gguf"),
+                ModelFile("part2.gguf", shard2.size.toLong(), hash(shard2), "https://models.enviouslabs.co/eg1/$rev/part2.gguf"),
+            ),
+        )
+        val total = (shard1.size + shard2.size).toLong()
+        val root = Files.createTempDirectory("multi-shard-progress").toFile()
+        try {
+            val store = ModelDeliveryStore(root)
+            // Mid-shard-2 I/O failure keeps shard 1 verified bytes plus partial shard 2 bytes.
+            val failEvents = mutableListOf<DownloadStatus>()
+            val failed = store.download(
+                model,
+                ModelTransport { url, _ ->
+                    if (url.endsWith("part1.gguf")) {
+                        TransportResponse(ByteArrayInputStream(shard1), false)
+                    } else {
+                        TransportResponse(
+                            object : java.io.InputStream() {
+                                private var sent = 0
+                                override fun read(): Int = if (sent < 5) {
+                                    shard2[sent++].toInt() and 0xff
+                                } else {
+                                    throw java.io.IOException("dropped on shard 2")
+                                }
+                            },
+                            false,
+                        )
+                    }
+                },
+                onProgress = { failEvents += it },
+            )
+            assertEquals(DownloadState.FAILED, failed.state)
+            assertEquals(shard1.size.toLong() + 5L, failed.bytes)
+            assertEquals(total, failed.total)
+            assertEquals(shard1.size.toLong() + 5L, store.stagedBytes(model))
+            assertTrue(failEvents.all { it.total == total })
+
+            // Resuming after shard 2 hash mismatch emits cumulative verified shard1 + offset bytes, never doubled.
+            val corruptShard2 = shard2.copyOf().apply { this[lastIndex] = (this[lastIndex].toInt() xor 0x01).toByte() }
+            val mismatchEvents = mutableListOf<DownloadStatus>()
+            val repaired = store.download(
+                model,
+                ModelTransport { url, offset ->
+                    assertTrue("must not re-fetch already verified shard 1", url.endsWith("part2.gguf"))
+                    TransportResponse(ByteArrayInputStream(corruptShard2.copyOfRange(offset.toInt(), corruptShard2.size)), offset > 0)
+                },
+                onProgress = { mismatchEvents += it },
+            )
+            assertEquals(DownloadState.REPAIR_NEEDED, repaired.state)
+            assertEquals(total, repaired.bytes)
+            assertEquals(total, repaired.total)
+            assertEquals(total, mismatchEvents.last { it.state == DownloadState.VERIFYING }.bytes)
+
+            // Fresh clean download finishes READY at exact totalBytes without double counting.
+            val readyEvents = mutableListOf<DownloadStatus>()
+            val ready = store.download(
+                model,
+                ModelTransport { url, _ ->
+                    TransportResponse(ByteArrayInputStream(if (url.endsWith("part1.gguf")) shard1 else shard2), false)
+                },
+                onProgress = { readyEvents += it },
+            )
+            assertEquals(DownloadState.READY, ready.state)
+            assertEquals(total, ready.bytes)
+            assertEquals(total, ready.total)
+            assertTrue(readyEvents.all { it.total == total && it.bytes <= total })
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }
 
 /** Pinned revisions in the shape the manifest requires (#284): full 40-character commit hashes. */

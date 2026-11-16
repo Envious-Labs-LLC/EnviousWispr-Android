@@ -1,8 +1,11 @@
 package com.envi.wispr.ui
 
 import com.envi.wispr.polish.LocalPolishBudget
+import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.PolishPolicy
 import com.envi.wispr.polish.S1ControlSettings
+import com.envi.wispr.processing.ProcessingPreference
+import com.envi.wispr.processing.ProcessingQualification
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
 import org.junit.Assert.assertEquals
@@ -19,6 +22,17 @@ class PolishWatchdogBudgetTest {
 
     @Test fun localPoliciesGetTheLocalBudgetAndCloudTheCloudBudget() {
         assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.LocalS1(S1ControlSettings.DEFAULT)))
+        assertEquals(
+            23_000L,
+            PolishWatchdogBudget.forPolicy(
+                PolishPolicy.LocalS1(
+                    S1ControlSettings.DEFAULT,
+                    ProcessingPreference.DEFAULT,
+                    ProcessingQualification.NONE,
+                    LocalPolishModel.EG1_MICRO,
+                ),
+            ),
+        )
         assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.Off))
         assertEquals(15_000L, PolishWatchdogBudget.forPolicy(PolishPolicy.CloudUnconfigured))
         assertEquals(35_000L, PolishWatchdogBudget.forPolicy(cloud))
@@ -26,6 +40,7 @@ class PolishWatchdogBudgetTest {
 
     @Test fun theWatchdogSitsAboveEveryEngineSideBudget() {
         assertTrue("the engine's hard deadline must fire before the session gives up", LocalPolishBudget.HARD_MS < PolishWatchdogBudget.LOCAL_MS)
+        assertTrue("the EG-1 hard deadline must fire before the session gives up", LocalPolishBudget.EG1_HARD_MS < PolishWatchdogBudget.EG1_LOCAL_MS)
         // ProviderPolishClient.DEFAULT_OVERALL_TIMEOUT_MS is 30_000; the literal binds the published engine-side cap.
         assertTrue("the cloud client's own cap must fire before the session gives up", 30_000L < PolishWatchdogBudget.CLOUD_MS)
     }

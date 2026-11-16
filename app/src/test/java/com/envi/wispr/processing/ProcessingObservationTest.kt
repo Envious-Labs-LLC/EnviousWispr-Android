@@ -24,4 +24,11 @@ class ProcessingObservationTest {
         assertTrue(observation(PolishReason.OFF, "off", null).displayLine().contains("AI polish off"))
         assertFalse(observation(PolishReason.POLISHED, "cloud:OPENAI", null).displayLine().contains("S1-mini"))
     }
+    @Test fun eg1MicroObservationNamesEg1MicroUsedCpuAndRoundTrips() {
+        val eg1Usage = usage.copy(modelId = "eg1-micro", failedBackendCodes = "")
+        val obs = observation(local = eg1Usage)
+        assertEquals(obs, ProcessingObservation.decode(obs.encode()))
+        assertTrue(obs.displayLine().contains("EG-1 Micro used CPU"))
+        assertFalse(obs.displayLine().contains("S1-mini"))
+    }
 }

@@ -28,13 +28,16 @@ internal sealed class PolishPolicy : Parcelable {
      * No default argument on purpose: the one place that supplies [S1ControlSettings.DEFAULT] is
      * `ProviderConfigurationRepository.decodePolicy`, so every other constructor call is visible.
      */
-    data class LocalS1(
+    data class LocalS1 @JvmOverloads constructor(
         val control: S1ControlSettings,
         val processing: ProcessingPreference,
         val qualification: ProcessingQualification,
+        val model: LocalPolishModel = LocalPolishModel.S1_MINI,
     ) : PolishPolicy() {
         /** Binary entry point used by older installed instrumentation clients. */
-        constructor(control: S1ControlSettings) : this(control, ProcessingPreference.DEFAULT, ProcessingQualification.NONE)
+        constructor(control: S1ControlSettings) : this(
+            control, ProcessingPreference.DEFAULT, ProcessingQualification.NONE, LocalPolishModel.S1_MINI,
+        )
     }
 
     /** The user chose a cloud mode but no valid provider selection exists. Fails open to rules. */
@@ -59,6 +62,7 @@ internal sealed class PolishPolicy : Parcelable {
                 dest.writeString(control.context.token)
                 dest.writeString(processing.encode())
                 dest.writeString(qualification.encode())
+                dest.writeString(model.wire)
             }
             CloudUnconfigured -> dest.writeByte(TAG_CLOUD_UNCONFIGURED)
             is Cloud -> {
@@ -95,6 +99,7 @@ internal sealed class PolishPolicy : Parcelable {
                     ),
                     ProcessingPreference.decode(checkNotNull(source.readString())),
                     ProcessingQualification.decode(checkNotNull(source.readString())),
+                    LocalPolishModel.fromWire(source.readString()),
                 )
                 TAG_CLOUD_UNCONFIGURED -> CloudUnconfigured
                 TAG_CLOUD -> Cloud(

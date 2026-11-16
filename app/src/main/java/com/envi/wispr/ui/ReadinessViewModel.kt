@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.envi.wispr.models.ModelDescriptor
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelStorage
 import com.envi.wispr.paste.AccessibilityPermission
@@ -29,8 +30,10 @@ internal data class AppReadiness(
     val accessibility: AccessibilityPermissionCheck = AccessibilityPermissionCheck.UNCHECKED,
     val speechModelReady: Boolean = false,
     val polishModelReady: Boolean = false,
+    val onboardingPolishModelReady: Boolean = false,
+    val eg1PolishModelReady: Boolean = false,
     /**
-     * False until the first file check answers (#403). The two model fields hold their `false` defaults
+     * False until the first file check answers (#403). The model fields hold their `false` defaults
      * until then, which is "not checked yet", never "missing"; a surface that alarms on a missing model
      * waits for this.
      */
@@ -133,12 +136,22 @@ internal class ReadinessViewModel(
  * and `getEnabledAccessibilityServiceList`, which project the same setting. Liveness is pushed by
  * `PasteAccessibilityService.isBound`, and the two are combined in [ReadinessViewModel].
  */
-internal fun readAppReadiness(context: Context): AppReadiness {
+internal fun readAppReadiness(
+    context: Context,
+    polishModel: ModelDescriptor = ModelManifest.s1,
+): AppReadiness {
     val accessibility = AccessibilityPermissionCheck.of(AccessibilityPermission.isGranted(context))
 
     // "Can I dictate" (#108): a previous revision still verifies while its update downloads. The model cards keep
     // reading the current revision through ModelWorkViewModel, so they still offer the update.
     val speechModelReady = ModelStorage.usable(context, ModelManifest.parakeet) != null
+    val s1Ready = ModelStorage.usable(context, ModelManifest.s1) != null
+    val eg1Ready = ModelStorage.usable(context, ModelManifest.eg1Micro) != null
+    val selectedPolishReady = when (polishModel.id) {
+        ModelManifest.s1.id -> s1Ready
+        ModelManifest.eg1Micro.id -> eg1Ready
+        else -> ModelStorage.usable(context, polishModel) != null
+    }
 
     return AppReadiness(
         microphoneGranted = ContextCompat.checkSelfPermission(
@@ -152,7 +165,9 @@ internal fun readAppReadiness(context: Context): AppReadiness {
             ) == PackageManager.PERMISSION_GRANTED,
         accessibility = accessibility,
         speechModelReady = speechModelReady,
-        polishModelReady = ModelStorage.usable(context, ModelManifest.s1) != null,
+        polishModelReady = selectedPolishReady,
+        onboardingPolishModelReady = s1Ready,
+        eg1PolishModelReady = eg1Ready,
         modelsChecked = true,
     )
 }

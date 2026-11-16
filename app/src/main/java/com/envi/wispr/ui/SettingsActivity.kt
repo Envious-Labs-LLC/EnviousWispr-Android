@@ -28,6 +28,9 @@ import com.envi.wispr.providers.ui.PolishSettingsViewModel
 import com.envi.wispr.vocabulary.CustomTermRepository
 import com.envi.wispr.vocabulary.ui.DictionaryViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -91,6 +94,16 @@ class SettingsActivity : ComponentActivity() {
         // A finished model work refreshes readiness while the activity is started (#255).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) { collectModelRefresh(modelWorkViewModel.finished, ::refreshReadiness) }
+        }
+        // Switching the active on-device polish model updates polishModelReady for the newly selected model (#528).
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                polishViewModel.settings
+                    .filter { !it.loading }
+                    .map { it.localPolishModel }
+                    .distinctUntilChanged()
+                    .collect { refreshReadiness() }
+            }
         }
 
         setContent {
@@ -158,6 +171,7 @@ class SettingsActivity : ComponentActivity() {
                         ),
                         polish = PolishActions(
                             onSetMode = polishViewModel::setPolishMode,
+                            onSetLocalModel = polishViewModel::setLocalPolishModel,
                             onSetS1Control = polishViewModel::setS1Control,
                             onSetProcessing = polishViewModel::setS1Processing,
                             onCheckProcessing = polishViewModel::checkProcessing,
@@ -244,7 +258,14 @@ class SettingsActivity : ComponentActivity() {
         readinessViewModel.refreshPermissions()
         val generation = ++modelReadinessGeneration
         lifecycleScope.launch {
-            val snapshot = withContext(Dispatchers.IO) { readAppReadiness(this@SettingsActivity) }
+            val snapshot = withContext(Dispatchers.IO) {
+                val selectedModel = if (polishViewModel.settings.value.loading) {
+                    ProviderConfigurationRepository(this@SettingsActivity).loadLocalPolishModel()
+                } else {
+                    polishViewModel.settings.value.localPolishModel
+                }
+                readAppReadiness(this@SettingsActivity, selectedModel.descriptor())
+            }
             if (generation == modelReadinessGeneration) readinessViewModel.updateVerifiedModels(snapshot)
         }
     }

@@ -97,7 +97,7 @@ class EngineDeadlineTest {
         val load = source.substringAfter("private fun loadModel(policy: PolishPolicy.LocalS1)").substringBefore("\n    /**")
         // The constant is the armed budget, not only a word in the log line.
         val deadline = load.indexOf("deadline.arm(MODEL_LOAD_DEADLINE_MS)")
-        val selection = load.indexOf("S1ModelSelector.resolve(this)")
+        val selection = load.indexOf("S1ModelSelector.resolve(this,")
         assertTrue("the deadline is armed before selection", deadline in 0 until selection)
         val finally = load.lastIndexOf("} finally {")
         assertTrue("one finally after selection clears the flag and the deadline", finally > selection &&
@@ -140,5 +140,11 @@ class EngineDeadlineTest {
         assertEquals(LocalPolishBudget(60_000, 62_000), LocalPolishBudget.fromOverride("60000"))
         assertNull("no shipped value is inside the override range by accident", listOf(LocalPolishBudget.COOPERATIVE_MS).firstOrNull { it > LocalPolishBudget.MAX_OVERRIDE_MS })
         assertTrue(LocalPolishBudget.COOPERATIVE_MS < LocalPolishBudget.HARD_MS)
+        assertEquals(LocalPolishBudget.SHIPPED, LocalPolishBudget.forModel(LocalPolishModel.S1_MINI))
+        assertEquals(LocalPolishBudget(18_000L, 20_000L), LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO))
+        assertEquals(
+            LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO),
+            LocalPolishBudget.fromOverride("bad", LocalPolishBudget.forModel(LocalPolishModel.EG1_MICRO)),
+        )
     }
 }

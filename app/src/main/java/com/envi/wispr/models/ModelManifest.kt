@@ -44,6 +44,7 @@ internal object ModelManifest {
     private const val parakeetRevision = "3b80a92332b5d34c364a35a880ef049c7fede9f2"
     private const val s1Repo = "superwhisper/s1-mini-GGUF"
     private const val s1Revision = "34add00a48a2e5d24e5a4ee5405a99620a3a240c"
+    private const val eg1Revision = "eg1-micro-1.0-g3d"
     private fun resolve(repo: String, revision: String, file: String) = "https://huggingface.co/$repo/resolve/$revision/$file?download=true"
 
     /**
@@ -69,7 +70,35 @@ internal object ModelManifest {
     val s1 = ModelDescriptor("s1-mini", "llama.cpp", "S1-mini", "Superwhisper", "Apache License 2.0", "THIRD_PARTY_NOTICES.txt", s1Revision, listOf(
         ModelFile("s1-mini-q4_k_m.gguf", 484219808, "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634", hosted("s1", s1Revision, "s1-mini-q4_k_m.gguf"), resolve(s1Repo, s1Revision, "s1-mini-q4_k_m.gguf")),
     ))
-    val all = listOf(parakeet, s1)
+    val eg1Micro = ModelDescriptor(
+        id = "eg1-micro",
+        engineId = "llama.cpp",
+        displayName = "EG-1 Micro",
+        creator = "Envious Labs",
+        license = "Envious Labs proprietary model weights; Apache-2.0 / MIT runtime dependencies",
+        notice = "THIRD_PARTY_NOTICES.txt",
+        pinnedRevision = eg1Revision,
+        files = listOf(
+            ModelFile(
+                "eg1-micro-1.0-g3d-Q4_K_M-00001-of-00002.gguf",
+                287_622_528L,
+                "e53c079b0c8204e8a6594edc3f0ec1ca4231657e9209d5b4ad0b87810fe5cdd4",
+                hosted("eg1", eg1Revision, "eg1-micro-1.0-g3d-Q4_K_M-00001-of-00002.gguf"),
+            ),
+            ModelFile(
+                "eg1-micro-1.0-g3d-Q4_K_M-00002-of-00002.gguf",
+                254_275_712L,
+                "323a216295e622a869e8aeef5fbe94eb4547128592207c4fe091986c141a749e",
+                hosted("eg1", eg1Revision, "eg1-micro-1.0-g3d-Q4_K_M-00002-of-00002.gguf"),
+            ),
+        ),
+        previous = emptyList(),
+    )
+    val ONBOARDING = listOf(parakeet, s1)
+    val LOCAL_POLISH = listOf(s1, eg1Micro)
+    val all = listOf(parakeet, s1, eg1Micro)
+
+    fun localPolish(id: String?): ModelDescriptor = LOCAL_POLISH.firstOrNull { it.id == id } ?: s1
 }
 
 private val SHA256 = Regex("[0-9a-fA-F]{64}")

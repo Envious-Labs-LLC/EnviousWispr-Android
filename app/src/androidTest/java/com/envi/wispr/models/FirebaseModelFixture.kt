@@ -14,40 +14,39 @@ internal object FirebaseModelFixture {
     fun stageS1IfRequested(context: Context) {
         val option = InstrumentationRegistry.getArguments().getString("firebaseS1Fixture") ?: return
         require(option == "true") { "firebaseS1Fixture must be true when supplied" }
-        val model = ModelManifest.s1
-        val entry = model.files.single()
-        val source = Files.createTempDirectory(context.cacheDir.toPath(), "firebase-s1-").toFile()
-        val local = File(source, entry.name)
-        try {
-            // Test Lab --other-files uploads here before instrumentation starts. Shell can read
-            // this approved path; the app needs no shared-storage permission. Never interpolate input.
-            copyFromTmp(entry.name, source)
-            assertEquals("Test Lab model fixture is incomplete", entry.expectedBytes, local.length())
-            val store = ModelDeliveryStore(ModelStorage.root(context))
-            assertEquals("Pinned model admission failed", DownloadState.READY, store.adoptExisting(model, source).state)
-            assertTrue("Admitted model did not verify", store.isVerified(model))
-            DebugLogger.log("FirebaseFixture", "S1 fixture verified bytes=${entry.expectedBytes}")
-        } finally {
-            check(local.delete() || !local.exists()) { "Could not remove test fixture copy" }
-            check(source.delete() || !source.exists()) { "Could not remove test fixture directory" }
-        }
+        stageModel(context, ModelManifest.s1, "firebase-s1-")
+    }
+
+    fun stageEg1IfRequested(context: Context) {
+        val option = InstrumentationRegistry.getArguments().getString("firebaseEg1Fixture") ?: return
+        require(option == "true") { "firebaseEg1Fixture must be true when supplied" }
+        stageModel(context, ModelManifest.eg1Micro, "firebase-eg1-")
     }
 
     /** Existing speech benchmark fixture, shared with recovery qualification. */
     fun stageParakeet(context: Context) {
-        val model = ModelManifest.parakeet
-        val source = Files.createTempDirectory(context.cacheDir.toPath(), "firebase-parakeet-").toFile()
+        stageModel(context, ModelManifest.parakeet, "firebase-parakeet-")
+    }
+
+    private fun stageModel(context: Context, model: ModelDescriptor, tempPrefix: String) {
+        val source = Files.createTempDirectory(context.cacheDir.toPath(), tempPrefix).toFile()
+        val copied = mutableListOf<File>()
         try {
+            // Test Lab --other-files uploads here before instrumentation starts. Shell can read
+            // this approved path; the app needs no shared-storage permission. Never interpolate input.
             model.files.forEach { entry ->
                 val local = copyFromTmp(entry.name, source)
+                copied += local
                 assertEquals("Test Lab fixture ${entry.name} is incomplete", entry.expectedBytes, local.length())
             }
             val store = ModelDeliveryStore(ModelStorage.root(context))
-            assertEquals("Pinned Parakeet admission failed", DownloadState.READY, store.adoptExisting(model, source).state)
-            assertTrue("Admitted Parakeet did not verify", store.isVerified(model))
+            assertEquals("Pinned ${model.displayName} admission failed", DownloadState.READY, store.adoptExisting(model, source).state)
+            assertTrue("Admitted ${model.displayName} did not verify", store.isVerified(model))
+            DebugLogger.log("FirebaseFixture", "${model.displayName} fixture verified bytes=${model.files.sumOf { it.expectedBytes }}")
         } finally {
-            source.listFiles()?.forEach { it.delete() }
-            source.delete()
+            copied.forEach { file -> check(file.delete() || !file.exists()) { "Could not remove test fixture copy ${file.name}" } }
+            source.listFiles()?.forEach { check(it.delete() || !it.exists()) { "Could not remove leftover fixture file ${it.name}" } }
+            check(source.delete() || !source.exists()) { "Could not remove test fixture directory" }
         }
     }
 

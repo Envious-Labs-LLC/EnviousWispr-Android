@@ -53,8 +53,14 @@ class S1ModelSelectorTest {
      * current identity the main process accepts. REVERT: build `s1ContextId` from the manifest only.
      */
     @Test fun previousEvidenceCarriesItsOwnIdentity() {
-        assertFalse(ProcessingEnvironment.s1ContextId(previous) == ProcessingEnvironment.s1ContextId(current))
-        assertEquals(ProcessingEnvironment.s1ContextId(current), ProcessingEnvironment.s1ContextId(current.copy(previous = emptyList())))
+        assertFalse(
+            ProcessingEnvironment.s1ContextId(previous, S1RuntimeKind.PORTABLE_CPU) ==
+                ProcessingEnvironment.s1ContextId(current, S1RuntimeKind.PORTABLE_CPU),
+        )
+        assertEquals(
+            ProcessingEnvironment.s1ContextId(current, S1RuntimeKind.PORTABLE_CPU),
+            ProcessingEnvironment.s1ContextId(current.copy(previous = emptyList()), S1RuntimeKind.PORTABLE_CPU),
+        )
     }
 
     /**
@@ -92,25 +98,85 @@ class S1ModelSelectorTest {
             var loads = 0
             var verifies = 0
             fun load() {
-                val requested = S1ModelSelector.loadConfiguration(root, policy, current)
+                val requested = S1ModelSelector.loadConfiguration(root, policy, current, S1RuntimeKind.PORTABLE_CPU)
                 if (resident.matches(requested)) return
                 verifies++
                 val selection = checkNotNull(S1ModelSelector.resolve(root, current))
-                resident.ensure(S1ModelSelector.resolvedConfiguration(requested, selection)) { candidates -> loads++; candidates.first() }
+                resident.ensure(S1ModelSelector.resolvedConfiguration(requested, selection, S1RuntimeKind.PORTABLE_CPU)) { candidates -> loads++; candidates.first() }
             }
-            fun polishAllowed() = resident.matches(S1ModelSelector.loadConfiguration(root, policy, current))
+            fun polishAllowed() = resident.matches(S1ModelSelector.loadConfiguration(root, policy, current, S1RuntimeKind.PORTABLE_CPU))
             install(root, previous, oldBytes)
             load(); load()
             assertEquals("one load, then reuse, on the previous revision", 1, loads)
             assertEquals("one full verification, then the cheap check", 1, verifies)
             assertTrue("polish runs on the previous revision", polishAllowed())
-            assertEquals(ProcessingEnvironment.s1ContextId(previous), S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current)))
+            assertEquals(
+                ProcessingEnvironment.s1ContextId(previous, S1RuntimeKind.PORTABLE_CPU),
+                S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current), current, S1RuntimeKind.PORTABLE_CPU),
+            )
             install(root, current, newBytes)
             load(); load()
             assertEquals("exactly one more load at the swap, then reuse", 2, loads)
             assertEquals(2, verifies)
             assertTrue("polish runs on the current revision", polishAllowed())
-            assertEquals(ProcessingEnvironment.s1ContextId(current), S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current)))
+            assertEquals(
+                ProcessingEnvironment.s1ContextId(current, S1RuntimeKind.PORTABLE_CPU),
+                S1ModelSelector.qualificationContextId(S1ModelSelector.resolve(root, current), current, S1RuntimeKind.PORTABLE_CPU),
+            )
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun multiShardEgOneMicroResolvesFirstShardOnlyWhenAllShardsVerify() {
+        val root = Files.createTempDirectory("eg1-sharded").toFile()
+        try {
+            val shard1Bytes = "shard-1-weights".toByteArray()
+            val shard2Bytes = "shard-2-weights".toByteArray()
+            val sharded = ModelDescriptor(
+                "eg1-micro",
+                "llama.cpp",
+                "EG-1 Micro",
+                "Envious Labs",
+                "Proprietary",
+                "",
+                "eg1-micro-test-r1",
+                listOf(
+                    ModelFile(
+                        "eg1-micro-test-Q4_K_M-00001-of-00002.gguf",
+                        shard1Bytes.size.toLong(),
+                        hash(shard1Bytes),
+                        "https://models.enviouslabs.co/eg1/eg1-micro-test-r1/eg1-micro-test-Q4_K_M-00001-of-00002.gguf",
+                    ),
+                    ModelFile(
+                        "eg1-micro-test-Q4_K_M-00002-of-00002.gguf",
+                        shard2Bytes.size.toLong(),
+                        hash(shard2Bytes),
+                        "https://models.enviouslabs.co/eg1/eg1-micro-test-r1/eg1-micro-test-Q4_K_M-00002-of-00002.gguf",
+                    ),
+                ),
+            )
+            assertEquals(
+                DownloadState.READY,
+                ModelDeliveryStore(root).download(
+                    sharded,
+                    ModelTransport { url, _ ->
+                        val data = if (url.contains("00001-of-00002")) shard1Bytes else shard2Bytes
+                        TransportResponse(ByteArrayInputStream(data), false)
+                    },
+                ).state,
+            )
+
+            val selection = checkNotNull(S1ModelSelector.resolve(root, sharded))
+            assertEquals("eg1-micro-test-Q4_K_M-00001-of-00002.gguf", selection.file.name)
+            assertEquals(sharded, selection.descriptor)
+            assertFalse(
+                ProcessingEnvironment.s1ContextId(sharded, S1RuntimeKind.PORTABLE_CPU) ==
+                    ProcessingEnvironment.s1ContextId(current, S1RuntimeKind.PORTABLE_CPU),
+            )
+
+            // Deleting or corrupting shard 2 refuses load so llama_model_load_from_file cannot open a half-installed split.
+            val shard2File = java.io.File(java.io.File(root, sharded.id), "eg1-micro-test-Q4_K_M-00002-of-00002.gguf")
+            shard2File.writeText("corrupted")
+            assertEquals(null, S1ModelSelector.resolve(root, sharded))
         } finally { root.deleteRecursively() }
     }
 

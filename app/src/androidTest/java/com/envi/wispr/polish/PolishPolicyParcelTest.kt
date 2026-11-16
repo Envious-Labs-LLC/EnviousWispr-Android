@@ -32,6 +32,13 @@ class PolishPolicyParcelTest {
         val qualification = com.envi.wispr.processing.ProcessingQualification.of("a".repeat(64), setOf(com.envi.wispr.processing.ProcessingBackend.CPU))
         val policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT, processing, qualification)
         assertEquals(policy, roundTrip(policy))
+        val eg1Policy = PolishPolicy.LocalS1(
+            S1ControlSettings.DEFAULT,
+            com.envi.wispr.processing.ProcessingPreference.DEFAULT,
+            qualification,
+            LocalPolishModel.EG1_MICRO,
+        )
+        assertEquals(eg1Policy, roundTrip(eg1Policy))
         val usage = com.envi.wispr.processing.ProcessingUsage(com.envi.wispr.processing.ProcessingBackend.CPU, "a".repeat(64), processing, true, "gpu", artifactStamp = "receipt")
         for (diagnostics in listOf(null, LocalPolishDiagnostics(7, 8, 9, 10, 11, S1RuntimeKind.PORTABLE_CPU))) {
             val outcome = PolishOutcome(9, "Kept words.", "S1-mini", PolishReason.POLISHED, 0, 5, usage, diagnostics)

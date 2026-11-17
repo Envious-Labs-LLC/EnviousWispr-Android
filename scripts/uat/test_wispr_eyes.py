@@ -2826,6 +2826,7 @@ Group main:
     test_pick_one_groups()
     test_enable_auto_paste_cycles_only_ours()
     test_agent()
+    test_issue_525_emulator_gaps()
 
     # ---- #384: a duplicate wireless connection has a space inside its serial --------------------------
     devices_original_run = eyes._run
@@ -2851,6 +2852,250 @@ Group main:
     if FAILED:
         print("failed: " + ", ".join(FAILED))
     return 1 if FAILED else 0
+
+
+def test_issue_525_emulator_gaps():
+    """#525: open_app via resolve-activity + am start, journaled lock_emulator + wake_and_raise_bouncer, PIN & no-cred unlock."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = {
+            "serial": eyes._STATE.get("serial"),
+            "tree": eyes._STATE.get("tree"),
+            "journal": eyes._JOURNAL,
+            "_run": eyes._run,
+            "_adb": eyes._adb,
+            "devices": eyes.devices,
+            "_screen_size": eyes._screen_size,
+            "sleep": eyes.time.sleep,
+        }
+        try:
+            eyes._JOURNAL = Path(tmp) / "restore.json"
+            eyes._STATE["serial"] = "emulator-5554"
+            eyes._STATE["tree"] = None
+            eyes.time.sleep = lambda _s: None
+            state = {
+                "qemu": "1",
+                "disabled": "true",
+                "pin": None,
+                "keyguard": "false",
+                "awake": True,
+                "field": "none",
+                "foreground": "com.android.launcher",
+                "resolved": {
+                    "com.google.android.apps.messaging": "priority=0 preferredOrder=0 match=0x108000 isDefault=true\ncom.google.android.apps.messaging/.ui.ConversationListActivity\n",
+                },
+            }
+            sent = []
+            lock_baseline_lock_checks = []
+            PIN_XML = (
+                '<?xml version="1.0"?><hierarchy rotation="0">'
+                '<node text="" resource-id="com.android.systemui:id/pinEntry" bounds="[0,0][100,50]" package="com.android.systemui" clickable="false" enabled="true" />'
+                '</hierarchy>'
+            )
+            KEYPAD_ONLY_XML = (
+                '<?xml version="1.0"?><hierarchy rotation="0">'
+                + "".join(
+                    f'<node text="{d}" resource-id="com.android.systemui:id/key{d}" bounds="[0,0][10,10]" package="com.android.systemui" clickable="true" enabled="true" />'
+                    for d in range(10)
+                )
+                + "</hierarchy>"
+            )
+            LOCK_XML = (
+                '<?xml version="1.0"?><hierarchy rotation="0">'
+                '<node text="Sun" resource-id="" bounds="[0,0][100,50]" package="com.android.systemui" clickable="false" enabled="true" />'
+                '</hierarchy>'
+            )
+            FG_XML = lambda pkg: (
+                f'<?xml version="1.0"?><hierarchy rotation="0">'
+                f'<node text="App" resource-id="" bounds="[0,0][100,100]" package="{pkg}" clickable="true" enabled="true" />'
+                f'</hierarchy>'
+            )
+
+            def fake_run(args, timeout=60):
+                if args[-1] == "getprop ro.kernel.qemu":
+                    return 0, state["qemu"] + "\n", ""
+                return 0, "", ""
+
+            def fake_adb(command, timeout=60, check=True, serial=None):
+                sent.append(command)
+                if command.startswith("dumpsys power"):
+                    return 0, f"mWakefulness={'Awake' if state['awake'] else 'Asleep'}\n"
+                if "isKeyguardShowing" in command:
+                    return 0, f"isKeyguardShowing={state['keyguard']}\n"
+                if command == "locksettings get-disabled":
+                    if lock_baseline_lock_checks is not None:
+                        lock_baseline_lock_checks.append(eyes._STATE.get("holding_journal"))
+                    return 0, f"{state['disabled']}\n"
+                if command == "locksettings verify":
+                    if lock_baseline_lock_checks is not None:
+                        lock_baseline_lock_checks.append(eyes._STATE.get("holding_journal"))
+                    if state["pin"] is None:
+                        return 0, "Lock credential verified successfully\n"
+                    return 255, "User has a lock credential, but old credential was not provided\n"
+                if command.startswith("locksettings verify --old "):
+                    candidate = command.split("--old ", 1)[1].strip("'\"")
+                    if state["pin"] == candidate:
+                        return 0, "Lock credential verified successfully\n"
+                    return 1, "Lock credential didn't match\n"
+                if command.startswith("locksettings set-disabled "):
+                    state["disabled"] = command.split()[-1]
+                    return 0, f"Lock screen disabled set to {state['disabled']}\n"
+                if command.startswith("locksettings set-pin "):
+                    if state["pin"] is not None:
+                        return 1, "Credential already set\n"
+                    state["pin"] = command.split()[-1].strip("'\"")
+                    return 0, f"Pin set to '{state['pin']}'\n"
+                if command.startswith("locksettings clear --old "):
+                    candidate = command.split("--old ", 1)[1].strip("'\"")
+                    if state["pin"] == candidate:
+                        state["pin"] = None
+                        return 0, "Lock credential cleared\n"
+                    return 1, "Lock credential didn't match\n"
+                if command == "input keyevent KEYCODE_POWER":
+                    state["awake"] = not state["awake"]
+                    if not state["awake"]:
+                        state["keyguard"] = "true"
+                    return 0, ""
+                if command == "input keyevent KEYCODE_WAKEUP":
+                    state["awake"] = True
+                    return 0, ""
+                if command == "wm dismiss-keyguard":
+                    if state["pin"] is None:
+                        state["keyguard"] = "false"
+                    else:
+                        state["field"] = "pin"
+                    return 0, ""
+                if command.startswith("input text ") and command == f"input text {state['pin']}":
+                    state["entered_pin"] = True
+                    return 0, ""
+                if command == "input keyevent KEYCODE_ENTER":
+                    if state.pop("entered_pin", False):
+                        state["keyguard"] = "false"
+                    return 0, ""
+                if command.startswith("cmd package resolve-activity "):
+                    pkg = command.split()[-1].strip("'\"")
+                    return 0, state["resolved"].get(pkg, "No activity found\n")
+                if command.startswith("am start -n "):
+                    comp = command.split("-n ", 1)[1].strip("'\"")
+                    state["foreground"] = comp.split("/", 1)[0]
+                    return 0, f"Starting: Intent {{ cmp={comp} }}\n"
+                if command.startswith("uiautomator dump"):
+                    return 0, ""
+                if command.startswith("cat "):
+                    if state["keyguard"] == "true":
+                        if state["field"] == "pin":
+                            return 0, PIN_XML
+                        if state["field"] == "keypad":
+                            return 0, KEYPAD_ONLY_XML
+                        return 0, LOCK_XML
+                    return 0, FG_XML(state["foreground"])
+                if command == "adb devices -l":
+                    return 0, ""
+                return 0, ""
+
+            eyes._run = fake_run
+            eyes._adb = fake_adb
+            eyes.devices = lambda: [("emulator-5554", "sdk_gphone64_arm64"), ("100.94.206.47:5555", "SM_S948U1")]
+            eyes._screen_size = lambda: (1080, 2400)
+
+            # 1. open_app uses resolve-activity + am start (never monkey).
+            sent.clear()
+            out = eyes.open_app("com.google.android.apps.messaging")
+            check("open_app uses cmd package resolve-activity + am start without monkey (#525)",
+                  out == "com.google.android.apps.messaging is on screen"
+                  and any(c.startswith("cmd package resolve-activity") for c in sent)
+                  and any(c.startswith("am start -n com.google.android.apps.messaging/.ui.ConversationListActivity") for c in sent)
+                  and not any("monkey" in c for c in sent), (out, sent))
+            try:
+                eyes.open_app("com.missing.app")
+                check("open_app refuses package with no LAUNCHER activity", False, "returned")
+            except eyes.Blocked as refusal:
+                check("open_app refuses package with no LAUNCHER activity", "no LAUNCHER activity" in str(refusal), str(refusal))
+
+            # 2. NO CREDENTIAL reported when unlocked or swipe lock without PIN.
+            no_cred = eyes.unlock_emulator()
+            check("unlock_emulator reports NO CREDENTIAL on unlocked AVD without password (#525)",
+                  no_cred.startswith("NO CREDENTIAL"), no_cred)
+            state["disabled"], state["keyguard"], state["pin"] = "false", "true", None
+            sent.clear()
+            swipe_open = eyes.unlock_emulator()
+            check("unlock_emulator reports NO CREDENTIAL and sends zero PIN text on insecure swipe lock (#525)",
+                  swipe_open.startswith("NO CREDENTIAL") and not any("input text" in c for c in sent)
+                  and state["keyguard"] == "false", (swipe_open, sent, state))
+            state["disabled"] = "true"
+
+            # 3. lock_emulator journals before locking (reading baseline inside the lock), wake_and_raise_bouncer opens bouncer cleanly, PIN & keypad-only unlock work.
+            sent.clear()
+            lock_baseline_lock_checks.clear()
+            lock_msg = eyes.lock_emulator("1234")
+            check("lock_emulator reads lock baseline and credential inside _journal_locked() (#525)",
+                  len(lock_baseline_lock_checks) >= 2 and all(lock_baseline_lock_checks),
+                  lock_baseline_lock_checks)
+            check("lock_emulator sets disabled=false, sets PIN, sends power key, journals prior state (#525)",
+                  "locked with PIN" in lock_msg and state["keyguard"] == "true" and state["pin"] == "1234"
+                  and any(w == "emulator-lock" for w, _ in eyes._owed("emulator-5554")), (lock_msg, state, eyes._owed("emulator-5554")))
+            bouncer_msg = eyes.wake_and_raise_bouncer()
+            check("wake_and_raise_bouncer wakes and raises PIN field without entering PIN (#525)",
+                  bouncer_msg == "bouncer up" and not any("input text" in c for c in sent), (bouncer_msg, sent))
+            unlocked = eyes.unlock_emulator()
+            check("unlock_emulator accepts pinEntry layout and unlocks (#525)",
+                  unlocked == "unlocked" and state["keyguard"] == "false", (unlocked, state))
+
+            # Custom PIN ('5678'): unlock_emulator and ready()/open_app() use the journaled PIN rather than EMULATOR_PIN.
+            eyes.restore()
+            state["awake"] = True
+            eyes.lock_emulator("5678")
+            check("open_app() unlocks a custom-PIN locked emulator through ready() (#525)",
+                  eyes.open_app("com.google.android.apps.messaging") == "com.google.android.apps.messaging is on screen"
+                  and state["keyguard"] == "false" and "input text 5678" in sent, (sent, state))
+            custom_restore = eyes.restore()
+            check("restore() clears custom PIN 5678 and restores disabled=true (#525)",
+                  state["pin"] is None and state["disabled"] == "true" and not eyes._owed("emulator-5554"),
+                  (custom_restore, state))
+            state["awake"] = True
+            eyes.lock_emulator("1234")
+
+            # Keypad-only layout (key0..key9 without pinEntry) also recognized.
+            state["keyguard"], state["field"], state["awake"] = "true", "keypad", False
+            eyes._adb = lambda cmd, **kw: fake_adb(cmd, **kw)
+            # Reset field handling inside wm dismiss-keyguard temporarily for keypad-only check
+            orig_fake_adb = fake_adb
+            def keypad_adb(command, timeout=60, check=True, serial=None):
+                res = orig_fake_adb(command, timeout=timeout, check=check, serial=serial)
+                if command == "wm dismiss-keyguard":
+                    state["field"] = "keypad"
+                return res
+            eyes._adb = keypad_adb
+            check("unlock_emulator accepts key0..key9 PIN pad without pinEntry (#525)",
+                  eyes.unlock_emulator() == "unlocked" and state["keyguard"] == "false", state)
+            eyes._adb = fake_adb
+
+            # 4. restore() clears PIN, restores get-disabled=true, wakes/dismisses keyguard, and settles debt.
+            state["keyguard"], state["awake"] = "true", False
+            restored = eyes.restore()
+            check("restore() clears PIN, restores disabled=true, clears keyguard, and settles debt (#525)",
+                  state["pin"] is None and state["disabled"] == "true" and state["keyguard"] == "false"
+                  and not eyes._owed("emulator-5554") and any("emulator-lock" in r for r in restored), (restored, state))
+
+            # 5. Physical phone refuses lock_emulator and wake_and_raise_bouncer before touching adb.
+            eyes._STATE["serial"] = "100.94.206.47:5555"
+            sent.clear()
+            for fn in (eyes.lock_emulator, eyes.wake_and_raise_bouncer):
+                try:
+                    fn()
+                    check(f"{fn.__name__} refuses physical phone", False, "passed")
+                except eyes.Blocked as refusal:
+                    check(f"{fn.__name__} refuses physical phone with zero adb commands",
+                          "not an emulator" in str(refusal) and sent == [], (refusal, sent))
+        finally:
+            eyes._STATE["serial"] = saved["serial"]
+            eyes._STATE["tree"] = saved["tree"]
+            eyes._JOURNAL = saved["journal"]
+            eyes._run = saved["_run"]
+            eyes._adb = saved["_adb"]
+            eyes.devices = saved["devices"]
+            eyes._screen_size = saved["_screen_size"]
+            eyes.time.sleep = saved["sleep"]
 
 
 if __name__ == "__main__":

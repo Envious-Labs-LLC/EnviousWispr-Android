@@ -28,4 +28,13 @@ object S1Native {
     /** Asks the running (or next) generation to stop at its next step or inside the current decode. */
     external fun abort()
     external fun unload()
+
+    /** Debug libraries only: the bridge's text conversion Java -> UTF-8 -> Java. */
+    external fun testTextRoundTrip(value: String): String
+
+    /** Debug libraries only: the UTF-8 bytes the bridge passes to llama.cpp, as lowercase hex. */
+    external fun testUtf8Hex(value: String): String
+
+    /** Debug libraries only: decode arbitrary native bytes through toJava for invalid-UTF-8 checks. */
+    external fun testInvalidUtf8ToJava(bytes: ByteArray): String
 }

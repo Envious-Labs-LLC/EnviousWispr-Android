@@ -10,6 +10,7 @@ android {
 
     defaultConfig {
         minSdk = 30
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -41,8 +42,8 @@ android {
         debug {
             externalNativeBuild {
                 cmake {
-                    // Copy-ahead test switches (#510, s1_jni.cpp): debug libraries only, never a release one.
-                    cppFlags += "-DEW_COPY_AHEAD_TEST_SWITCHES"
+                    // Copy-ahead test switches (#510, s1_jni.cpp) and JNI UTF-8 test switches (#532): debug libraries only.
+                    cppFlags += listOf("-DEW_COPY_AHEAD_TEST_SWITCHES", "-DEW_S1_TEST_SWITCHES")
                 }
             }
         }
@@ -62,4 +63,10 @@ android {
     kotlinOptions {
         jvmTarget = "21"
     }
+}
+
+dependencies {
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("junit:junit:4.13.2")
 }

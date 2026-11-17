@@ -35,7 +35,8 @@ internal class RecordingArchive(
     fun keep(source: File) {
         if (!enabled()) return
         val folder = dir() ?: throw NotKept("recordings storage unavailable")
-        if (!folder.isDirectory && !folder.mkdirs()) throw NotKept("recordings folder unavailable")
+        folder.mkdirs()
+        if (!folder.isDirectory) throw NotKept("recordings folder unavailable")
         // A copy cut short by a process death leaves its part file; it is never a recording, so one that cannot be
         // removed is reported and does not stop this take.
         val leftovers = folder.listFiles { file -> file.name.endsWith(PART) }

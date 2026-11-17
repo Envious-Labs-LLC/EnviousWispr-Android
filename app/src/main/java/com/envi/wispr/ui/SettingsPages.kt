@@ -311,7 +311,7 @@ internal fun PermissionsPage(
                     Column(Modifier.weight(1f)) {
                         Text("Setup needs attention", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Complete the guided checks so dictation can start and insert text anywhere.",
+                            "Complete the guided checks so dictation can start and insert text where you type.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }

@@ -52,4 +52,22 @@ class OnboardingDemoScriptTest {
         assertEquals(1f, DemoScript.between(3f, 1f, 2f))
         assertEquals(0.5f, DemoScript.between(1.5f, 1f, 2f))
     }
+
+    @Test fun driftGuardClaimsAndSpeechModelNameMatchShippedBehavior() {
+        val settingsPages = java.io.File("src/main/java/com/envi/wispr/ui/SettingsPages.kt").readText()
+        val onboardingScreen = java.io.File("src/main/java/com/envi/wispr/ui/OnboardingScreen.kt").readText()
+        val transcriptionScreen = java.io.File("src/main/java/com/envi/wispr/ui/TranscriptionScreen.kt").readText()
+        val listing = java.io.File("../docs/play-listing/store-listing.md").readText()
+
+        assertTrue(!DemoScene.APPS.caption.contains("every app", ignoreCase = true))
+        assertTrue(!DemoScene.APPS.caption.contains("anywhere", ignoreCase = true))
+        assertTrue(!settingsPages.contains("insert text anywhere", ignoreCase = true))
+        assertTrue(!settingsPages.contains("every app", ignoreCase = true))
+        assertTrue(onboardingScreen.contains("\${descriptor.displayName} recognizes your speech"))
+        assertTrue(transcriptionScreen.contains("title = ModelManifest.parakeet.displayName"))
+        assertTrue(transcriptionScreen.contains("model = ModelManifest.parakeet.displayName"))
+        assertTrue(!transcriptionScreen.contains("title = \"Parakeet\""))
+        assertTrue(!transcriptionScreen.contains("model = \"Parakeet\""))
+        assertTrue(!listing.contains("Start from the floating bubble, Quick Settings tile or notification."))
+    }
 }

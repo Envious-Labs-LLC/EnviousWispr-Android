@@ -7,7 +7,7 @@ package com.envi.wispr.ui
  */
 internal enum class DemoScene(val seconds: Float, val caption: String) {
     /** A wall of the phone's own app icons; a text box slides in and the bubble appears beside it. */
-    APPS(4f, "Works in every app with a text box."),
+    APPS(4f, "Works in compatible apps with a text box."),
     /** The bubble alone at real size: what it is, which edge it lives on, the three looks. */
     BUBBLE(7f, "This is your recording bubble."),
     /** A Gmail draft: tap the bubble, tap the check, the formatted email lands at once. */

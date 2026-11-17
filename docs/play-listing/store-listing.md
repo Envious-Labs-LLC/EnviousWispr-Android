@@ -3,7 +3,8 @@
 Exact text read from Console October12,2026 for the first public submission. October 20, 2026: the
 full description's WHAT YOU NEED paragraph changed (founder-approved, #449) and was sent for review with
 production build 283. November 3, 2026: short description, opening and a COMPLETELY FREE section moved
-up to second place (founder-approved; he accepted the review risk of "free" in the short description), sent for review in Console the same day; live only after Google approves. Status and upgrade work:
+up to second place (founder-approved; he accepted the review risk of "free" in the short description), sent for review in Console the same day; live only after Google approves.
+Pending next Console update (#496): HOW IT WORKS updated in this draft to drop "or notification" (only the floating bubble and Quick Settings tile start a dictation); apply to Console before publishing the next listing edit. Status and upgrade work:
 [maintenance](../maintenance.md). Updating this file does not edit the submitted listing. Reconcile
 changes with the application, privacy policy and Data Safety before the next Console update.
 
@@ -28,7 +29,7 @@ COMPLETELY FREE
 EnviousWispr is free, with no subscription, trial, in-app purchases, account or ads. Dictation and AI polish on your phone cost nothing. Cloud polish is optional: connect your own OpenAI, Anthropic or Google Gemini API key. Any charges come directly from that provider under its pricing and terms. Envious Labs never charges you.
 
 HOW IT WORKS
-Tap the floating bubble beside a compatible text box, speak, and tap Stop. Speech becomes text on your phone, then AI polish helps turn it into clear writing. Finished text lands at your cursor in apps such as Gmail, WhatsApp and Chrome. Keep the keyboard you already use. Start from the floating bubble, Quick Settings tile or notification. Use the phone microphone or connected earbuds with automatic microphone selection.
+Tap the floating bubble beside a compatible text box, speak, and tap Stop. Speech becomes text on your phone, then AI polish helps turn it into clear writing. Finished text lands at your cursor in apps such as Gmail, WhatsApp and Chrome. Keep the keyboard you already use. Start from the floating bubble or Quick Settings tile. Use the phone microphone or connected earbuds with automatic microphone selection.
 
 CLEANER WRITING
 Remove filler words, tidy punctuation and choose a tone and format for your writing. Add names, product terms and aliases to your dictionary to help EnviousWispr recognize your words. Completed dictations are saved in History on your phone so you can copy them again.

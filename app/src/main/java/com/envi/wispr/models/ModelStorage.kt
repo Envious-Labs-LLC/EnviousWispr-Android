@@ -12,4 +12,14 @@ internal object ModelStorage {
 
     /** A pinned revision this build can load is installed and verified (#108): the question for "can I dictate". */
     fun usable(context: Context, model: ModelDescriptor): ModelDescriptor? = ModelDeliveryStore(root(context)).usableDescriptor(model)
+
+    /**
+     * Ensures [directory] exists without racing concurrent callers (#502): calls `mkdirs()` directly and checks
+     * `isDirectory` afterwards, so a second caller whose `mkdirs()` returns false because another worker created
+     * the path first still succeeds, while a regular file or unwritable parent still fails.
+     */
+    fun ensureDirectory(directory: File): Boolean {
+        directory.mkdirs()
+        return directory.isDirectory
+    }
 }

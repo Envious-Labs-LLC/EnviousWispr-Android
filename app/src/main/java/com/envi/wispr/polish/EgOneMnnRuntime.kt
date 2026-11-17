@@ -57,9 +57,11 @@ internal class EgOneMnnRuntime(
             loadFirstS1Backend(computeUnits) { requested ->
                 check(requested == unit) { "${kind.identity} runs on $unit only" }
                 check(model.name == CONFIG_FILE) { "not an MNN model folder" }
-                check(cache.isDirectory || cache.mkdirs()) { "cache folder unavailable" }
+                cache.mkdirs()
+                check(cache.isDirectory) { "cache folder unavailable" }
                 check(cache.canWrite()) { "cache folder not writable" }
-                check((prefix.isDirectory || prefix.mkdirs()) && prefix.canWrite()) { "prefix folder unavailable" }
+                prefix.mkdirs()
+                check(prefix.isDirectory && prefix.canWrite()) { "prefix folder unavailable" }
                 // Room for whatever this load and later prefix entries still have to write: the whole engine cache when
                 // the weights are not built yet, otherwise one prefix entry plus KV scratch (the native side re-checks
                 // before each new entry).

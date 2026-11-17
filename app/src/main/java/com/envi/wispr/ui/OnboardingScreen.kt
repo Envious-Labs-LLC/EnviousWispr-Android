@@ -131,7 +131,7 @@ internal fun OnboardingScreen(
                                 val state = downloads.getOrNull(index)
                                 val descriptor = if (index == 0) ModelManifest.parakeet else ModelManifest.s1
                                 SetupHeading(if (index == 0) "First, get your\nwords right." else "Less cleanup.\nMore ready to send.",
-                                    if (index == 0) "Parakeet recognizes your speech in 25 languages, even offline. The foundation for polished text."
+                                    if (index == 0) "${descriptor.displayName} recognizes your speech in 25 languages, even offline. The foundation for polished text."
                                     else "S1-mini turns your spoken thoughts into polished text, with punctuation, paragraphs and less filler.", muted)
                                 Surface(color = surface, shape = RoundedCornerShape(16.dp)) {
                                     Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

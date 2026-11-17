@@ -3432,7 +3432,7 @@ def _thaw(frozen):
     if host_pid is not None:
         lines.append(_kill_debugger(host_pid, frozen["port"]))
     if frozen.get("port") is not None:
-        subprocess.run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"], capture_output=True, text=True)
+        _run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"])
     state = dict(_processes_named(frozen["name"])).get(frozen["pid"])
     if state is None:
         lines.append(f"{frozen['name']} pid {frozen['pid']} is gone; nothing to thaw")

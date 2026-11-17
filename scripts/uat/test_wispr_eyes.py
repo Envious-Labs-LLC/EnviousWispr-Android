@@ -963,6 +963,20 @@ def test_agent():
 
 
 def main():
+    import tempfile as _main_tempfile
+    _orig_journal, _orig_run = eyes._JOURNAL, eyes._run
+    with _main_tempfile.TemporaryDirectory() as _main_tmp:
+        eyes._JOURNAL = Path(_main_tmp) / "restore.json"
+        eyes._run = lambda args, timeout=60: (
+            (0, "List of devices attached\n", "") if args[1:3] == ["devices", "-l"] else (1, "", "mocked-no-adb")
+        )
+        try:
+            return _run_all_tests()
+        finally:
+            eyes._JOURNAL, eyes._run = _orig_journal, _orig_run
+
+
+def _run_all_tests():
     # THE FAKE TRANSPORTS' HARDWARE IDENTITIES (#161 H7), as `getprop ro.serialno` would answer them; the
     # book is keyed by these, and `_owed("emulator-5554")` reads the book under `EMU-5554`. A transport
     # that is not attached keeps its own name as its key (see `test_book_is_keyed_by_identity` below).
@@ -1689,7 +1703,11 @@ def main():
             return (0, "35\n", "")
         if args[-1] == "getprop ro.kernel.qemu":
             return (0, "1\n", "")
-        return original_run(args, timeout)
+        if args[1:3] == ["devices", "-l"]:
+            return (0, "List of devices attached\nemulator-5554 device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64\n", "")
+        if args[-1] == "getprop ro.serialno":
+            return (0, "EMULATOR5554\n", "")
+        return (0, "", "")
 
     mic_calls = []
     cable_mic = {"on": False}
@@ -1819,16 +1837,21 @@ def main():
     eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0, "tree": None})
 
     # The eye belongs to the device: selecting another device forgets the answer.
-    eyes._STATE.update({"serial": "100.94.206.47:5555", "eye": "slow", "eye_retry_after": 2})
-    eyes._switch_to("emulator-5554")
-    check("switching device resets the eye so the new device is probed",
-          eyes._STATE["eye"] is None and eyes._STATE["eye_retry_after"] == 0)
-    eyes._STATE["eye"] = "fast"
-    with eyes._as_serial("emulator-5556"):
-        check("a restore on another device starts with its own unprobed eye", eyes._STATE["eye"] is None)
-        eyes._STATE["eye"] = "slow"
-    check("and the selected device's eye comes back afterwards", eyes._STATE["eye"] == "fast")
-    eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0})
+    _orig_devices_eye = eyes.devices
+    eyes.devices = lambda: []
+    try:
+        eyes._STATE.update({"serial": "100.94.206.47:5555", "eye": "slow", "eye_retry_after": 2})
+        eyes._switch_to("emulator-5554")
+        check("switching device resets the eye so the new device is probed",
+              eyes._STATE["eye"] is None and eyes._STATE["eye_retry_after"] == 0)
+        eyes._STATE["eye"] = "fast"
+        with eyes._as_serial("emulator-5556"):
+            check("a restore on another device starts with its own unprobed eye", eyes._STATE["eye"] is None)
+            eyes._STATE["eye"] = "slow"
+        check("and the selected device's eye comes back afterwards", eyes._STATE["eye"] == "fast")
+        eyes._STATE.update({"serial": None, "eye": None, "eye_retry_after": 0})
+    finally:
+        eyes.devices = _orig_devices_eye
 
     # ---- a refusal describes the screen that FAILED, not the one a second read finds ------------------
     reads = []
@@ -1988,6 +2011,9 @@ def main():
          f"sys.path.insert(0, {str(Path(__file__).parent)!r});"
          "import wispr_eyes as w;"
          f"w._JOURNAL = pathlib.Path({str(book)!r});"
+         "w._run = lambda a, timeout=60: "
+         "((0, 'List of devices attached' + chr(10), '') if a[1:3] == ['devices', '-l'] "
+         "else (1, '', 'mocked-no-adb'));"
          "print(w._owed('fixture'))"],
         capture_output=True, text=True, timeout=60)
     check("a change survives into a REAL next process",
@@ -3311,6 +3337,7 @@ def test_issue_440_uat_reliability():
                 return 0, ""
 
             eyes._adb = fake_adb_nav
+            eyes._run = lambda args, timeout=60: (0, "1\n", "") if args[-1] == "getprop ro.kernel.qemu" else (0, "", "")
             check("on_screen(tab) returns False without Blocked when another app holds foreground",
                   eyes.on_screen("Transcription") is False)
             eyes._owe(("switch", json.dumps({"where": "Transcription", "label": "Show bubble", "was": False}, sort_keys=True)))

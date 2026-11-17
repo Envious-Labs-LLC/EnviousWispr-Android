@@ -58,6 +58,17 @@ public final class PasteTargetActivity extends Activity {
 
     public static final String EXTRA_TWO_FIELDS = "two_fields";
 
+    /** Makes editor A a password field ({@code TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_PASSWORD}) (#11). */
+    public static final String EXTRA_PASSWORD = "password";
+
+    /** Package to notify on ready / text updates via explicit broadcasts (#11). */
+    public static final String EXTRA_NOTIFY_PACKAGE = "notify_package";
+
+    public static final String ACTION_READY = "com.envi.wispr.test.TARGET_READY";
+    public static final String ACTION_TEXT_UPDATED = "com.envi.wispr.test.TARGET_TEXT_UPDATED";
+    public static final String ACTION_FINISH = "com.envi.wispr.test.TARGET_FINISH";
+    public static final String EXTRA_TEXT = "text";
+
     /**
      * #331: the no-field host. A full-screen page with no editable node, holding window focus: the paste
      * service's window scan pins only a FOCUSED editable node (`EditorTargetTracker`), and while this window has
@@ -90,8 +101,12 @@ public final class PasteTargetActivity extends Activity {
 
     private EditText fieldB;
     private BroadcastReceiver focusReceiver;
+    private BroadcastReceiver finishReceiver;
     /** The no-field host's token, written to the ready receipt at its first window focus (#331). */
     private String noFieldToken;
+    private String notifyPackage;
+    private String notifyToken;
+    private boolean readySent;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -99,11 +114,17 @@ public final class PasteTargetActivity extends Activity {
         Intent intent = getIntent();
         boolean twoFields = intent != null && intent.getBooleanExtra(EXTRA_TWO_FIELDS, false);
         final String rigToken = intent == null ? null : intent.getStringExtra(EXTRA_RIG_TOKEN);
+        notifyPackage = intent == null ? null : intent.getStringExtra(EXTRA_NOTIFY_PACKAGE);
+        notifyToken = rigToken;
+        readySent = false;
         if (intent != null && intent.getBooleanExtra(EXTRA_NO_FIELD, false)) {
             showNoField(rigToken);
             return;
         }
         final EditText a = editor("Silent auto-paste target");
+        if (intent != null && intent.getBooleanExtra(EXTRA_PASSWORD, false)) {
+            a.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        }
         final EditText b = twoFields ? editor("Second editor, never the target") : null;
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
@@ -131,9 +152,19 @@ public final class PasteTargetActivity extends Activity {
         } else if (receiptB.exists() && !receiptB.delete()) {
             android.util.Log.w("PasteTarget", "stale B receipt could not be deleted");
         }
-        a.addTextChangedListener(watcher(receiptA));
+        a.addTextChangedListener(watcher(receiptA, notifyPackage, rigToken));
+        if (notifyPackage != null) {
+            BroadcastReceiver finisher = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent received) {
+                    finish();
+                }
+            };
+            registerReceiver(finisher, new IntentFilter(ACTION_FINISH), Context.RECEIVER_EXPORTED);
+            finishReceiver = finisher;
+        }
         if (b != null) {
-            b.addTextChangedListener(watcher(receiptB));
+            b.addTextChangedListener(watcher(receiptB, null, null));
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent received) {
@@ -155,8 +186,10 @@ public final class PasteTargetActivity extends Activity {
         } else if (rigToken != null) {
             android.util.Log.w("PasteTarget", "editor A did not take focus; no ready receipt written");
         }
-        a.postDelayed(() -> getSystemService(InputMethodManager.class)
-                .showSoftInput(a, InputMethodManager.SHOW_IMPLICIT), 250);
+        a.postDelayed(() -> {
+            getSystemService(InputMethodManager.class).showSoftInput(a, InputMethodManager.SHOW_IMPLICIT);
+            maybeNotifyReady();
+        }, 250);
     }
 
     /**
@@ -185,6 +218,20 @@ public final class PasteTargetActivity extends Activity {
             noFieldToken = null;
             write(new File(getFilesDir(), READY_NAME), token);
         }
+        if (hasFocus) {
+            maybeNotifyReady();
+        }
+    }
+
+    private void maybeNotifyReady() {
+        EditText live = field;
+        if (readySent || notifyPackage == null || live == null) return;
+        if (live.hasFocus() && hasWindowFocus()) {
+            readySent = true;
+            sendBroadcast(new Intent(ACTION_READY)
+                    .setPackage(notifyPackage)
+                    .putExtra(EXTRA_RIG_TOKEN, notifyToken));
+        }
     }
 
     private EditText editor(String hintText) {
@@ -197,12 +244,19 @@ public final class PasteTargetActivity extends Activity {
         return view;
     }
 
-    private static TextWatcher watcher(final File receipt) {
+    private static TextWatcher watcher(final File receipt, final String notifyPkg, final String rigToken) {
         return new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
             @Override public void afterTextChanged(Editable s) {
-                write(receipt, s == null ? "" : s.toString());
+                String text = s == null ? "" : s.toString();
+                write(receipt, text);
+                if (notifyPkg != null && !text.isEmpty() && field != null) {
+                    field.getContext().sendBroadcast(new Intent(ACTION_TEXT_UPDATED)
+                            .setPackage(notifyPkg)
+                            .putExtra(EXTRA_TEXT, text)
+                            .putExtra(EXTRA_RIG_TOKEN, rigToken));
+                }
             }
         };
     }
@@ -225,6 +279,14 @@ public final class PasteTargetActivity extends Activity {
                 // already unregistered
             }
             focusReceiver = null;
+        }
+        if (finishReceiver != null) {
+            try {
+                unregisterReceiver(finishReceiver);
+            } catch (IllegalArgumentException ignored) {
+                // already unregistered
+            }
+            finishReceiver = null;
         }
         // A reference to a destroyed activity's field would let a test read the PREVIOUS run's text and
         // call it this run's result, which is the plausible-value trap wearing a green tick.

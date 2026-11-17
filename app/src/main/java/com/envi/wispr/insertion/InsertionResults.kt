@@ -32,9 +32,6 @@ internal object InsertionResults {
     /** The service was destroyed with an insertion still pending. */
     const val COPY_ONLY_SERVICE_DESTROYED = "copy_only_service_destroyed"
 
-    /** Insertion was refused for a password or otherwise sensitive field. */
-    const val COPY_ONLY_SENSITIVE = "copy_only_sensitive"
-
     /**
      * The editor action RAN and the change could not be read back. The words may well be in the
      * field. Any sentence for this value has to hedge, which is why it cannot share a bucket with
@@ -86,8 +83,6 @@ internal object InsertionResults {
     fun forServiceFallback(reason: ServiceFallbackReason, clipboard: ClipboardOutcome): String {
         val copied = clipboard == ClipboardOutcome.COPIED
         return when (reason) {
-            ServiceFallbackReason.SENSITIVE_FIELD ->
-                if (copied) COPY_ONLY_SENSITIVE else INSERTION_FAILED
             ServiceFallbackReason.UNVERIFIED ->
                 if (copied) COPY_ONLY_UNVERIFIED else UNVERIFIED_NOT_COPIED
             ServiceFallbackReason.SERVICE_INTERRUPTED ->

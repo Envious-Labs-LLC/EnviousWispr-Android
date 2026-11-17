@@ -15,7 +15,6 @@ import com.envi.wispr.paste.AccessibilityInsertionRules.WINDOW_CHARS
 internal data class TargetState(
     val read: EditorRead,
     val selection: EditorSelection?,
-    val sensitive: Boolean,
 )
 
 /** What the editor's paste call reported, classified by the port that made it. */
@@ -147,8 +146,6 @@ internal class InsertionAttempt(
 
         data class Verified(val route: InsertionRoute) : Tick
 
-        data object Sensitive : Tick
-
         /** The editor refused the paste (`false`). Nothing was mutated; the clipboard holds the words. */
         data object Rejected : Tick
 
@@ -214,7 +211,6 @@ internal class InsertionAttempt(
 
     private fun prepareAndWrite(): Tick {
         val target = locate() ?: return refocusThenWait()
-        if (target.sensitive) return Tick.Sensitive
         if (expired()) return Tick.Expired(false)
 
         val baseline = AccessibilityInsertionRules.baseline(target.read)

@@ -31,7 +31,7 @@ class ModelDeliveryWorker(context: Context, params: WorkerParameters) : Coroutin
         val store = ModelDeliveryStore(ModelStorage.root(applicationContext))
         val root = ModelStorage.root(applicationContext)
         val controls = ModelDeliveryControlStore(root)
-        if ((!root.exists() && !root.mkdirs()) || !root.isDirectory) {
+        if (!ModelStorage.ensureDirectory(root)) {
             return@withContext failure("model storage is unavailable")
         }
         if (inputData.getBoolean(KEY_REMOVE, false)) {

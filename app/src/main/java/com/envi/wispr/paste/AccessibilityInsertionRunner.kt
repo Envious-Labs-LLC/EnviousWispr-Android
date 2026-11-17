@@ -218,11 +218,6 @@ internal class AccessibilityInsertionRunner(
                 )
                 performResultHaptic(success = true)
             }
-            InsertionAttempt.Tick.Sensitive -> {
-                DebugLogger.warn(TAG, "Insertion refused for a password or sensitive field; clipboard only")
-                finish(pending, InsertionOutcomeLine.Outcome.SENSITIVE)
-                recordAndAnnounce(ServiceFallbackReason.SENSITIVE_FIELD, pending)
-            }
             InsertionAttempt.Tick.Rejected -> {
                 DebugLogger.warn(TAG, "The editor refused the paste; clipboard only")
                 finish(pending, InsertionOutcomeLine.Outcome.REJECTED)
@@ -312,7 +307,6 @@ internal class AccessibilityInsertionRunner(
                 TargetState(
                     read = AccessibilityInsertionRules.EditorRead(node.text?.toString(), hint),
                     selection = snapshot.selection,
-                    sensitive = isSensitive(node),
                 )
             }
 
@@ -490,8 +484,6 @@ internal class AccessibilityInsertionRunner(
             node.textSelectionStart,
             node.textSelectionEnd,
         )
-
-    private fun isSensitive(node: AccessibilityNodeInfo): Boolean = PasswordFieldRule.isPasswordField(node)
 
     private fun restorePreviousClipboardIfSafe(pending: PendingInsertion) {
         if (!pending.clipboardOverwritten) return

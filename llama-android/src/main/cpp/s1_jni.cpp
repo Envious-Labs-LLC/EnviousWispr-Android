@@ -16,6 +16,7 @@
 #include "chat.h"
 #include "common.h"
 #include "ggml-backend.h"
+#include "jni_utf8.hpp"
 #include "llama.h"
 #include "sampling.h"
 
@@ -98,15 +99,11 @@ bool load_cpu_backend(const std::string & directory) {
 }
 
 std::string from_jstring(JNIEnv * env, jstring value) {
-    if (value == nullptr) return {};
-    const char * chars = env->GetStringUTFChars(value, nullptr);
-    std::string result(chars == nullptr ? "" : chars);
-    if (chars != nullptr) env->ReleaseStringUTFChars(value, chars);
-    return result;
+    return ew::jni::fromJava(env, value);
 }
 
 jstring to_jstring(JNIEnv * env, const std::string & value) {
-    return env->NewStringUTF(value.c_str());
+    return ew::jni::toJava(env, value);
 }
 
 void clear_prefix_cache() {
@@ -637,3 +634,26 @@ Java_com_envi_wispr_llama_S1Native_unload(JNIEnv *, jobject) {
     std::lock_guard<std::mutex> lock(g_mutex);
     free_model();
 }
+
+#ifdef EW_S1_TEST_SWITCHES
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_envi_wispr_llama_S1Native_testTextRoundTrip(JNIEnv * env, jobject, jstring value) {
+    return to_jstring(env, from_jstring(env, value));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_envi_wispr_llama_S1Native_testUtf8Hex(JNIEnv * env, jobject, jstring value) {
+    return to_jstring(env, ew::jni::toUtf8Hex(from_jstring(env, value)));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_envi_wispr_llama_S1Native_testInvalidUtf8ToJava(JNIEnv * env, jobject, jbyteArray bytes) {
+    if (bytes == nullptr) return to_jstring(env, "");
+    const jsize len = env->GetArrayLength(bytes);
+    std::string raw(static_cast<size_t>(len), '\0');
+    if (len > 0) {
+        env->GetByteArrayRegion(bytes, 0, len, reinterpret_cast<jbyte *>(raw.data()));
+    }
+    return to_jstring(env, raw);
+}
+#endif

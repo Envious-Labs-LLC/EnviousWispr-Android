@@ -17,7 +17,8 @@ Run either mode with Bash `run_in_background: true`; the exit is the notificatio
 
   scripts/testlab-run.py run --project personal --app APP.apk --test TEST.apk \\
       --target "class com.envi.wispr.ui.FloatingGuideAllowProbe" \\
-      --device model=frankel,version=36 --device model=SC-51E,version=36 [--env forceDrag=true] [--deadline-min 20]
+      --device model=frankel,version=36 --device model=SC-51E,version=36 \\
+      [--env forceDrag=true] [--other-file /data/local/tmp/file.bin=LOCAL_PATH] [--deadline-min 20]
   scripts/testlab-run.py watch --project personal --matrix matrix-abc123 --results gs://bucket/dir [--deadline-min 20]
 
 Exit: 0 every reported phone passed · 10 a reported phone failed · 3 deadline (cancelled) · 4 local gate failed ·
@@ -28,7 +29,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -106,15 +109,42 @@ def say(line: str) -> None:
     print(line, flush=True)
 
 
+def parse_other_file(spec: str) -> tuple[str, str]:
+    """Split and validate a DEVICE_PATH=LOCAL_PATH fixture specification."""
+    if "=" not in spec or "," in spec:
+        raise ValueError("--other-file takes DEVICE_PATH=LOCAL_PATH without commas")
+    device_path, local_path = spec.split("=", 1)
+    if not device_path or not local_path or not device_path.startswith("/") or device_path.endswith("/"):
+        raise ValueError("--other-file requires an absolute DEVICE_PATH file path and non-empty LOCAL_PATH")
+    return device_path, local_path
+
+
 def local_gate(args) -> None:
     if args.skip_local:
         say(f"LOCAL GATE SKIPPED: {args.skip_local}")
         return
+    pairs = [parse_other_file(spec) for spec in args.other_file]
+    for _, local_path in pairs:
+        if local_path.startswith("gs://"):
+            raise ValueError(f"--other-file remote source {local_path} requires --skip-local")
+        if not os.path.isfile(local_path):
+            raise OSError(f"--other-file local file not found: {local_path}")
     adb = ["adb", "-s", args.local_serial]
     for apk in (args.app, args.test):
         r = sh(adb + ["install", "-r", apk])
         if "Success" not in r.stdout:
             say(f"LOCAL GATE FAILED: install {apk} on {args.local_serial}: {(r.stdout + r.stderr).strip()[-300:]}")
+            sys.exit(4)
+    for device_path, local_path in pairs:
+        parent = posixpath.dirname(device_path)
+        if parent and parent != "/":
+            mk = sh(adb + ["shell", f"mkdir -p {shlex.quote(parent)}; echo RC=$?"], timeout=args.local_timeout)
+            if mk.returncode != 0 or not re.search(r"^RC=0$", mk.stdout, re.M):
+                say(f"LOCAL GATE FAILED: mkdir {parent} on {args.local_serial}: {(mk.stdout + mk.stderr).strip()[-300:]}")
+                sys.exit(4)
+        push = sh(adb + ["push", local_path, device_path], timeout=args.local_timeout)
+        if push.returncode != 0:
+            say(f"LOCAL GATE FAILED: push {local_path} to {device_path} on {args.local_serial}: {(push.stdout + push.stderr).strip()[-300:]}")
             sys.exit(4)
     target_kind, target = args.target.split(" ", 1)
     inst = adb + ["shell", "am", "instrument", "-w", "-e", target_kind, target]
@@ -130,7 +160,7 @@ def local_gate(args) -> None:
     sys.exit(4)
 
 
-def submit(args) -> tuple[str, str]:
+def build_submit_cmd(args) -> list[str]:
     config, project = PROJECTS[args.project]
     cmd = ["gcloud", f"--configuration={config}", f"--project={project}", "firebase", "test", "android", "run",
            "--async", "--type=instrumentation", f"--app={args.app}", f"--test={args.test}",
@@ -140,8 +170,15 @@ def submit(args) -> tuple[str, str]:
     cmd += [f"--device={full_device(d)}" for d in args.device]
     if args.env:
         cmd.append("--environment-variables=" + ",".join(args.env))
+    if args.other_file:
+        cmd.append("--other-files=" + ",".join(args.other_file))
     if args.pull:
         cmd.append(f"--directories-to-pull={args.pull}")
+    return cmd
+
+
+def submit(args) -> tuple[str, str]:
+    cmd = build_submit_cmd(args)
     try:
         r = sh(cmd, timeout=900)
     except subprocess.TimeoutExpired:
@@ -268,7 +305,7 @@ def watch_loop(args, matrix: str, results: str, stop_at_first: bool) -> None:
         time.sleep(POLL_SECS)
 
 
-def main(argv: list[str]) -> None:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="mode", required=True)
     for name in ("run", "watch"):
@@ -281,6 +318,8 @@ def main(argv: list[str]) -> None:
     run.add_argument("--target", required=True, help='"class com.x.Y" or "class com.x.Y#method"')
     run.add_argument("--device", action="append", required=True, help="model=ID,version=API[,locale=,orientation=]")
     run.add_argument("--env", action="append", default=[], help="instrumentation argument key=value")
+    run.add_argument("--other-file", action="append", default=[], metavar="DEVICE_PATH=LOCAL_PATH",
+                     help="fixture file to stage before running (adb push locally, --other-files on Test Lab)")
     run.add_argument("--pull", default="", help="device directory to pull, e.g. /sdcard/Download")
     run.add_argument("--timeout", default="5m")
     run.add_argument("--history", default="enviouswispr-device-tests")
@@ -291,14 +330,34 @@ def main(argv: list[str]) -> None:
     w = sub.choices["watch"]
     w.add_argument("--matrix", required=True)
     w.add_argument("--results", required=True)
+    return p
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = build_parser()
     args = p.parse_args(argv)
     if args.mode == "run":
         if not args.target.startswith(("class ", "package ")):
             p.error('--target must start with "class " or "package "')
         if any("=" not in v or "," in v for v in args.env):
             p.error("--env takes key=value without commas")
+        seen_device_paths: set[str] = set()
+        for spec in args.other_file:
+            try:
+                device_path, _ = parse_other_file(spec)
+            except ValueError as e:
+                p.error(str(e))
+            if device_path in seen_device_paths:
+                p.error(f"duplicate --other-file device path: {device_path}")
+            seen_device_paths.add(device_path)
         if "/" not in args.runner:
             p.error("--runner takes <test package>/<runner class>")
+    return args
+
+
+def main(argv: list[str]) -> None:
+    args = parse_args(argv)
+    if args.mode == "run":
         try:
             local_gate(args)
         except (OSError, ValueError, subprocess.TimeoutExpired) as e:

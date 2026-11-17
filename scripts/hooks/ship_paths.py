@@ -36,6 +36,8 @@ SHIP_PATH = re.compile(
     r"|gradlew$"
     r"|gradlew\.bat$"
     r"|llama-android/"
+    r"|mnn-android/"
+    r"|native/"
     r"|third_party/"            # submodule contents
     r"|\.gitmodules$"           # submodule configuration; `third_party/` above matches the gitlink
     r"|\.gitignore$"            # decides which build inputs and receipts can enter history at all

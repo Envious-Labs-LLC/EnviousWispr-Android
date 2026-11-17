@@ -5,15 +5,12 @@ package com.envi.wispr.insertion
  * the user's field.
  *
  * Separate from `InsertionHandoff`, which answers whether the text was ever accepted at all. These
- * six are the terminal outcomes of an accepted insertion, and every one of them owes the user a
+ * five are the terminal outcomes of an accepted insertion, and every one of them owes the user a
  * sentence saying where the words went instead. The last two are the teardown pair: they used to
  * copy the words to the clipboard and say nothing at all, which is the silence issue #16 reported,
  * reached from the one direction where the service dies with the words still in its hands.
  */
 internal enum class ServiceFallbackReason {
-    /** The target field refused text by our own rule. Removed with issue #11. */
-    SENSITIVE_FIELD,
-
     /** The editor action RAN and the change could not be read back, so the field may hold it. */
     UNVERIFIED,
 

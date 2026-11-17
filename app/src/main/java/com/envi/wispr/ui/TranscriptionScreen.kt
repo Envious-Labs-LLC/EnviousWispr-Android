@@ -65,7 +65,7 @@ internal fun TranscriptionScreen(
     ScreenContainer(subtitle = "The speech engine that turns your voice into text.") {
         ModelCard(
             eyebrow = "SPEECH ENGINE",
-            title = "Parakeet",
+            title = ModelManifest.parakeet.displayName,
             description = "Your offline speech engine. It listens and transcribes on this phone, so your voice never leaves it.",
             state = parakeetState,
             facts = listOf("Offline", "25 languages", "Stays on this phone"),
@@ -92,7 +92,7 @@ internal fun TranscriptionScreen(
             onResume = { ModelDeliveryWorker.launch { ModelDeliveryWorker.resume(context, ModelManifest.parakeet) } },
         )
         ProcessingPreferenceCard(
-            model = "Parakeet", preference = preferences.speechProcessing,
+            model = ModelManifest.parakeet.displayName, preference = preferences.speechProcessing,
             modelReady = speechModel.health == com.envi.wispr.models.ModelHealth.READY,
             implemented = com.envi.wispr.processing.ProcessingEnvironment.speechBackends,
             qualified = com.envi.wispr.processing.ProcessingEnvironment.speechBackends,

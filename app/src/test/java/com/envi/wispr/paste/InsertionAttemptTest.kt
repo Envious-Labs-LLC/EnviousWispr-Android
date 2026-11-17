@@ -22,7 +22,6 @@ class InsertionAttemptTest {
         var hint: Boolean = false,
         var selection: EditorSelection? = EditorSelection(0, 0),
         var canPaste: Boolean = true,
-        var sensitive: Boolean = false,
         var present: Boolean = true,
         var pasteReturns: Boolean = true,
         var pasteMutates: Boolean = true,
@@ -78,7 +77,7 @@ class InsertionAttemptTest {
                 throw IllegalStateException("node went away")
             }
             if (!present) return null
-            return TargetState(EditorRead(field, hint), selection, sensitive)
+            return TargetState(EditorRead(field, hint), selection)
         }
 
         override fun commitEligible(): Boolean = commitEligible
@@ -487,14 +486,6 @@ class InsertionAttemptTest {
         val throwing = FakeEditor(stageThrows = true)
         assertEquals(InsertionAttempt.Tick.StagingFailed, attempt(throwing).tick())
         assertEquals(0, throwing.pastes)
-    }
-
-    @Test
-    fun sensitiveFieldIsRefusedBeforeAnyStagingOrWrite() {
-        val editor = FakeEditor(sensitive = true)
-        assertEquals(InsertionAttempt.Tick.Sensitive, attempt(editor).tick())
-        assertEquals(0, editor.stagings)
-        assertEquals(0, editor.pastes)
     }
 
     /**

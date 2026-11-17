@@ -69,7 +69,9 @@ internal class FeedbackStore(
 }
 
 private fun atomicFeedbackWrite(file: File, bytes: ByteArray) {
-    check(file.parentFile!!.isDirectory || file.parentFile!!.mkdirs())
+    val parent = file.parentFile!!
+    parent.mkdirs()
+    check(parent.isDirectory)
     val temp = File(file.parentFile, file.name + ".tmp")
     FileOutputStream(temp).use { it.write(bytes); it.fd.sync() }
     Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)

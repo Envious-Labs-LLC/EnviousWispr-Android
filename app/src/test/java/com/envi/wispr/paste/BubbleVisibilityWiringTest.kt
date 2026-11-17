@@ -8,18 +8,22 @@ import org.junit.Test
 import java.io.File
 
 /**
- * DRIFT GUARD for #523's wiring, not product coverage. Each row pins one decision of the reviewed plan so a
- * later edit cannot quietly route around it: one place tells the overlay a field is active; the insertion
- * runner asks the shared password rule; the hide list stays out of the telemetry-fed settings state.
+ * DRIFT GUARD for #523 and #11 wiring, not product coverage. Each row pins one decision of the reviewed
+ * plan so a later edit cannot quietly route around it: one place tells the overlay a field is active; the
+ * target tracker asks the shared password rule for bubble hiding while insertion has no sensitive-field
+ * guard; the hide list stays out of the telemetry-fed settings state.
  *
- * REVERTS (performed before commit): make the runner's `isSensitive` return `false` and
- * [theInsertionRunnerAsksTheSharedPasswordRule] turns red; call `overlay.fieldActivated(key)` directly in
- * `revalidateBubbleField` and [onlyActivateFieldTellsTheOverlayAFieldIsActive] turns red.
+ * REVERTS (performed before commit): bypass `PasswordFieldRule` in `EditorTargetTracker` and
+ * [theTrackerAsksTheSharedPasswordRuleWhileInsertionHasNoSensitiveGuard] turns red; call
+ * `overlay.fieldActivated(key)` directly in `revalidateBubbleField` and
+ * [onlyActivateFieldTellsTheOverlayAFieldIsActive] turns red.
  */
 class BubbleVisibilityWiringTest {
 
     private val host = PasteSources.bubble
     private val runner = PasteSources.runner
+    private val tracker = PasteSources.tracker
+    private val attempt = File("src/main/java/com/envi/wispr/paste/InsertionAttempt.kt").readText()
     private val rule = File("src/main/java/com/envi/wispr/paste/PasswordFieldRule.kt").readText()
     private val overlay = File("src/main/java/com/envi/wispr/paste/RecordingAccessibilityOverlay.kt").readText()
     private val settingsViewModel = File("src/main/java/com/envi/wispr/ui/BubbleVisibilityViewModel.kt").readText()
@@ -97,11 +101,13 @@ class BubbleVisibilityWiringTest {
     }
 
     @Test
-    fun theInsertionRunnerAsksTheSharedPasswordRule() {
-        assertTrue(runner.contains("private fun isSensitive(node: AccessibilityNodeInfo): Boolean = PasswordFieldRule.isPasswordField(node)"))
-        assertTrue(runner.contains("sensitive = isSensitive(node)"))
+    fun theTrackerAsksTheSharedPasswordRuleWhileInsertionHasNoSensitiveGuard() {
+        assertTrue(tracker.contains("PasswordFieldRule.isPasswordField(target.node)"))
+        assertFalse("insertion runner must not guard sensitive fields (#11)", runner.contains("PasswordFieldRule"))
+        assertFalse("insertion runner must not guard sensitive fields (#11)", runner.contains("isSensitive"))
+        assertFalse("insertion attempt must not have a sensitive-field tick (#11)", attempt.contains("Sensitive"))
         assertFalse("no second copy of the password predicate", runner.contains("TYPE_TEXT_VARIATION_PASSWORD"))
-        // isPassword short-circuits before the input type is read, as the runner always did.
+        // isPassword short-circuits before the input type is read.
         assertTrue(rule.contains("node.isPassword || isPasswordInputType(node.inputType)"))
     }
 

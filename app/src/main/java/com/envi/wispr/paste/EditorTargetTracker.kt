@@ -17,7 +17,10 @@ internal data class FieldTraits(val packageName: String, val passwordField: Bool
  * Every call runs on the service's main thread. The node copies this holds are its own: it recycles them,
  * and a caller reads the pinned editor only through [withPinnedNode] and the three read-only properties.
  */
-internal class EditorTargetTracker(private val service: AccessibilityService) {
+internal class EditorTargetTracker(
+    private val service: AccessibilityService,
+    private val onFieldObserved: (FieldTraits?) -> Unit = {},
+) {
 
     private companion object {
         const val TAG = "PasteService"
@@ -78,6 +81,7 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
             )
             clearTarget()
             lastTarget = snapshot
+            notifyObservedField()
             DebugLogger.debug(
                 TAG,
                 "Remembered editable target package=${snapshot.packageName} " +
@@ -120,6 +124,7 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
             clearTarget()
             target = findFocusedEditableTarget()
             lastTarget = target
+            notifyObservedField()
         }
         target ?: return DictationTargetPin.NO_TARGET
         pinnedTarget = TargetToken(
@@ -173,6 +178,7 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
             if (found != null) {
                 clearTarget()
                 lastTarget = found
+                notifyObservedField()
                 target = found
                 stillFocused = true
             }
@@ -274,6 +280,10 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
         lastTarget = null
     }
 
+    private fun notifyObservedField() {
+        onFieldObserved(rememberedFieldTraits())
+    }
+
     fun clearPinnedTarget() {
         pinnedTarget?.node?.recycle()
         pinnedTarget = null
@@ -283,6 +293,7 @@ internal class EditorTargetTracker(private val service: AccessibilityService) {
     fun close() {
         clearPinnedTarget()
         clearTarget()
+        notifyObservedField()
     }
 
     private fun findFocusedEditableTarget(): TargetSnapshot? {

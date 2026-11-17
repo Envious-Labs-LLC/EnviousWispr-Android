@@ -48,6 +48,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED mnn_jni.cpp)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     "${MNN_SRC}/include"
     "${MNN_SRC}/transformers/llm/engine/include"
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../native"
 )
 
 target_link_libraries(${CMAKE_PROJECT_NAME} MNN android)

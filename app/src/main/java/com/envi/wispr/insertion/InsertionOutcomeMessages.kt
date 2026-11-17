@@ -92,7 +92,6 @@ internal class FallbackAnnouncement private constructor(val line: String) {
             when (reason) {
                 ServiceFallbackReason.UNVERIFIED ->
                     hedgedDestinationLine(clipboard, savedInHistory, kept)
-                ServiceFallbackReason.SENSITIVE_FIELD,
                 ServiceFallbackReason.TARGET_NEVER_RETURNED,
                 ServiceFallbackReason.NO_INSERTION_ACTION,
                 ServiceFallbackReason.SERVICE_INTERRUPTED,

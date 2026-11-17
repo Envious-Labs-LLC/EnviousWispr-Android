@@ -788,7 +788,12 @@ class _AgentLink:
         if "\n" in line or "\r" in line:
             raise Blocked("an agent command may not contain a line break")
         self.sock.sendall((line + "\n").encode("utf-8"))
-        head = self.file.readline().decode("utf-8").strip()
+        head_raw = self.file.readline()
+        if not head_raw:
+            raise ConnectionResetError(
+                f"the phone-side agent closed its connection while answering {line.split(' ')[0]!r}"
+            )
+        head = head_raw.decode("utf-8").strip()
         if head.startswith("ERR "):
             raise Blocked(f"the phone-side agent refused {line.split(' ')[0]!r}: {head[4:]}")
         if not head.startswith("OK "):
@@ -796,7 +801,7 @@ class _AgentLink:
         size = int(head[3:])
         body = self.file.read(size)
         if len(body) != size:
-            raise Blocked("the phone-side agent's answer was cut short")
+            raise ConnectionResetError("the phone-side agent's answer was cut short")
         return body.decode("utf-8")
 
     def close(self):
@@ -957,6 +962,40 @@ def stop_agent():
         return "agent stopped" if answer == "bye" else f"the agent answered {answer!r} to quit"
     finally:
         _remove_agent_forward()
+
+
+def reconnect_reader():
+    """Drop any stale accessibility-agent link, clear transient off state, and reconnect.
+
+    A long operation (such as a multi-minute recording or instrumentation run) can outlast the
+    phone-side agent's 10-minute idle timer or suffer an adb hiccup. Calling this before a final
+    UI readback clears any expired socket or latched `agent_off` state unless `WISPR_AGENT=off`.
+    """
+    _drop_agent_link()
+    _STATE["tree"] = None
+    _STATE["eye"] = None
+    if os.environ.get("WISPR_AGENT", "").lower() != "off":
+        _STATE["agent_off"] = None
+    link = _agent()
+    if link is None:
+        return f"reader reconnect fell back ({_STATE.get('agent_off') or 'agent disabled'})"
+    try:
+        if link.call("ping") == "pong":
+            return "reader reconnected"
+    except (OSError, Blocked) as first_err:
+        _drop_agent_link()
+        if os.environ.get("WISPR_AGENT", "").lower() != "off":
+            _STATE["agent_off"] = None
+        link = _agent()
+        if link is not None:
+            try:
+                if link.call("ping") == "pong":
+                    return "reader reconnected"
+            except (OSError, Blocked) as retry_err:
+                _drop_agent_link()
+                return f"reader reconnect fell back ({retry_err})"
+        return f"reader reconnect fell back ({_STATE.get('agent_off') or first_err})"
+    return "reader reconnect fell back (unexpected agent ping reply)"
 
 
 # Commands that change nothing on the device, and so are the ONLY ones a dropped link may resend.
@@ -1591,11 +1630,16 @@ def on_screen(where):
     which is the only kind that survives a process boundary.
     """
     if where in TABS:
-        # A FRESH READ, and a refusal is passed on rather than answered "no". An unreadable screen is
-        # not the same as a screen showing something else, and this decides whether a change to the
-        # founder's settings gets recorded against a page that can put it back.
+        # A FRESH READ: when another app or screen is foreground, the tab bar is absent so return
+        # False cleanly and let cross-app `restore()` navigate back via `_reach(where)`. Other
+        # refusals (such as an unreachable device) still raise.
         tree(refresh=True)
-        row = _tab_row()
+        try:
+            row = _tab_row()
+        except Blocked as refusal:
+            if "the four tabs are not all on screen" in str(refusal):
+                return False
+            raise
         if where not in row:
             return False
         node = row[where]
@@ -3388,7 +3432,7 @@ def _thaw(frozen):
     if host_pid is not None:
         lines.append(_kill_debugger(host_pid, frozen["port"]))
     if frozen.get("port") is not None:
-        subprocess.run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"], capture_output=True, text=True)
+        _run([ADB, "-s", device(), "forward", "--remove", f"tcp:{frozen['port']}"])
     state = dict(_processes_named(frozen["name"])).get(frozen["pid"])
     if state is None:
         lines.append(f"{frozen['name']} pid {frozen['pid']} is gone; nothing to thaw")
@@ -3588,8 +3632,24 @@ def focus_field(label, package):
     return f"focused {label!r} ({field[1]})"
 
 
+def _restore_keeping_evidence(report):
+    """Run `restore()`, appending notes or `CLEANUP_ERROR:` without discarding `report`."""
+    try:
+        for line in restore():
+            report.append(f"NOTE: restored {line}")
+        return True
+    except Blocked as why:
+        report.append(f"CLEANUP_ERROR: restore failed: {why}")
+        return False
+
+
+def _downgrade_verified_lines(report):
+    """Ensure partial `VERIFIED:` lines cannot read as a pass after an incomplete/tool-errored run."""
+    return [line.replace("VERIFIED:", "UNKNOWN (not a pass):", 1) for line in report]
+
+
 def dictate_emulator(sentence, target_package="com.google.android.gm", expected_final=None, route=None,
-                     record=None):
+                     record=None, restore_before=True, restore_after=True):
     """One spoken take on the EMULATOR, fed over gRPC, judged by the editor's own whole text.
 
     Replaces `scripts/uat/grpc-take.sh`, which tapped coordinates it had worked out by hand, turned the
@@ -3602,6 +3662,11 @@ def dictate_emulator(sentence, target_package="com.google.android.gm", expected_
     from the sentence, and "the text changed" is not "the words landed". `route="COMMIT"` (or "PASTE")
     makes any other route an ISSUE; without it the route is reported, never assumed. `record` is a host
     path for an owned screen recording around the take (`screen_recording`).
+
+    When cross-app checks (such as clipboard restoration) owe UI settings in EnviousWispr and also
+    need to inspect the target app after dictation, `restore_before=False` preserves the owed settings
+    for the take and `restore_after=False` leaves the target app on screen for caller inspection. By
+    default `restore()` runs at the start and in `finally:` strictly AFTER target-editor readback.
     """
     _require_emulator("a spoken take")
     if _recording_is_off():
@@ -3612,7 +3677,8 @@ def dictate_emulator(sentence, target_package="com.google.android.gm", expected_
     if route is not None and route not in ("COMMIT", "PASTE"):
         return ["BLOCKED: route must be 'COMMIT', 'PASTE' or None"]
     report = []
-    restore()
+    if restore_before:
+        restore()
     ready()
     report.append(f"NOTE: {rebind_auto_paste_if_unbound()}")
     if not bound():
@@ -3643,28 +3709,34 @@ def dictate_emulator(sentence, target_package="com.google.android.gm", expected_
                 time.sleep(2.0)
                 stop_dictation()
                 ending = _wait_for_the_take_to_finish()
+        recording_note = _STATE.get("last_screen_recording") if record else None
+        if recording_note:
+            report.append(f"NOTE: {recording_note}")
+        if ending is None:
+            report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
+        else:
+            take = last_take()
+            if take["unknown"]:
+                report.append(f"ISSUE: UNKNOWN, {take['unknown']}")
+            else:
+                report.append(f"VERIFIED: a take ran, ended by {take['ended_by']}" if take["ended_by"]
+                              else "ISSUE: no take ending was logged")
+                if take["transcribed_chars"]:
+                    report.append(f"VERIFIED: {take['transcribed_chars']} characters came back from the speech engine")
+                else:
+                    report.append("ISSUE: nothing was transcribed; either the stream never reached the microphone "
+                                  "or the engine returned empty")
+                report.extend(_judge_insertion(take, target_package, route))
+                # Reconnect any expired accessibility reader after long audio/video work, and read the
+                # target editor BEFORE `finally:` lets cross-app `restore()` navigate back to Settings.
+                report.append(f"NOTE: {reconnect_reader()}")
+                report.extend(_judge_editor(before, target_package, expected_final))
+    except Blocked as why:
+        report = _downgrade_verified_lines(report)
+        report.append(f"TOOL_ERROR: {why}")
     finally:
-        for line in restore():
-            report.append(f"NOTE: restored {line}")
-    recording_note = _STATE.get("last_screen_recording") if record else None
-    if recording_note:
-        report.append(f"NOTE: {recording_note}")
-    if ending is None:
-        report.append("ISSUE: the dictation never reached an ending, so nothing can be said about it")
-        return report
-    take = last_take()
-    if take["unknown"]:
-        report.append(f"ISSUE: UNKNOWN, {take['unknown']}")
-        return report
-    report.append(f"VERIFIED: a take ran, ended by {take['ended_by']}" if take["ended_by"]
-                  else "ISSUE: no take ending was logged")
-    if take["transcribed_chars"]:
-        report.append(f"VERIFIED: {take['transcribed_chars']} characters came back from the speech engine")
-    else:
-        report.append("ISSUE: nothing was transcribed; either the stream never reached the microphone "
-                      "or the engine returned empty")
-    report.extend(_judge_insertion(take, target_package, route))
-    report.extend(_judge_editor(before, target_package, expected_final))
+        if restore_after:
+            _restore_keeping_evidence(report)
     return report
 
 
@@ -3844,18 +3916,22 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
     args.append(TEST_RUNNER)
     restore()
     ready()
-    report.append(f"NOTE: {_rest_host_mic_off()}")
-    clear_log()
     fed = False
     rebound_checked = False
     results = []
+    saw_final = False
     timed_out = []
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    # A TIMER, not a check between groups: the group reader blocks while the runner is silent, so a check
-    # that runs only when a group arrives never runs on a hung run (code review round 1).
-    timer = threading.Timer(timeout, lambda: (timed_out.append(True), process.kill()))
-    timer.start()
+    tool_errors = []
+    process = None
+    timer = None
     try:
+        report.append(f"NOTE: {_rest_host_mic_off()}")
+        clear_log()
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # A TIMER, not a check between groups: the group reader blocks while the runner is silent, so a check
+        # that runs only when a group arrives never runs on a hung run (code review round 1).
+        timer = threading.Timer(timeout, lambda: (timed_out.append(True), process.kill()))
+        timer.start()
         for group in _instrumentation_groups(process.stdout):
             if group.get("code") == DRIVER_READY_STATUS and group.get("driver_phase") == "READY":
                 if group.get("driver_token") != token:
@@ -3871,6 +3947,7 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
                 continue
             if "INSTRUMENTATION_CODE" in group:
                 results.append(group)
+                saw_final = True
                 break
             if group.get("code") == 1 and group.get("test") and not rebound_checked:
                 # THE TEST HAS STARTED, so the app's process is up again. Instrumentation restarts that
@@ -3884,19 +3961,31 @@ def run_device_test(test, sentence, expected_final=None, timeout=240, starve=Fal
                 continue
             if group.get("code") in (0, -1, -2, -3, -4) and group.get("test"):
                 results.append(group)
+    except Blocked as why:
+        tool_errors.append(f"TOOL_ERROR: {why}")
     finally:
-        timer.cancel()
-        try:
-            process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        for line in restore():
-            report.append(f"NOTE: restored {line}")
-    if timed_out:
-        report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
-    if not fed:
-        report.append("ISSUE: the row never said READY, so no audio was fed (staging, not the product)")
-    report.extend(_report_runner_results(results, "not_run"))
+        if timer is not None:
+            timer.cancel()
+        if process is not None:
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        final_code = next((g.get("INSTRUMENTATION_CODE") for g in results if "INSTRUMENTATION_CODE" in g), None)
+        if timed_out:
+            report.append(f"ISSUE: the instrumentation ran past {timeout} s and was killed; UNKNOWN")
+        elif process is not None and not saw_final and not tool_errors:
+            report.append("ISSUE: the instrumentation ended without a final INSTRUMENTATION_CODE; UNKNOWN")
+        elif process is not None and process.returncode not in (0, None):
+            tool_errors.append(f"TOOL_ERROR: am instrument exited with status {process.returncode}")
+        if not fed and not tool_errors and not timed_out:
+            report.append("ISSUE: the row never said READY, so no audio was fed (staging, not the product)")
+        runner_lines = _report_runner_results(results, "not_run") if (results or not tool_errors) else []
+        if timed_out or not saw_final or final_code != "-1" or tool_errors:
+            runner_lines = _downgrade_verified_lines(runner_lines)
+        report.extend(runner_lines)
+        report.extend(tool_errors)
+        _restore_keeping_evidence(report)
     return report
 
 
@@ -5183,12 +5272,14 @@ def scan(toggle=False):
 
 
 def _reach(where):
-    """Open a tab or a drawer page by name, from wherever the app is."""
+    """Open a tab or a drawer page by name, from wherever the phone or app is."""
     if where in TABS:
         open_tab(where)
     else:
         open_settings()
         tap("Open settings menu")
+        if not reveal(where):
+            raise Blocked(f"settings drawer item {where!r} is not on screen")
         tap(where, exact=True)
 
 
@@ -5326,9 +5417,541 @@ def room_is_quiet(seconds=6):
     }
 
 
+CLIPBOARD_TARGET_ACTIVITY = f"{TEST_PACKAGE}/com.envi.wispr.ClipboardPasteTargetActivity"
+CLIPBOARD_SENTINEL_TEXT = "clipboard sentinel"
+DOWNLOAD_SCREENS = ("Transcription", "AI Polish", "Storage")
+DOWNLOAD_ACTIVE_LABELS = ("Pause", "Cancel download")
+DOWNLOAD_READY_LABELS = ("Downloaded", "Remove", "Uninstall")
+DOWNLOAD_DESTRUCTIVE_LABELS = frozenset({"Remove", "Uninstall", "Cancel download"})
+DOWNLOAD_PRIMARY_ACTIONS = frozenset({
+    "Pause", "Pause download", "Resume", "Resume download",
+    "Retry", "Retry download", "Download", "Remove", "Uninstall",
+})
+
+
+def _node_in_bounds(node, bounds):
+    """True when `node`'s centre falls inside `bounds = (x0, y0, x1, y1)`."""
+    if bounds is None:
+        return True
+    x, y = node["centre"]
+    x0, y0, x1, y1 = bounds
+    return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def _find_visible_nodes(labels, package=PACKAGE, card_bounds=None):
+    """Return matching enabled nodes for `labels` within `card_bounds` in vertical screen order."""
+    wanted = set(labels)
+    nodes = [
+        n for n in tree(refresh=False)
+        if n["package"] == package and n["enabled"] and _label(n) in wanted and _node_in_bounds(n, card_bounds)
+    ]
+    nodes.sort(key=lambda n: (n["bounds"][1], n["bounds"][0]))
+    return nodes
+
+
+def _card_bounds_for_control(btn_node):
+    """Determine the enclosing model card bounds so download transitions stay scoped to ONE model card."""
+    nodes = tree(refresh=False)
+    primaries = [n for n in nodes if n["package"] == PACKAGE and _label(n) in DOWNLOAD_PRIMARY_ACTIONS]
+    ancestors = []
+    cur = btn_node.get("parent")
+    seen = set()
+    while isinstance(cur, int) and cur not in seen and 0 <= cur < len(nodes):
+        seen.add(cur)
+        anc = nodes[cur]
+        if anc["scrollable"]:
+            break
+        anc_primaries = [
+            p for p in primaries
+            if anc["bounds"][0] <= p["centre"][0] <= anc["bounds"][2]
+            and anc["bounds"][1] <= p["centre"][1] <= anc["bounds"][3]
+        ]
+        if len(anc_primaries) > 1:
+            break
+        ancestors.append(anc)
+        cur = anc.get("parent")
+    if ancestors:
+        return ancestors[-1]["bounds"]
+    # Flat hierarchy fallback: bound tightly around this button, clipped against neighboring controls.
+    bx0, by0, bx1, by1 = btn_node["bounds"]
+    x0, y0, x1, y1 = bx0 - 40, by0 - 150, bx1 + 40, by1 + 150
+    for other in primaries:
+        if other is btn_node:
+            continue
+        ox, oy = other["centre"]
+        cx, cy = btn_node["centre"]
+        if abs(oy - cy) > 80:
+            mid_y = (oy + cy) // 2
+            if oy < cy:
+                y0 = max(y0, mid_y + 1)
+            else:
+                y1 = min(y1, mid_y - 1)
+        elif abs(ox - cx) > 80:
+            mid_x = (ox + cx) // 2
+            if ox < cx:
+                x0 = max(x0, mid_x + 1)
+            else:
+                x1 = min(x1, mid_x - 1)
+    return (x0, y0, x1, y1)
+
+
+def _tap_download_button(label, package=PACKAGE, card_bounds=None):
+    """Tap `label` within `card_bounds`, avoiding ambiguity across multiple model cards."""
+    if card_bounds is None and len(_find_visible_nodes((label,), package=package)) <= 1:
+        return tap(label, exact=True, clickable=True, package=package)
+    matches = _find_visible_nodes((label,), package=package, card_bounds=card_bounds)
+    if not matches:
+        raise Blocked(f"{label!r} is no longer present in the target model card")
+    if card_bounds is None and len(matches) == 1:
+        return tap(label, exact=True, clickable=True, package=package)
+    node = matches[0]
+    if not node["clickable"]:
+        holder = _enclosing_control(node, package)
+        top, bottom = node["bounds"][1], node["bounds"][3]
+        if not (top <= holder["centre"][1] <= bottom):
+            holder = dict(holder, centre=(holder["centre"][0], node["centre"][1]))
+        node = dict(holder, text=node["text"], desc=node["desc"])
+    x0, y0, x1, y1 = node["bounds"]
+    if not node["enabled"] or x1 <= x0 or y1 <= y0:
+        raise Blocked(f"{label!r} is on screen but disabled or has no area")
+    x, y = node["centre"]
+    over = _covered(x, y, node)
+    if over is not None:
+        raise Blocked(f"{label!r} is covered at ({x}, {y}) by {_WINDOW_TYPES.get(over['type'], 'another window')}")
+    _STATE["tree"] = None
+    _press_at(x, y, node.get("window"))
+    _STATE["tree"] = None
+    return f"pressed {_label(node)!r} at ({x}, {y})"
+
+
+def _wait_for_any_label(labels, timeout_s=10.0, poll_s=0.3, package=PACKAGE, card_bounds=None):
+    """Poll the live screen until any label in `labels` appears in `card_bounds`, or None."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        tree(refresh=True)
+        found = _find_visible_nodes(labels, package=package, card_bounds=card_bounds)
+        if found:
+            return _label(found[0])
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_s)
+
+
+def _exercise_pause_resume(report, pause_labels, resume_labels, wait_s, card_bounds=None):
+    """Toggle an active download Pause -> Resume inside the bound `card_bounds`."""
+    pause_label = _label(_find_visible_nodes(pause_labels, card_bounds=card_bounds)[0])
+    _tap_download_button(pause_label, card_bounds=card_bounds)
+    paused_state = _wait_for_any_label(
+        resume_labels + ("Download",) + DOWNLOAD_READY_LABELS,
+        timeout_s=wait_s,
+        card_bounds=card_bounds,
+    )
+    if paused_state in resume_labels:
+        report.append(f"VERIFIED: {pause_label} transitioned active download to {paused_state}")
+        _tap_download_button(paused_state, card_bounds=card_bounds)
+        resumed_state = _wait_for_any_label(
+            pause_labels + ("Cancel download",) + DOWNLOAD_READY_LABELS,
+            timeout_s=wait_s,
+            card_bounds=card_bounds,
+        )
+        if resumed_state is not None:
+            report.append(f"VERIFIED: {paused_state} transitioned paused download to {resumed_state}")
+        else:
+            report.append(f"ISSUE: {paused_state} did not transition paused download back to active or Ready")
+    elif paused_state in DOWNLOAD_READY_LABELS:
+        report.append(f"NOTE: download reached {paused_state} before {pause_label} settled")
+    else:
+        report.append(f"ISSUE: {pause_label} did not transition active download to Resume or Ready")
+
+
+def check_downloads(screen=None, start=False, wait_s=10.0):
+    """Verify non-destructive model download state transitions (Pause / Resume / Retry).
+
+    Never presses `Remove`, `Uninstall`, or `Cancel download`, and binds every readback and follow-up
+    tap to the same model card so another card's state cannot mask a stuck transition. Supports both
+    settings/tab cards (`Transcription`, `AI Polish`, `Storage`) and both stages of onboarding
+    downloads (`Pause download` / `Resume download` / `Retry download`).
+    """
+    if screen is not None and screen not in DOWNLOAD_SCREENS:
+        return [f"BLOCKED: download screen must be one of {', '.join(DOWNLOAD_SCREENS)}, got {screen!r}"]
+    ready()
+    onboarding_dl = False
+    if screen is None:
+        tree(refresh=True)
+        onboarding_dl = (
+            present("Pause download", exact=True, package=PACKAGE)
+            or present("Resume download", exact=True, package=PACKAGE)
+            or present("Both models will be ready before we continue.", exact=True, package=PACKAGE)
+            or present("Speech recognition is ready. Finishing AI polish.", exact=True, package=PACKAGE)
+        )
+    if onboarding_dl:
+        target_screen = "Onboarding downloads"
+        pause_labels = ("Pause download",)
+        resume_labels = ("Resume download",)
+        retry_labels = ("Retry download",)
+    else:
+        target_screen = screen or next((s for s in DOWNLOAD_SCREENS if on_screen(s)), "Transcription")
+        _reach(target_screen)
+        _stable_tree()
+        pause_labels = ("Pause",)
+        resume_labels = ("Resume",)
+        retry_labels = ("Retry", "Retry download")
+    report = [f"NOTE: inspecting downloads on {target_screen}"]
+
+    tree(refresh=True)
+    pause_nodes = _find_visible_nodes(pause_labels)
+    if pause_nodes:
+        card_bounds = _card_bounds_for_control(pause_nodes[0])
+        _exercise_pause_resume(report, pause_labels, resume_labels, wait_s, card_bounds=card_bounds)
+        return report
+
+    resume_nodes = _find_visible_nodes(resume_labels)
+    if resume_nodes:
+        target_node = resume_nodes[0]
+        card_bounds = _card_bounds_for_control(target_node)
+        resume_label = _label(target_node)
+        _tap_download_button(resume_label, card_bounds=card_bounds)
+        resumed_state = _wait_for_any_label(
+            pause_labels + ("Cancel download",) + DOWNLOAD_READY_LABELS,
+            timeout_s=wait_s,
+            card_bounds=card_bounds,
+        )
+        if resumed_state is None:
+            report.append(f"ISSUE: {resume_label} did not transition paused download to active or Ready")
+            return report
+        report.append(f"VERIFIED: {resume_label} transitioned paused download to {resumed_state}")
+        if resumed_state in pause_labels:
+            _tap_download_button(resumed_state, card_bounds=card_bounds)
+            restored = _wait_for_any_label(
+                resume_labels + DOWNLOAD_READY_LABELS,
+                timeout_s=wait_s,
+                card_bounds=card_bounds,
+            )
+            if restored in resume_labels:
+                report.append(f"VERIFIED: {resumed_state} restored paused download state ({restored})")
+            elif restored in DOWNLOAD_READY_LABELS:
+                report.append(f"NOTE: download finished ({restored}) before {resumed_state} restored paused state")
+            else:
+                report.append(f"ISSUE: {resumed_state} did not return resumed download to {resume_labels[0]}")
+        return report
+
+    retry_nodes = _find_visible_nodes(retry_labels)
+    if retry_nodes:
+        target_node = retry_nodes[0]
+        card_bounds = _card_bounds_for_control(target_node)
+        retry_label = _label(target_node)
+        _tap_download_button(retry_label, card_bounds=card_bounds)
+        next_state = _wait_for_any_label(
+            pause_labels + ("Cancel download",) + DOWNLOAD_READY_LABELS + resume_labels,
+            timeout_s=wait_s,
+            card_bounds=card_bounds,
+        )
+        if next_state is not None:
+            report.append(f"VERIFIED: {retry_label} transitioned failed download to {next_state}")
+        else:
+            report.append(f"ISSUE: {retry_label} left download inactive or failed")
+        return report
+
+    dl_nodes = _find_visible_nodes(("Download",))
+    if dl_nodes:
+        if not start:
+            return report + ["NOT RUN: download has not started and start=False was passed"]
+        card_bounds = _card_bounds_for_control(dl_nodes[0])
+        _tap_download_button("Download", card_bounds=card_bounds)
+        started_state = _wait_for_any_label(
+            pause_labels + ("Cancel download",) + DOWNLOAD_READY_LABELS + resume_labels,
+            timeout_s=wait_s,
+            card_bounds=card_bounds,
+        )
+        if started_state in pause_labels:
+            report.append(f"VERIFIED: Download transitioned to {started_state}")
+            _exercise_pause_resume(report, pause_labels, resume_labels, wait_s, card_bounds=card_bounds)
+        elif started_state is not None:
+            report.append(f"VERIFIED: Download transitioned to {started_state}")
+        else:
+            report.append("ISSUE: Download did not start active transfer or reach Ready")
+        return report
+
+    if _find_visible_nodes(DOWNLOAD_READY_LABELS):
+        return report + ["NOT RUN: model is already downloaded (Remove/Uninstall is never clicked)"]
+
+    return report + ["NOT RUN: no active, paused, or retryable model download control found on screen"]
+
+
+def _control_enabled(label, package=PACKAGE):
+    """Read `enabled` from the clickable control owning `label` (or `label` itself if clickable).
+
+    In Compose, a disabled `Button` keeps its inner `TextView` `enabled=True` while the clickable
+    ancestor reports `enabled=False`. Reading the clickable owner matches what `tap()` enforces.
+    """
+    node = find(label, exact=True, clickable=None, package=package)
+    if node["clickable"]:
+        return bool(node["enabled"])
+    return bool(_enclosing_control(node, package)["enabled"])
+
+
+def check_practice(sentence, expected_final=None, finish=False, use_debug_insert=False, wait_s=3.0):
+    """Verify the onboarding practice dictation step reaches `Nice, that worked!` and enables `Finish setup`.
+
+    `finish=False` (default) leaves onboarding open so test repeatability and founder state are not
+    dismissed unintentionally; pass `finish=True` only when completing onboarding is explicitly desired.
+    """
+    if not isinstance(expected_final, str):
+        return ["BLOCKED: expected_final is required: the literal whole text the practice field must hold"]
+    if not use_debug_insert:
+        _require_emulator("checking onboarding practice")
+        if _recording_is_off():
+            return [f"NOT RUN: {RECORDING_IS_OFF}"]
+    ready()
+    report = []
+    tree(refresh=True)
+    if not (present("Finish setup", exact=True, package=PACKAGE)
+            or present("Your words will appear here.", exact=True, package=PACKAGE)):
+        return ["BLOCKED: the onboarding practice screen is not currently on screen"]
+    if present("Finish setup", exact=True, package=PACKAGE):
+        report.append(f"NOTE: initial 'Finish setup' enabled={_control_enabled('Finish setup', package=PACKAGE)}")
+    if present("Try out your stylus", package="com.google.android.inputmethod.latin"):
+        back()
+        time.sleep(0.4)
+
+    try:
+        take_report = (
+            debug_insert(sentence, target_package=PACKAGE, expected_final=expected_final)
+            if use_debug_insert
+            else dictate_emulator(
+                sentence,
+                target_package=PACKAGE,
+                expected_final=expected_final,
+                restore_before=False,
+                restore_after=False,
+            )
+        )
+        report.extend(take_report)
+        if not any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN", "TOOL_ERROR")) for line in take_report):
+            report.append(f"NOTE: {reconnect_reader()}")
+            deadline = time.monotonic() + wait_s
+            landed = False
+            finish_enabled = False
+            while True:
+                tree(refresh=True)
+                landed = present("Nice, that worked!", exact=True, package=PACKAGE)
+                if present("Finish setup", exact=True, package=PACKAGE):
+                    finish_enabled = _control_enabled("Finish setup", package=PACKAGE)
+                if landed and finish_enabled:
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.25)
+            report.append(
+                "VERIFIED: onboarding practice displayed 'Nice, that worked!'" if landed
+                else "ISSUE: onboarding practice did not show 'Nice, that worked!'"
+            )
+            report.append(
+                "VERIFIED: 'Finish setup' became enabled" if finish_enabled
+                else "ISSUE: 'Finish setup' stayed disabled after practice dictation"
+            )
+            if finish:
+                if finish_enabled:
+                    tap("Finish setup", exact=True, clickable=True, package=PACKAGE)
+                    gone = False
+                    end_deadline = time.monotonic() + wait_s
+                    while time.monotonic() < end_deadline:
+                        tree(refresh=True)
+                        if not present("Finish setup", exact=True, package=PACKAGE):
+                            gone = True
+                            break
+                        time.sleep(0.2)
+                    report.append(
+                        "VERIFIED: 'Finish setup' completed onboarding" if gone
+                        else "ISSUE: 'Finish setup' was tapped but onboarding stayed on screen"
+                    )
+                else:
+                    report.append("ISSUE: cannot press 'Finish setup' while it is disabled")
+            else:
+                report.append("NOTE: left onboarding practice open (finish=False)")
+    except Blocked as why:
+        report = _downgrade_verified_lines(report)
+        report.append(f"TOOL_ERROR: {why}")
+    finally:
+        if not use_debug_insert:
+            _restore_keeping_evidence(report)
+    return report
+
+
+def _read_clipboard_probe_text(package=TEST_PACKAGE):
+    """Return the visible `Clipboard: ...` probe text on `ClipboardPasteTargetActivity`, or None."""
+    nodes = [
+        n for n in tree(refresh=False)
+        if n["package"] == package and (_label(n).startswith("Clipboard: ") or "Clipboard unavailable" in _label(n))
+    ]
+    return _label(nodes[0]) if nodes else None
+
+
+def check_clipboard(sentence, expected_final=None, auto_copy=False, restore_clipboard=True,
+                    use_debug_insert=False, target_component=None, wait_s=5.0):
+    """Verify clipboard restoration or auto-copy end-to-end against `ClipboardPasteTargetActivity`.
+
+    1. Configures `Auto-copy to clipboard` and `Restore clipboard after paste` on EnviousWispr's
+       `Clipboard` settings page (recording reversible debts in the journal).
+    2. Opens `ClipboardPasteTargetActivity`, confirms the `"clipboard sentinel"` probe, dictates or
+       debug-inserts into its editor with `restore_after=False` so the target screen stays visible,
+       reads back the live `"Clipboard: ..."` probe, and finally runs cross-app `restore()` so the
+       `Clipboard` switches return to their prior state cleanly.
+    """
+    if not isinstance(expected_final, str):
+        return ["BLOCKED: expected_final is required: the literal whole text the editor must hold"]
+    if use_debug_insert and auto_copy:
+        return ["BLOCKED: use_debug_insert=True bypasses SessionFinalizer's Auto-copy path; pass "
+                "use_debug_insert=False (a real voice take) to verify Auto-copy"]
+    _require_emulator("checking clipboard restoration")
+    if not use_debug_insert and _recording_is_off():
+        return [f"NOT RUN: {RECORDING_IS_OFF}"]
+    _, path = _adb(f"pm path {TEST_PACKAGE}", check=False)
+    if "package:" not in path:
+        return [f"NOT RUN: the test APK {TEST_PACKAGE} is not installed; install it with "
+                "adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"]
+    comp = target_component or CLIPBOARD_TARGET_ACTIVITY
+    report = []
+    restore()
+    ready()
+    try:
+        _reach("Clipboard")
+        reveal("Auto-copy to clipboard")
+        set_switch("Auto-copy to clipboard", bool(auto_copy), where="Clipboard")
+        reveal("Restore clipboard after paste")
+        set_switch("Restore clipboard after paste", bool(restore_clipboard), where="Clipboard")
+
+        code, out = _adb(f"am start -W -S -n {shlex.quote(comp)}", check=False)
+        if code != 0 or "Error" in out:
+            raise Blocked(f"could not start {comp}: {out.strip() or f'exit {code}'}")
+
+        probe = None
+        deadline = time.monotonic() + wait_s
+        while True:
+            tree(refresh=True)
+            if present("Try out your stylus", package="com.google.android.inputmethod.latin"):
+                back()
+                time.sleep(0.4)
+                continue
+            probe = _read_clipboard_probe_text()
+            if probe is not None:
+                if "Clipboard unavailable" in probe:
+                    raise Blocked(f"clipboard target refused: {probe}")
+                if not restore_clipboard or auto_copy or probe == f"Clipboard: {CLIPBOARD_SENTINEL_TEXT}":
+                    break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+        if probe is None:
+            raise Blocked(f"clipboard probe never appeared on {comp}")
+        if restore_clipboard and not auto_copy and probe != f"Clipboard: {CLIPBOARD_SENTINEL_TEXT}":
+            raise Blocked(f"expected sentinel before take, saw {probe!r}")
+        report.append(f"NOTE: pre-take {probe}")
+
+        before = _focused_field(TEST_PACKAGE)
+        if before is None:
+            raise Blocked(f"no focused editor in {TEST_PACKAGE} on {comp}")
+        # Explicitly tap the target editor after window focus so AccessibilityService pins it cleanly.
+        target_edits = [
+            n for n in tree(refresh=False)
+            if n["package"] == TEST_PACKAGE and n["kind"] == "EditText" and n["focused"]
+        ]
+        if target_edits:
+            tx, ty = target_edits[0]["centre"]
+            if _covered(tx, ty, target_edits[0]) is None:
+                _press_at(tx, ty, target_edits[0].get("window"))
+                time.sleep(0.4)
+                if present("Try out your stylus", package="com.google.android.inputmethod.latin"):
+                    back()
+                    time.sleep(0.4)
+                before = _focused_field(TEST_PACKAGE)
+                if before is None:
+                    raise Blocked(f"target editor lost focus on {comp}")
+
+        take_report = (
+            debug_insert(sentence, target_package=TEST_PACKAGE, expected_final=expected_final)
+            if use_debug_insert
+            else dictate_emulator(
+                sentence,
+                target_package=TEST_PACKAGE,
+                expected_final=expected_final,
+                restore_before=False,
+                restore_after=False,
+            )
+        )
+        report.extend(take_report)
+        if not any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN", "TOOL_ERROR")) for line in take_report):
+            report.append(f"NOTE: {reconnect_reader()}")
+            expected_clip = expected_final.strip() if auto_copy else CLIPBOARD_SENTINEL_TEXT
+            seen_clip = None
+            clip_deadline = time.monotonic() + wait_s
+            while True:
+                tree(refresh=True)
+                probe_after = _read_clipboard_probe_text()
+                if probe_after and probe_after.startswith("Clipboard: "):
+                    seen_clip = probe_after[len("Clipboard: "):]
+                    if auto_copy and seen_clip in (expected_final, expected_final.strip()):
+                        break
+                    if not auto_copy and restore_clipboard and seen_clip == CLIPBOARD_SENTINEL_TEXT:
+                        break
+                    if not auto_copy and not restore_clipboard:
+                        break
+                if time.monotonic() >= clip_deadline:
+                    break
+                time.sleep(0.25)
+            if seen_clip is None:
+                report.append("ISSUE: post-take clipboard probe could not be read from target screen")
+            elif auto_copy:
+                if seen_clip in (expected_final, expected_final.strip()) and seen_clip != CLIPBOARD_SENTINEL_TEXT:
+                    report.append(f"VERIFIED: clipboard holds auto-copied text {seen_clip!r}")
+                else:
+                    report.append(f"ISSUE: clipboard read {seen_clip!r}, expected auto-copied {expected_clip!r}")
+            elif restore_clipboard:
+                if seen_clip == CLIPBOARD_SENTINEL_TEXT:
+                    report.append(f"VERIFIED: clipboard sentinel restored ({seen_clip!r})")
+                else:
+                    report.append(f"ISSUE: clipboard read {seen_clip!r}, expected {CLIPBOARD_SENTINEL_TEXT!r}")
+            else:
+                report.append(f"VERIFIED: clipboard after insert read {seen_clip!r}")
+    except Blocked as why:
+        report = _downgrade_verified_lines(report)
+        report.append(f"TOOL_ERROR: {why}")
+    finally:
+        reconnect_reader()
+        _restore_keeping_evidence(report)
+        try:
+            tree(refresh=True)
+            if any(n["package"] == TEST_PACKAGE for n in tree(refresh=False)):
+                back()
+        except Blocked:
+            pass
+    return report
+
+
 # --------------------------------------------------------------------------------------------------
 # Command line
 # --------------------------------------------------------------------------------------------------
+
+_RED_PREFIXES = ("ISSUE", "BLOCKED", "NOT RUN", "TOOL_ERROR", "CLEANUP_ERROR", "UNKNOWN")
+
+
+def _parse_cli_args(rest, allowed_flags, min_pos, max_pos, usage):
+    """Parse known flags and positional count; print usage and return None on unknown flags or wrong arity."""
+    flags = set()
+    pos = []
+    for arg in rest:
+        if arg in allowed_flags:
+            flags.add(arg)
+        elif arg.startswith("-"):
+            print(f"unknown option {arg!r}\nusage: {usage}", file=sys.stderr)
+            return None
+        else:
+            pos.append(arg)
+    if not (min_pos <= len(pos) <= max_pos):
+        print(f"usage: {usage}", file=sys.stderr)
+        return None
+    return flags, pos
+
 
 def _print_report(command, report, verbose):
     """One line on success, the whole report on a finding or with `--verbose`.
@@ -5337,9 +5960,9 @@ def _print_report(command, report, verbose):
     line: the last VERIFIED sentence. A finding prints every line, because then the NOTEs are the
     evidence. Founder 2026-09-20: "blazing fast and not crazy token heavy".
     """
-    # NOT RUN is not success either: a skipped row or a recording-off suite that exited 0 and printed OK
-    # was a green light over nothing (code review round 1).
-    red = any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN")) for line in report)
+    # NOT RUN, TOOL_ERROR, CLEANUP_ERROR, and UNKNOWN are not success either: an incomplete, skipped,
+    # or cleanup-failed run must never exit 0 or look like an app pass.
+    red = any(line.startswith(_RED_PREFIXES) for line in report)
     if red or verbose:
         print("\n".join(report))
     else:
@@ -5354,7 +5977,8 @@ def _main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
         print("commands: devices look tree find tap tab nav open-app scan switches recorder "
-              "quiet logs take shot restore | emulator: launch lock [pin] bouncer unlock mic on|off inject <pcm> "
+              "quiet logs take shot restore reconnect-reader downloads practice clipboard | "
+              "emulator: launch lock [pin] bouncer unlock mic on|off inject <pcm> "
               "dictate-emu <sentence> <expected_final> | insert <text> <expected_final>")
         return 0
     command, rest = argv[0], argv[1:]
@@ -5382,7 +6006,7 @@ def _main(argv):
         elif command == "scan":
             report = scan(toggle="--toggle" in rest)
             print("\n".join(report))
-            return 1 if any(line.startswith(("ISSUE", "BLOCKED", "NOT RUN")) for line in report) else 0
+            return 1 if any(line.startswith(_RED_PREFIXES) for line in report) else 0
         elif command == "switches":
             for label, on in sorted(switches().items()):
                 print(f"{label}: {'on' if on else 'off'}")
@@ -5415,6 +6039,57 @@ def _main(argv):
         elif command == "restore":
             lines = restore()
             print("\n".join(lines) if verbose or len(lines) > 3 else "; ".join(lines))
+        elif command == "reconnect-reader":
+            print(reconnect_reader())
+        elif command == "downloads":
+            parsed = _parse_cli_args(rest, {"--start"}, 0, 1, "downloads [screen] [--start]")
+            if parsed is None:
+                return 2
+            flags, args = parsed
+            return _print_report(
+                command,
+                check_downloads(screen=args[0] if args else None, start="--start" in flags),
+                verbose,
+            )
+        elif command == "practice":
+            usage = "practice <sentence> <expected_final> [--finish] [--debug-insert]"
+            parsed = _parse_cli_args(rest, {"--finish", "--debug-insert"}, 2, 2, usage)
+            if parsed is None:
+                return 2
+            flags, args = parsed
+            return _print_report(
+                command,
+                check_practice(
+                    args[0],
+                    expected_final=args[1],
+                    finish="--finish" in flags,
+                    use_debug_insert="--debug-insert" in flags,
+                ),
+                verbose,
+            )
+        elif command == "clipboard":
+            usage = "clipboard <sentence> <expected_final> [--auto-copy] [--no-restore-clipboard] [--debug-insert]"
+            parsed = _parse_cli_args(
+                rest,
+                {"--auto-copy", "--no-restore-clipboard", "--debug-insert"},
+                2,
+                2,
+                usage,
+            )
+            if parsed is None:
+                return 2
+            flags, args = parsed
+            return _print_report(
+                command,
+                check_clipboard(
+                    args[0],
+                    expected_final=args[1],
+                    auto_copy="--auto-copy" in flags,
+                    restore_clipboard="--no-restore-clipboard" not in flags,
+                    use_debug_insert="--debug-insert" in flags,
+                ),
+                verbose,
+            )
         elif command == "launch":
             print(launch_emulator(restart="--restart" in rest))
         elif command == "lock":

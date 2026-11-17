@@ -54,6 +54,7 @@ class PasteAccessibilityService : AccessibilityService() {
         private var instance: PasteAccessibilityService? = null
 
         private val boundState = MutableStateFlow(false)
+        private val observedFieldState = MutableStateFlow<FieldTraits?>(null)
 
         // onServiceConnected can fire more than once for one process. Report the previous stop only
         // on the first, so a reconnect cannot invent an unclean stop that did not happen.
@@ -66,6 +67,9 @@ class PasteAccessibilityService : AccessibilityService() {
          * setting string cannot answer this: it still names a service that has crashed.
          */
         internal val isBound: StateFlow<Boolean> = boundState.asStateFlow()
+
+        /** Content-free traits of the editor most recently remembered or discovered by the service. */
+        internal val observedField: StateFlow<FieldTraits?> = observedFieldState.asStateFlow()
 
         // Process lifetime on purpose: the marker read belongs to no Activity or Service, and it is one
         // short read that ends by itself.
@@ -104,6 +108,7 @@ class PasteAccessibilityService : AccessibilityService() {
             val lock = if (service == null) STOP_MARKER_LOCK else Any()
             synchronized(lock) {
                 if (service == null) lifecycle.withdrawing() else lifecycle.connected()
+                if (service == null) observedFieldState.value = null
                 instance = service
                 boundState.value = service != null
             }
@@ -189,7 +194,9 @@ class PasteAccessibilityService : AccessibilityService() {
     )
     /** The stop-marker read and the bubble's dock loads and saves; cancelled after the insertion's teardown. */
     private val historyScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val tracker = EditorTargetTracker(this)
+    private val tracker = EditorTargetTracker(this) { traits ->
+        if (instance === this) observedFieldState.value = traits
+    }
     private val runner = AccessibilityInsertionRunner(
         this,
         mainHandler,

@@ -28,7 +28,6 @@ internal enum class InsertionResultKind(val stored: String) {
     COPY_ONLY(InsertionResults.COPY_ONLY),
     COPY_ONLY_INTERRUPTED(InsertionResults.COPY_ONLY_INTERRUPTED),
     COPY_ONLY_SERVICE_DESTROYED(InsertionResults.COPY_ONLY_SERVICE_DESTROYED),
-    COPY_ONLY_SENSITIVE(InsertionResults.COPY_ONLY_SENSITIVE),
     COPY_ONLY_UNVERIFIED(InsertionResults.COPY_ONLY_UNVERIFIED),
     UNVERIFIED_NOT_COPIED(InsertionResults.UNVERIFIED_NOT_COPIED),
     HISTORY_ONLY(InsertionResults.HISTORY_ONLY),
@@ -65,7 +64,7 @@ internal enum class InsertionRouteKind(val wire: String) {
             // No route was recorded for a delivery-unknown row (#235), so none is claimed.
             InsertionResultKind.HISTORY_ONLY, InsertionResultKind.DELIVERY_UNKNOWN -> NONE
             InsertionResultKind.CLIPBOARD, InsertionResultKind.COPY_ONLY, InsertionResultKind.COPY_ONLY_INTERRUPTED,
-            InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED, InsertionResultKind.COPY_ONLY_SENSITIVE,
+            InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED,
             InsertionResultKind.COPY_ONLY_UNVERIFIED, InsertionResultKind.UNVERIFIED_NOT_COPIED,
             InsertionResultKind.INSERTION_FAILED, InsertionResultKind.INSERTION_INTERRUPTED, InsertionResultKind.UNKNOWN,
             -> FALLBACK
@@ -112,7 +111,7 @@ internal object TelemetryChannels {
     fun of(kind: InsertionResultKind): Channel = when (kind) {
         InsertionResultKind.CLIPBOARD, InsertionResultKind.PASTED, InsertionResultKind.COMMITTED,
         InsertionResultKind.COPY_ONLY, InsertionResultKind.COPY_ONLY_INTERRUPTED,
-        InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED, InsertionResultKind.COPY_ONLY_SENSITIVE,
+        InsertionResultKind.COPY_ONLY_SERVICE_DESTROYED,
         InsertionResultKind.COPY_ONLY_UNVERIFIED, InsertionResultKind.UNVERIFIED_NOT_COPIED,
         InsertionResultKind.HISTORY_ONLY, InsertionResultKind.INSERTION_FAILED,
         InsertionResultKind.INSERTION_INTERRUPTED, InsertionResultKind.DELIVERY_UNKNOWN, InsertionResultKind.UNKNOWN,

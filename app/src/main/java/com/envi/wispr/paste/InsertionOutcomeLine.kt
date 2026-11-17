@@ -12,7 +12,6 @@ internal object InsertionOutcomeLine {
         UNVERIFIED,
         REJECTED,
         NEVER_RETURNED,
-        SENSITIVE,
         STAGING_FAILED,
         INTERRUPTED,
         DESTROYED,

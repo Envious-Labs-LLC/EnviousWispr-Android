@@ -2856,45 +2856,146 @@ def _require_emulator(what):
     return target
 
 
-def unlock_emulator():
-    """Open the EMULATOR's lock screen with the PIN this project set on it, once, and read back.
+def _emulator_has_credential():
+    """Whether the emulator has a lock credential set (locksettings verify succeeds bare only without one)."""
+    code, out = _adb("locksettings verify", check=False)
+    return not (code == 0 and "Lock credential verified successfully" in out)
 
-    The physical phone is never unlocked by this file (`ready()` says why). The emulator's PIN is ours
-    (`EMULATOR_PIN`), so the same sequence a person uses is sent: wake, swipe up, the PIN, enter. ONE
-    attempt: a second guess at a PIN is how a lockout starts, even on a device we own, and a PIN that
-    did not work is a fact to report rather than retry. The device is asked what it is again right
-    before the first keystroke, because that is the moment a wrong answer would cost something.
-    """
-    target = _require_emulator("unlocking")
+
+def _bouncer_field_up(nodes=None):
+    """Whether the emulator's password/PIN field or PIN pad is up."""
+    if nodes is None:
+        _STATE["tree"] = None
+        nodes = tree()
+    ids = {n["id"] for n in nodes}
+    if ids & {"passwordEntry", "pinEntry", "pin_container", "keyguard_pin_view"}:
+        return True
+    return {f"key{d}" for d in range(10)}.issubset(ids)
+
+
+def _raise_bouncer_unlocked():
+    """Raise the lockscreen password/PIN bouncer after wake, without resetting _STATE identity checks."""
+    if _bouncer_field_up():
+        return "bouncer up"
+    _adb("wm dismiss-keyguard", check=False)
+    for _ in range(3):
+        time.sleep(1.0)
+        if _bouncer_field_up():
+            return "bouncer up"
+    width, height = _screen_size()
+    _adb(f"input swipe {width // 2} {int(height * 0.8)} {width // 2} {int(height * 0.3)} 300")
+    time.sleep(1.2)
+    if not _bouncer_field_up():
+        raise Blocked("the emulator's password field never came up, so no PIN was typed. "
+                      "Something is covering the lock screen; look() shows what.")
+    return "bouncer up"
+
+
+def wake_and_raise_bouncer():
+    """Wake the emulator and bring the lockscreen password/PIN bouncer into view without entering a PIN."""
+    _require_emulator("raising the lockscreen bouncer")
+    _adb("input keyevent KEYCODE_WAKEUP")
+    time.sleep(1)
     if not _keyguard_showing():
         return "already open"
+    if not _emulator_has_credential():
+        raise Blocked("NO CREDENTIAL: emulator lock screen has no password or PIN, so no bouncer exists")
+    return _raise_bouncer_unlocked()
+
+
+def lock_emulator(pin=EMULATOR_PIN):
+    """Lock the EMULATOR with a PIN and sleep its screen, journaled so restore() clears it and puts lock disabled state back."""
+    _require_emulator("locking")
+    if not isinstance(pin, str) or not pin or not pin.isdigit():
+        raise Blocked(f"emulator lock PIN must be non-empty digits, got {pin!r}")
+    with _journal_locked():
+        _, disabled_out = _adb("locksettings get-disabled")
+        disabled_raw = disabled_out.strip().lower()
+        if disabled_raw not in ("true", "false"):
+            raise Blocked(f"unexpected locksettings get-disabled answer: {disabled_out!r}")
+        was_disabled = disabled_raw == "true"
+        verify_code, verify_out = _adb("locksettings verify", check=False)
+        has_existing = not (verify_code == 0 and "Lock credential verified successfully" in verify_out)
+        if has_existing:
+            old_code, old_out = _adb(f"locksettings verify --old {shlex.quote(pin)}", check=False)
+            if not (old_code == 0 and "Lock credential verified successfully" in old_out):
+                raise Blocked("the emulator already has another lock credential set; refusing to overwrite it")
+            if not any(what == "emulator-lock" for what, _ in _owed()):
+                raise Blocked("the emulator already has a PIN set outside this harness; refusing to take ownership")
+        else:
+            entry = ("emulator-lock", json.dumps({"pin": pin, "was_disabled": was_disabled}, sort_keys=True))
+            _owe_locked(entry, device())
+            if entry not in _owed():
+                raise Blocked("the lock-screen change could not be written to the restore book, so it was not made")
+        if was_disabled:
+            _adb("locksettings set-disabled false")
+        if not has_existing:
+            _adb(f"locksettings set-pin {shlex.quote(pin)}")
+    _, power = _adb("dumpsys power | grep -m1 mWakefulness")
+    if "Awake" in power:
+        _adb("input keyevent KEYCODE_POWER")
+    for _ in range(10):
+        time.sleep(0.5)
+        _STATE["tree"] = None
+        if _keyguard_showing():
+            return f"emulator locked with PIN (previous lock disabled={was_disabled})"
+    raise Blocked("sent power key after setting PIN, but the emulator keyguard did not appear")
+
+
+def _unlock_pin():
+    """PIN recorded in this emulator's lock debt when present, else EMULATOR_PIN."""
+    with _journal_locked():
+        for what, previous in _owed():
+            if what == "emulator-lock":
+                try:
+                    pin = json.loads(previous).get("pin")
+                except (ValueError, AttributeError):
+                    pin = None
+                if isinstance(pin, str) and pin and pin.isdigit():
+                    return pin
+    return EMULATOR_PIN
+
+
+def unlock_emulator():
+    """Open the EMULATOR's lock screen with the journaled PIN or EMULATOR_PIN, once, and read back.
+
+    The physical phone is never unlocked by this file (`ready()` says why). The emulator's PIN is ours
+    (journaled when locked here, else `EMULATOR_PIN`), so the same sequence a person uses is sent: wake,
+    swipe up, the PIN, enter. ONE attempt: a second guess at a PIN is how a lockout starts, even on a
+    device we own, and a PIN that did not work is a fact to report rather than retry. The device is
+    asked what it is again right before the first keystroke, because that is the moment a wrong answer
+    would cost something.
+    """
+    target = _require_emulator("unlocking")
+    has_credential = _emulator_has_credential()
+    if not _keyguard_showing():
+        return "NO CREDENTIAL: emulator is already open and has no password/PIN" if not has_credential else "already open"
     if not is_emulator(target):
         raise Blocked(f"{target} stopped answering as an emulator between two probes; no key was sent")
     _adb("input keyevent KEYCODE_WAKEUP")
     time.sleep(1)
-    # RAISE THE PASSWORD FIELD THROUGH THE WINDOW MANAGER, READ IT BACK, and only then type. A blind
-    # swipe-then-type typed the PIN into nothing in two of five benchmark runs (2026-09-20): a
+    if not has_credential:
+        _adb("wm dismiss-keyguard", check=False)
+        for _ in range(4):
+            time.sleep(0.5)
+            if not _keyguard_showing():
+                _STATE["tree"] = None
+                return "NO CREDENTIAL: dismissed lock screen without password/PIN"
+        width, height = _screen_size()
+        _adb(f"input swipe {width // 2} {int(height * 0.8)} {width // 2} {int(height * 0.3)} 300")
+        time.sleep(1.0)
+        if not _keyguard_showing():
+            _STATE["tree"] = None
+            return "NO CREDENTIAL: swiped open lock screen without password/PIN"
+        raise Blocked("NO CREDENTIAL: emulator has no password/PIN and keyguard stayed locked")
+    # RAISE THE PASSWORD OR PIN FIELD THROUGH THE WINDOW MANAGER, READ IT BACK, and only then type.
+    # A blind swipe-then-type typed the PIN into nothing in two of five benchmark runs (2026-09-20): a
     # notification on the lock screen took the swipe. `wm dismiss-keyguard` asks the keyguard itself,
     # which on a secure lock shows the bouncer (measured: field up on the first read, twice); one swipe
     # is the fallback. The PIN is typed once, after the field is seen.
-    def field_up():
-        _STATE["tree"] = None
-        return any(n["id"] == "passwordEntry" for n in tree())
-
-    if not field_up():
-        _adb("wm dismiss-keyguard", check=False)
-        for _ in range(3):
-            time.sleep(1.0)
-            if field_up():
-                break
-        else:
-            width, height = _screen_size()
-            _adb(f"input swipe {width // 2} {int(height * 0.8)} {width // 2} {int(height * 0.3)} 300")
-            time.sleep(1.2)
-            if not field_up():
-                raise Blocked("the emulator's password field never came up, so no PIN was typed. "
-                              "Something is covering the lock screen; look() shows what.")
-    _adb(f"input text {shlex.quote(EMULATOR_PIN)}")
+    pin = _unlock_pin()
+    _raise_bouncer_unlocked()
+    _adb(f"input text {shlex.quote(pin)}")
     _adb("input keyevent KEYCODE_ENTER")
     # THE KEYGUARD TAKES A FEW SECONDS TO GO, and a single read at two seconds called a successful unlock
     # a failure (benchmark run 4, 2026-09-20: "stayed locked", and the very next read said open). Poll.
@@ -2904,7 +3005,7 @@ def unlock_emulator():
             _STATE["tree"] = None
             return "unlocked"
     raise Blocked("the emulator stayed locked six seconds after one PIN attempt; the AVD's PIN may not "
-                  f"be {EMULATOR_PIN!r} any more. Not retrying.")
+                  f"be {pin!r} any more. Not retrying.")
 
 
 def _grpc(method, payload=None, stdin_path=None, timeout=120):
@@ -3456,7 +3557,14 @@ def _excerpt(text, keep=80):
 def open_app(package):
     """Bring an app to the front by its package, the way the launcher would, and assert it arrived."""
     ready()
-    _adb(f"monkey -p {shlex.quote(package)} -c android.intent.category.LAUNCHER 1")
+    _, resolved = _adb(f"cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {shlex.quote(package)}")
+    component = next(
+        (line.strip() for line in reversed(resolved.splitlines()) if re.match(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$", line.strip())),
+        "",
+    )
+    if not component:
+        raise Blocked(f"{package} has no LAUNCHER activity ({resolved.strip() or 'no output'})")
+    _adb(f"am start -n {shlex.quote(component)}")
     for _ in range(8):
         time.sleep(0.5)
         _STATE["tree"] = None
@@ -4732,6 +4840,31 @@ def _restore_one_here(entry):
         _, now = _adb("settings get system screen_off_timeout")
         if now.strip() != str(int(previous)):
             raise Blocked(f"the screen timeout did not go back to {previous}; it reads {now.strip()}")
+    elif what == "emulator-lock":
+        _require_emulator("restoring the lock screen")
+        info = json.loads(previous)
+        pin = info["pin"]
+        was_disabled = bool(info["was_disabled"])
+        if _emulator_has_credential():
+            clear_code, clear_out = _adb(f"locksettings clear --old {shlex.quote(pin)}", check=False)
+            if _emulator_has_credential():
+                raise Blocked(f"could not clear emulator PIN (status {clear_code}): {clear_out.strip() or 'credential still active'}")
+        expected = "true" if was_disabled else "false"
+        _adb(f"locksettings set-disabled {expected}")
+        _, now_disabled = _adb("locksettings get-disabled")
+        if now_disabled.strip().lower() != expected:
+            raise Blocked(f"locksettings get-disabled stayed {now_disabled.strip()!r}, expected {expected!r}")
+        if was_disabled and _keyguard_showing():
+            _adb("input keyevent KEYCODE_WAKEUP")
+            time.sleep(0.5)
+            _adb("wm dismiss-keyguard", check=False)
+            for _ in range(8):
+                time.sleep(0.5)
+                if not _keyguard_showing():
+                    _STATE["tree"] = None
+                    break
+            else:
+                raise Blocked("cleared emulator PIN and disabled lock, but the keyguard stayed showing")
     else:
         raise Blocked(f"there is no verified way to put {what!r} back, so it must not have been journaled")
 
@@ -5220,8 +5353,8 @@ def _main(argv):
     argv = [a for a in argv if a != "--verbose"]
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
-        print("commands: devices look tree find tap tab nav scan switches recorder "
-              "quiet logs take shot restore | emulator: launch unlock mic on|off inject <pcm> "
+        print("commands: devices look tree find tap tab nav open-app scan switches recorder "
+              "quiet logs take shot restore | emulator: launch lock [pin] bouncer unlock mic on|off inject <pcm> "
               "dictate-emu <sentence> <expected_final> | insert <text> <expected_final>")
         return 0
     command, rest = argv[0], argv[1:]
@@ -5241,6 +5374,11 @@ def _main(argv):
             print(nav(rest[0]))
         elif command == "tab":
             print(open_tab(rest[0]))
+        elif command == "open-app":
+            if not rest:
+                print("usage: open-app <package>", file=sys.stderr)
+                return 2
+            print(open_app(rest[0]))
         elif command == "scan":
             report = scan(toggle="--toggle" in rest)
             print("\n".join(report))
@@ -5279,6 +5417,10 @@ def _main(argv):
             print("\n".join(lines) if verbose or len(lines) > 3 else "; ".join(lines))
         elif command == "launch":
             print(launch_emulator(restart="--restart" in rest))
+        elif command == "lock":
+            print(lock_emulator(rest[0] if rest else EMULATOR_PIN))
+        elif command == "bouncer":
+            print(wake_and_raise_bouncer())
         elif command == "unlock":
             print(unlock_emulator())
         elif command == "mic":

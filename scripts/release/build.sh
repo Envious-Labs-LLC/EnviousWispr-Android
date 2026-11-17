@@ -12,7 +12,7 @@ source "$(dirname "$0")/../ci/setup-android-deps.sh"
 # empty ships silent: refuse, so a missing variable is a red build and never a quiet blind fleet.
 : "${TELEMETRY_POSTHOG_KEY:?TELEMETRY_POSTHOG_KEY repository variable required for a Play build}"
 : "${TELEMETRY_SENTRY_DSN:?TELEMETRY_SENTRY_DSN repository variable required for a Play build}"
-./gradlew :app:testReleaseUnitTest :app:bundleRelease --rerun-tasks --console=plain --max-workers=2 \
+./gradlew :app:testReleaseUnitTest :app:lintVitalRelease :app:bundleRelease --rerun-tasks --console=plain --max-workers=2 \
   -PplayVersionCode="$PLAY_VERSION_CODE" \
   -PtelemetryPostHogKey="$TELEMETRY_POSTHOG_KEY" \
   -PtelemetrySentryDsn="$TELEMETRY_SENTRY_DSN"

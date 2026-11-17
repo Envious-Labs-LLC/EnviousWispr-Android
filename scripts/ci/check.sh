@@ -17,6 +17,8 @@ set -euo pipefail
 # change; --rerun-tasks forces the test and assemble tasks to execute.
 rm -rf app/build/test-results/testDebugUnitTest
 ./gradlew :app:testDebugUnitTest :app:assembleDebug --rerun-tasks --console=plain --max-workers=2
+./gradlew :app:lintDebug -PlintNewApiOnly=true --console=plain --max-workers=2
+python3 scripts/uat/test_wispr_eyes.py
 
 python3 - <<'PY'
 import glob, sys, xml.etree.ElementTree as ET

@@ -2827,6 +2827,7 @@ Group main:
     test_enable_auto_paste_cycles_only_ours()
     test_agent()
     test_issue_525_emulator_gaps()
+    test_issue_440_uat_reliability()
 
     # ---- #384: a duplicate wireless connection has a space inside its serial --------------------------
     devices_original_run = eyes._run
@@ -3096,6 +3097,720 @@ def test_issue_525_emulator_gaps():
             eyes.devices = saved["devices"]
             eyes._screen_size = saved["_screen_size"]
             eyes.time.sleep = saved["sleep"]
+
+
+def test_issue_440_uat_reliability():
+    """#440: expired reader reconnect, cross-app restore & judge order, tool/cleanup separation, and reusable flows."""
+    import io
+    import json
+    import subprocess
+    import tempfile
+    import types
+
+    with tempfile.TemporaryDirectory() as tmp:
+        saved_state = {
+            "serial": eyes._STATE.get("serial"),
+            "tree": eyes._STATE.get("tree"),
+            "eye": eyes._STATE.get("eye"),
+            "agent": eyes._STATE.get("agent"),
+            "agent_off": eyes._STATE.get("agent_off"),
+            "restored_for": eyes._STATE.get("restored_for"),
+            "screen_size": eyes._STATE.get("screen_size"),
+        }
+        attr_names = (
+            "_adb", "_run", "_JOURNAL", "_agent", "_agent_call", "_drop_agent_link",
+            "_remove_agent_forward", "bound", "devices", "ready", "rebind_auto_paste_if_unbound",
+            "clear_log", "logs", "stop_dictation", "inject_audio", "last_take",
+            "open_recorder", "_rest_host_mic_off", "_wait_for_owner_listening",
+            "_wait_for_the_take_to_finish", "_pcm_from_sentence", "_screen_size",
+            "dictate_emulator", "debug_insert", "restore", "time", "subprocess",
+        )
+        saved_attrs = {name: getattr(eyes, name) for name in attr_names}
+        saved_agent_env = os.environ.get("WISPR_AGENT")
+        real_time = saved_attrs["time"]
+
+        try:
+            os.environ.pop("WISPR_AGENT", None)
+            eyes.time = types.SimpleNamespace(
+                sleep=lambda _: None,
+                monotonic=real_time.monotonic,
+                time=real_time.time,
+            )
+
+            # ---- 1. Expired agent reader EOF raises OSError/ConnectionResetError, allowing read retry & reconnect ----
+            class _MockSocket:
+                def __init__(self, raw_reply):
+                    self.file = io.BytesIO(raw_reply)
+                    self.sock = types.SimpleNamespace(sendall=lambda _data: None, close=lambda: None)
+                    self.closed = False
+
+                def call(self, line):
+                    return eyes._AgentLink.call(self, line)
+
+                def close(self):
+                    self.closed = True
+
+            eof_caught = False
+            try:
+                _MockSocket(b"").call("dump")
+            except ConnectionResetError as err:
+                eof_caught = "closed its connection" in str(err)
+            except eyes.Blocked:
+                eof_caught = False
+            check("_AgentLink.call raises ConnectionResetError on EOF instead of Blocked", eof_caught)
+
+            short_caught = False
+            try:
+                _MockSocket(b"OK 10\nabc").call("dump")
+            except ConnectionResetError:
+                short_caught = True
+            except eyes.Blocked:
+                short_caught = False
+            check("_AgentLink.call raises ConnectionResetError on short body instead of Blocked", short_caught)
+
+            links = [_MockSocket(b""), _MockSocket(b"OK 12\n<hierarchy/>")]
+            eyes._STATE["agent"] = None
+            eyes._STATE["agent_off"] = None
+            eyes._agent = lambda: links.pop(0)
+            eyes._drop_agent_link = lambda: eyes._STATE.update({"agent": None})
+            xml = eyes._agent_call("dump")
+            check("_agent_call retries READ after expired reader EOF and succeeds on fresh link",
+                  xml == "<hierarchy/>" and len(links) == 0, (xml, len(links)))
+
+            action_links = [_MockSocket(b"")]
+            eyes._agent = lambda: action_links.pop(0)
+            action_refused = False
+            try:
+                eyes._agent_call("tap 10 20")
+            except eyes.Blocked as err:
+                action_refused = "while 'tap' was in flight" in str(err) and len(action_links) == 0
+            check("_agent_call STILL refuses to retry ACTION on EOF without resending", action_refused)
+
+            ping_links = [_MockSocket(b"OK 4\npong")]
+            eyes._STATE["agent"] = None
+            eyes._STATE["agent_off"] = "the agent's link dropped twice"
+            eyes._agent = lambda: ping_links.pop(0)
+            rec = eyes.reconnect_reader()
+            check("reconnect_reader clears stale transient agent_off and pings fresh agent",
+                  rec == "reader reconnected" and eyes._STATE["agent_off"] is None,
+                  (rec, eyes._STATE["agent_off"]))
+
+            os.environ["WISPR_AGENT"] = "off"
+            eyes._STATE["agent_off"] = "WISPR_AGENT=off"
+            eyes._agent = lambda: None
+            rec_off = eyes.reconnect_reader()
+            check("reconnect_reader preserves explicit WISPR_AGENT=off",
+                  "WISPR_AGENT=off" in rec_off and eyes._STATE["agent_off"] == "WISPR_AGENT=off",
+                  rec_off)
+            os.environ.pop("WISPR_AGENT", None)
+
+            # ---- 2. Cross-app on_screen() & restore(), drawer reveal(), and judge-before-restore order ----
+            eyes._JOURNAL = Path(tmp) / "restore.json"
+            eyes._STATE["serial"] = "emulator-5554"
+            eyes._STATE["agent_off"] = "WISPR_AGENT=off"
+            eyes._agent = lambda: None
+            eyes._agent_call = lambda _line: None
+            eyes._screen_size = lambda: (1080, 2400)
+            eyes.devices = lambda: [("emulator-5554", "sdk_gphone64_arm64")]
+            eyes.ready = lambda: "ready"
+            eyes.bound = lambda: True
+            eyes.rebind_auto_paste_if_unbound = lambda: "already bound"
+
+            ui = {
+                "screen": "other",
+                "tabs": "History",
+                "tab_selected": "Transcription",
+                "bubble_on": True,
+                "drawer_open": False,
+                "drawer_scrolled": False,
+                "events": [],
+                "editor_text": "hello",
+            }
+
+            def render_tree():
+                if ui["screen"] == "other":
+                    return (
+                        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[0,200][1080,500]" package="com.google.android.apps.messaging" '
+                        f'class="android.widget.EditText" checkable="false" clickable="true" '
+                        f'enabled="true" focused="true" text="{ui["editor_text"]}" />'
+                        "</hierarchy>"
+                    )
+                if ui["drawer_open"]:
+                    item = "Open Source Licenses" if ui["drawer_scrolled"] else "What's New"
+                    return (
+                        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[0,300][700,1900]" package="{eyes.PACKAGE}" '
+                        'class="androidx.recyclerview.widget.RecyclerView" scrollable="true" clickable="false" enabled="true" text="">'
+                        f'<node bounds="[40,420][660,520]" package="{eyes.PACKAGE}" '
+                        f'class="android.widget.TextView" checkable="false" clickable="true" enabled="true" text="{item}" />'
+                        "</node></hierarchy>"
+                    )
+                tab_bar = "".join(
+                    f'<node bounds="[{i*250},2100][{i*250+220},2250]" package="{eyes.PACKAGE}" '
+                    f'class="android.view.View" checkable="false" '
+                    f'clickable="{"false" if tab == ui["tab_selected"] else "true"}" '
+                    f'selected="{"true" if tab == ui["tab_selected"] else "false"}" '
+                    f'enabled="true" text="{tab}" />'
+                    for i, tab in enumerate(eyes.TABS)
+                )
+                controls = ""
+                if ui["tab_selected"] == "Transcription":
+                    controls = (
+                        f'<node bounds="[40,600][1040,760]" package="{eyes.PACKAGE}" '
+                        f'class="android.view.View" checkable="true" '
+                        f'checked="{"true" if ui["bubble_on"] else "false"}" clickable="true" enabled="true" text="">'
+                        f'<node bounds="[80,640][500,710]" package="{eyes.PACKAGE}" '
+                        f'class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="Show bubble" />'
+                        "</node>"
+                    )
+                return (
+                    "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                    f'<node bounds="[40,120][140,220]" package="{eyes.PACKAGE}" '
+                    'class="android.widget.ImageButton" clickable="true" enabled="true" content-desc="Open settings menu" text="" />'
+                    f"{controls}{tab_bar}</hierarchy>"
+                )
+
+            def fake_adb_nav(command, timeout=60, check=True):
+                if command.startswith("am start -n "):
+                    comp = command.split("-n ", 1)[1].split(" ", 1)[0]
+                    if eyes.PACKAGE in comp:
+                        ui["screen"] = "ours"
+                        ui["events"].append("open_settings")
+                    return 0, f"Starting: Intent {{ cmp={comp} }}\n"
+                if command.startswith("cat "):
+                    return 0, render_tree()
+                if command.startswith("input tap "):
+                    parts = command.split()
+                    tx, ty = int(parts[2]), int(parts[3])
+                    if ui["screen"] == "ours" and not ui["drawer_open"] and ty >= 2100:
+                        for i, tab in enumerate(eyes.TABS):
+                            if i * 250 <= tx <= i * 250 + 220:
+                                ui["tab_selected"] = tab
+                                ui["events"].append(f"tab:{tab}")
+                                break
+                    elif ui["screen"] == "ours" and not ui["drawer_open"] and ty <= 240:
+                        ui["drawer_open"] = True
+                        ui["events"].append("drawer_open")
+                    elif ui["screen"] == "ours" and not ui["drawer_open"] and 600 <= ty <= 760 and ui["tab_selected"] == "Transcription":
+                        ui["bubble_on"] = not ui["bubble_on"]
+                        ui["events"].append(f"bubble:{ui['bubble_on']}")
+                    elif ui["drawer_open"]:
+                        ui["events"].append("drawer_tap")
+                    return 0, ""
+                if command.startswith("input swipe "):
+                    parts = command.split()
+                    y1, y2 = int(parts[3]), int(parts[5])
+                    if ui["drawer_open"] and y1 > y2:
+                        ui["drawer_scrolled"] = True
+                    return 0, ""
+                if command == "settings get secure enabled_accessibility_services":
+                    return 0, eyes.ACCESSIBILITY_SERVICE
+                if command == "settings get secure accessibility_enabled":
+                    return 0, "1"
+                return 0, ""
+
+            eyes._adb = fake_adb_nav
+            check("on_screen(tab) returns False without Blocked when another app holds foreground",
+                  eyes.on_screen("Transcription") is False)
+            eyes._owe(("switch", json.dumps({"where": "Transcription", "label": "Show bubble", "was": False}, sort_keys=True)))
+            done_restore = eyes.restore()
+            check("cross-app restore() navigates back from third-party app and restores switch debt",
+                  ui["screen"] == "ours" and ui["tab_selected"] == "Transcription"
+                  and ui["bubble_on"] is False and eyes._owed() == [],
+                  (done_restore, ui, eyes._owed()))
+
+            ui["drawer_open"] = False
+            ui["drawer_scrolled"] = False
+            ui["events"].clear()
+            eyes._reach("Open Source Licenses")
+            check("_reach scrolls drawer via reveal() when drawer item starts below the fold",
+                  ui["drawer_scrolled"] and "drawer_tap" in ui["events"], ui)
+
+            # Verify dictate_emulator judges target editor BEFORE cross-app restore switches back into Settings.
+            ui["screen"] = "other"
+            ui["drawer_open"] = False
+            ui["tab_selected"] = "History"
+            ui["bubble_on"] = True
+            ui["editor_text"] = ""
+            ui["events"].clear()
+            eyes._owe(("switch", json.dumps({"where": "Transcription", "label": "Show bubble", "was": False}, sort_keys=True)))
+            eyes._STATE["agent_off"] = "WISPR_AGENT=off"
+            eyes.clear_log = lambda: None
+            eyes._rest_host_mic_off = lambda: "mic off"
+            eyes._wait_for_owner_listening = lambda: "live"
+            eyes._pcm_from_sentence = lambda _s, p: p
+            eyes.inject_audio = lambda _p: (ui.update({"editor_text": "hello world"}), "injected")[1]
+            eyes.stop_dictation = lambda: None
+            eyes._wait_for_the_take_to_finish = lambda seconds=40: "Auto-insert"
+            eyes.last_take = lambda: {
+                "unknown": None,
+                "ended_by": "STOP",
+                "transcribed_chars": 11,
+                "insertions": 1,
+                "insertion": {
+                    "api": "COMMIT",
+                    "route": "COMMIT",
+                    "written": "true",
+                    "evidence": "TEXT_CHANGED",
+                    "outcome": "VERIFIED",
+                    "attempts": "1",
+                    "target": "com.google.android.apps.messaging",
+                },
+            }
+            from contextlib import contextmanager
+            @contextmanager
+            def _fake_recorder(verify=False):
+                yield {"where": (0, 0), "size": (10, 10)}
+            eyes.open_recorder = _fake_recorder
+            real_cat_wrap = eyes._adb
+            def _adb_recording_read_order(command, timeout=60, check=True):
+                if command.startswith("cat ") and ui["screen"] == "other":
+                    ui["events"].append("read_target_editor")
+                return real_cat_wrap(command, timeout=timeout, check=check)
+            eyes._adb = _adb_recording_read_order
+            os.environ["WISPR_AGENT"] = "off"
+            dict_report = eyes.dictate_emulator(
+                "hello world",
+                target_package="com.google.android.apps.messaging",
+                expected_final="hello world",
+                restore_before=False,
+            )
+            os.environ.pop("WISPR_AGENT", None)
+            read_idx = ui["events"].index("read_target_editor") if "read_target_editor" in ui["events"] else -1
+            nav_idx = ui["events"].index("open_settings") if "open_settings" in ui["events"] else -1
+            check("dictate_emulator judges target editor BEFORE cross-app restore navigates back to EnviousWispr",
+                  any(l.startswith("VERIFIED: the editor's whole text now equals") for l in dict_report)
+                  and 0 <= read_idx < nav_idx and eyes._owed() == [],
+                  (dict_report, ui["events"], eyes._owed()))
+
+            # ---- 3. Separate TOOL_ERROR / CLEANUP_ERROR and prevent false-pass exit 0 ----
+            ui["screen"] = "other"
+            eyes._owe(("switch", json.dumps({"where": "Transcription", "label": "Show bubble", "was": False}, sort_keys=True)))
+            eyes.restore = lambda keep_frozen_threads=False: (_ for _ in ()).throw(eyes.Blocked("stuck switch"))
+            cleanup_err_report = eyes.dictate_emulator(
+                "hello world",
+                target_package="com.google.android.apps.messaging",
+                expected_final="hello world",
+                restore_before=False,
+            )
+            check("CLEANUP_ERROR preserves app VERIFIED verdict and causes red exit status 1",
+                  any(l.startswith("VERIFIED: the editor's whole text now equals") for l in cleanup_err_report)
+                  and any(l.startswith("CLEANUP_ERROR:") for l in cleanup_err_report)
+                  and eyes._print_report("dictate-emu", cleanup_err_report, verbose=False) == 1,
+                  cleanup_err_report)
+
+            eyes.restore = lambda keep_frozen_threads=False: ["mic back"]
+            eyes.inject_audio = lambda _p: (_ for _ in ()).throw(eyes.Blocked("grpc down"))
+            tool_err_report = eyes.dictate_emulator(
+                "hello world",
+                target_package="com.google.android.apps.messaging",
+                expected_final="hello world",
+                restore_before=False,
+            )
+            check("TOOL_ERROR marks partial run red and still runs cleanup in finally",
+                  any(l.startswith("TOOL_ERROR: grpc down") for l in tool_err_report)
+                  and any(l == "NOTE: restored mic back" for l in tool_err_report)
+                  and eyes._print_report("dictate-emu", tool_err_report, verbose=False) == 1,
+                  tool_err_report)
+
+            # run_device_test missing INSTRUMENTATION_CODE or non-zero exit downgrades partial VERIFIED
+            class _FakeProc:
+                def __init__(self, stdout_lines, returncode=0):
+                    self.stdout = io.StringIO("\n".join(stdout_lines) + "\n")
+                    self.returncode = returncode
+                def wait(self, timeout=30):
+                    return self.returncode
+                def kill(self):
+                    pass
+
+            eyes.device = lambda: "emulator-5554"
+            eyes._adb = lambda command, timeout=60, check=True: (
+                (0, "package:/data/app/com.envi.wispr.test.apk") if command.startswith("pm path ") else (0, "")
+            )
+            eyes._run = lambda args, timeout=60: (0, "1", "")
+            eyes.subprocess = types.SimpleNamespace(
+                Popen=lambda *a, **kw: _FakeProc([
+                    "INSTRUMENTATION_STATUS: class=com.envi.wispr.FakeTest",
+                    "INSTRUMENTATION_STATUS: test=passesBeforeCrash",
+                    "INSTRUMENTATION_STATUS_CODE: 0",
+                ], returncode=139),
+                PIPE=subprocess.PIPE,
+                STDOUT=subprocess.STDOUT,
+                TimeoutExpired=subprocess.TimeoutExpired,
+            )
+            dev_report = eyes.run_device_test("com.envi.wispr.FakeTest#passesBeforeCrash", "hello")
+            check("run_device_test downgrades prior VERIFIED when instrumentation crashes without final code",
+                  not any(l.startswith("VERIFIED:") for l in dev_report)
+                  and any(l.startswith("UNKNOWN (not a pass):") for l in dev_report)
+                  and any("without a final INSTRUMENTATION_CODE" in l for l in dev_report)
+                  and eyes._print_report("devtest", dev_report, verbose=False) == 1,
+                  dev_report)
+
+            # Final INSTRUMENTATION_CODE != -1 (e.g., 0) also downgrades prior VERIFIED lines (Codex r1 finding 1)
+            eyes.subprocess = types.SimpleNamespace(
+                Popen=lambda *a, **kw: _FakeProc([
+                    "INSTRUMENTATION_STATUS: class=com.envi.wispr.FakeTest",
+                    "INSTRUMENTATION_STATUS: test=passesBeforeAbnormalEnd",
+                    "INSTRUMENTATION_STATUS_CODE: 0",
+                    "INSTRUMENTATION_RESULT: shortMsg=Process crashed.",
+                    "INSTRUMENTATION_CODE: 0",
+                ], returncode=0),
+                PIPE=subprocess.PIPE,
+                STDOUT=subprocess.STDOUT,
+                TimeoutExpired=subprocess.TimeoutExpired,
+            )
+            dev_abnormal = eyes.run_device_test("com.envi.wispr.FakeTest#passesBeforeAbnormalEnd", "hello")
+            check("run_device_test downgrades prior VERIFIED when final INSTRUMENTATION_CODE is not -1",
+                  not any(l.startswith("VERIFIED:") for l in dev_abnormal)
+                  and any(l.startswith("UNKNOWN (not a pass):") for l in dev_abnormal)
+                  and any("ended with code 0" in l for l in dev_abnormal)
+                  and eyes._print_report("devtest", dev_abnormal, verbose=False) == 1,
+                  dev_abnormal)
+
+            # Restore helpers for reusable workflow checks
+            eyes.restore = lambda keep_frozen_threads=False: []
+            eyes.dictate_emulator = saved_attrs["dictate_emulator"]
+            eyes.debug_insert = saved_attrs["debug_insert"]
+            eyes.subprocess = saved_attrs["subprocess"]
+
+            # ---- 4a. check_downloads non-destructive state transitions ----
+            dl = {"btn": "Pause", "tapped": []}
+
+            def render_dl():
+                extra = f'<node bounds="[700,800][980,900]" package="{eyes.PACKAGE}" class="android.widget.Button" clickable="true" enabled="true" text="Remove" />'
+                btn = (
+                    f'<node bounds="[100,800][400,900]" package="{eyes.PACKAGE}" class="android.widget.Button" '
+                    f'clickable="true" enabled="true" text="{dl["btn"]}" />'
+                    if dl["btn"] else ""
+                )
+                tab_bar = "".join(
+                    f'<node bounds="[{i*250},2100][{i*250+220},2250]" package="{eyes.PACKAGE}" '
+                    f'class="android.view.View" checkable="false" clickable="{"false" if tab == "Transcription" else "true"}" '
+                    f'selected="{"true" if tab == "Transcription" else "false"}" enabled="true" text="{tab}" />'
+                    for i, tab in enumerate(eyes.TABS)
+                )
+                return (
+                    f"<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                    f'<node bounds="[40,120][140,220]" package="{eyes.PACKAGE}" '
+                    'class="android.widget.ImageButton" clickable="true" enabled="true" content-desc="Open settings menu" text="" />'
+                    f"{btn}{extra}{tab_bar}</hierarchy>"
+                )
+
+            def fake_adb_dl(command, timeout=60, check=True):
+                if command.startswith("cat "):
+                    return 0, render_dl()
+                if command.startswith("am start "):
+                    return 0, "Starting: Intent {}"
+                if command.startswith("input tap "):
+                    tx, ty = int(command.split()[2]), int(command.split()[3])
+                    dl["tapped"].append((tx, ty))
+                    if 100 <= tx <= 400 and 800 <= ty <= 900:
+                        dl["btn"] = {"Pause": "Resume", "Resume": "Pause", "Retry": "Pause"}.get(dl["btn"], dl["btn"])
+                    return 0, ""
+                return 0, ""
+
+            eyes._adb = fake_adb_dl
+            dl_pause = eyes.check_downloads(screen="Transcription", wait_s=1.0)
+            check("check_downloads exercises Pause -> Resume -> Pause without touching Remove",
+                  any("Pause transitioned active download to Resume" in l for l in dl_pause)
+                  and any("Resume transitioned paused download to Pause" in l for l in dl_pause)
+                  and not any(x >= 700 for x, _ in dl["tapped"]),
+                  (dl_pause, dl["tapped"]))
+
+            dl["btn"], dl["tapped"] = "Retry", []
+            dl_retry = eyes.check_downloads(screen="Transcription", wait_s=1.0)
+            check("check_downloads exercises Retry -> Pause transition cleanly",
+                  any("Retry transitioned failed download to Pause" in l for l in dl_retry),
+                  dl_retry)
+
+            dl["btn"], dl["tapped"] = None, []
+            dl_ready = eyes.check_downloads(screen="Transcription", wait_s=1.0)
+            check("check_downloads refuses Remove/Uninstall when model already downloaded",
+                  dl_ready[-1].startswith("NOT RUN:") and dl["tapped"] == [],
+                  (dl_ready, dl["tapped"]))
+
+            # Onboarding downloads labels ("Pause download" / "Resume download") work when screen=None
+            onb_dl = {"btn": "Pause download"}
+            def fake_adb_onb_dl(command, timeout=60, check=True):
+                if command.startswith("cat "):
+                    return 0, (
+                        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[100,800][600,920]" package="{eyes.PACKAGE}" '
+                        f'class="android.widget.Button" clickable="true" enabled="true" text="{onb_dl["btn"]}" />'
+                        "</hierarchy>"
+                    )
+                if command.startswith("input tap "):
+                    onb_dl["btn"] = "Resume download" if onb_dl["btn"] == "Pause download" else "Pause download"
+                return 0, ""
+            eyes._adb = fake_adb_onb_dl
+            onb_rep = eyes.check_downloads(wait_s=1.0)
+            check("check_downloads handles onboarding Pause download -> Resume download when on downloads step",
+                  any("Pause download transitioned active download to Resume download" in l for l in onb_rep)
+                  and any("Resume download transitioned paused download to Pause download" in l for l in onb_rep),
+                  onb_rep)
+
+            # Codex r1 finding 3: stage-2 onboarding prompt ("Speech recognition is ready. Finishing AI polish.") + Retry download
+            onb2 = {"btn": "Retry download"}
+            def fake_adb_onb2(command, timeout=60, check=True):
+                if command.startswith("cat "):
+                    return 0, (
+                        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[80,300][980,400]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="Speech recognition is ready. Finishing AI polish." />'
+                        f'<node bounds="[100,800][600,920]" package="{eyes.PACKAGE}" class="android.widget.Button" clickable="true" enabled="true" text="{onb2["btn"]}" />'
+                        "</hierarchy>"
+                    )
+                if command.startswith("input tap "):
+                    onb2["btn"] = "Pause download"
+                return 0, ""
+            eyes._adb = fake_adb_onb2
+            onb2_rep = eyes.check_downloads(wait_s=1.0)
+            check("check_downloads recognizes onboarding stage-2 message with Retry download",
+                  any("inspecting downloads on Onboarding downloads" in l for l in onb2_rep)
+                  and any("Retry download transitioned failed download to Pause download" in l for l in onb2_rep),
+                  onb2_rep)
+
+            # Codex r1 finding 2: Card 2 already "Downloaded" / "Remove" must NOT let stuck Card 1 ("Pause") pass!
+            def fake_adb_two_cards(command, timeout=60, check=True):
+                if command.startswith("cat "):
+                    return 0, (
+                        f"<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[40,120][140,220]" package="{eyes.PACKAGE}" class="android.widget.ImageButton" clickable="true" enabled="true" content-desc="Open settings menu" text="" />'
+                        f'<node bounds="[40,400][1040,760]" package="{eyes.PACKAGE}" class="android.view.View" clickable="false" enabled="true" text="">'
+                        f'<node bounds="[100,600][400,700]" package="{eyes.PACKAGE}" class="android.widget.Button" clickable="true" enabled="true" text="Pause" />'
+                        f"</node>"
+                        f'<node bounds="[40,820][1040,1180]" package="{eyes.PACKAGE}" class="android.view.View" clickable="false" enabled="true" text="">'
+                        f'<node bounds="[100,900][400,960]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="Downloaded" />'
+                        f'<node bounds="[100,1000][400,1100]" package="{eyes.PACKAGE}" class="android.widget.Button" clickable="true" enabled="true" text="Remove" />'
+                        f"</node>"
+                        + "".join(
+                            f'<node bounds="[{i*250},2100][{i*250+220},2250]" package="{eyes.PACKAGE}" '
+                            f'class="android.view.View" checkable="false" clickable="{"false" if tab == "Transcription" else "true"}" '
+                            f'selected="{"true" if tab == "Transcription" else "false"}" enabled="true" text="{tab}" />'
+                            for i, tab in enumerate(eyes.TABS)
+                        )
+                        + "</hierarchy>"
+                    )
+                if command.startswith("am start "):
+                    return 0, "Starting: Intent {}"
+                return 0, ""
+            eyes._adb = fake_adb_two_cards
+            mono_clock = {"t": 0.0}
+            def _advancing_monotonic():
+                mono_clock["t"] += 0.3
+                return mono_clock["t"]
+            eyes.time.monotonic = _advancing_monotonic
+            stuck_two_cards = eyes.check_downloads(screen="Transcription", wait_s=0.5)
+            eyes.time.monotonic = real_time.monotonic
+            check("check_downloads binds reads to clicked model card so second card's Downloaded/Remove never masks stuck Pause",
+                  any(l.startswith("ISSUE:") and "Pause did not transition" in l for l in stuck_two_cards)
+                  and not any("NOTE: download reached" in l for l in stuck_two_cards),
+                  stuck_two_cards)
+
+            # ---- 4b. check_practice verifies Nice, that worked! and respects finish=False vs finish=True ----
+            practice = {"landed": False, "finish_enabled": False, "completed": False, "taps": []}
+
+            def render_practice():
+                if practice["completed"]:
+                    return f"<?xml version='1.0'?><hierarchy rotation=\"0\"><node bounds=\"[0,200][800,300]\" package=\"{eyes.PACKAGE}\" class=\"android.widget.TextView\" clickable=\"false\" enabled=\"true\" text=\"History\" /></hierarchy>"
+                banner = "Nice, that worked!" if practice["landed"] else "Your words will appear here."
+                en = "true" if practice["finish_enabled"] else "false"
+                return (
+                    "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                    f'<node bounds="[80,400][900,500]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="{banner}" />'
+                    f'<node bounds="[70,890][910,1050]" package="{eyes.PACKAGE}" class="android.view.View" clickable="true" enabled="{en}" text="">'
+                    f'<node bounds="[80,900][900,1040]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="Finish setup" /></node>'
+                    "</hierarchy>"
+                )
+
+            def fake_adb_practice(command, timeout=60, check=True):
+                if command.startswith("cat "):
+                    return 0, render_practice()
+                if command.startswith("input tap "):
+                    tx, ty = int(command.split()[2]), int(command.split()[3])
+                    practice["taps"].append((tx, ty))
+                    if 80 <= tx <= 900 and 900 <= ty <= 1040 and practice["finish_enabled"]:
+                        practice["completed"] = True
+                    return 0, ""
+                return 0, ""
+
+            def fake_debug_insert(sentence, target_package=None, expected_final=None):
+                practice["landed"] = True
+                practice["finish_enabled"] = True
+                return ["VERIFIED: inserted into practice box"]
+
+            eyes._adb = fake_adb_practice
+            eyes.debug_insert = fake_debug_insert
+            prac_keep = eyes.check_practice("hello world", expected_final="hello world", finish=False, use_debug_insert=True, wait_s=0.5)
+            check("check_practice verifies 'Nice, that worked!' and enabled 'Finish setup' while respecting finish=False",
+                  any("displayed 'Nice, that worked!'" in l for l in prac_keep)
+                  and any("'Finish setup' became enabled" in l for l in prac_keep)
+                  and practice["completed"] is False and practice["taps"] == [],
+                  (prac_keep, practice))
+
+            practice["landed"], practice["finish_enabled"] = False, False
+            prac_done = eyes.check_practice("hello world", expected_final="hello world", finish=True, use_debug_insert=True, wait_s=0.5)
+            check("check_practice taps 'Finish setup' when finish=True and confirms completion",
+                  any("'Finish setup' completed onboarding" in l for l in prac_done) and practice["completed"] is True,
+                  (prac_done, practice))
+
+            # ---- 4c. check_clipboard configures Clipboard switches, keeps target open until read, then restores ----
+            clip_state = {
+                "fg": "ours",
+                "page": "History",
+                "drawer": False,
+                "auto_copy": False,
+                "restore_clip": True,
+                "probe": f"Clipboard: {eyes.CLIPBOARD_SENTINEL_TEXT}",
+                "field": "",
+                "observed_at_insert": None,
+                "debt": [],
+            }
+
+            def render_clip():
+                if clip_state["fg"] == "target":
+                    return (
+                        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[40,120][1040,900]" package="{eyes.TEST_PACKAGE}" '
+                        f'class="android.widget.EditText" checkable="false" clickable="true" enabled="true" focused="true" text="{clip_state["field"]}" />'
+                        f'<node bounds="[40,940][1040,1040]" package="{eyes.TEST_PACKAGE}" '
+                        f'class="android.widget.TextView" checkable="false" clickable="false" enabled="true" text="{clip_state["probe"]}" />'
+                        "</hierarchy>"
+                    )
+                if clip_state["drawer"]:
+                    return (
+                        "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                        f'<node bounds="[40,500][600,600]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="true" enabled="true" text="Clipboard" />'
+                        "</hierarchy>"
+                    )
+                return (
+                    "<?xml version='1.0'?><hierarchy rotation=\"0\">"
+                    f'<node bounds="[40,120][140,220]" package="{eyes.PACKAGE}" class="android.widget.ImageButton" clickable="true" enabled="true" content-desc="Open settings menu" text="" />'
+                    f'<node bounds="[160,120][260,220]" package="{eyes.PACKAGE}" class="android.widget.ImageButton" clickable="true" enabled="true" content-desc="Back" text="" />'
+                    f'<node bounds="[300,140][600,200]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="{clip_state["page"]}" />'
+                    f'<node bounds="[40,500][1040,650]" package="{eyes.PACKAGE}" class="android.view.View" checkable="true" checked="{"true" if clip_state["auto_copy"] else "false"}" clickable="true" enabled="true" text="">'
+                    f'<node bounds="[80,540][600,610]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="Auto-copy to clipboard" /></node>'
+                    f'<node bounds="[40,700][1040,850]" package="{eyes.PACKAGE}" class="android.view.View" checkable="true" checked="{"true" if clip_state["restore_clip"] else "false"}" clickable="true" enabled="true" text="">'
+                    f'<node bounds="[80,740][650,810]" package="{eyes.PACKAGE}" class="android.widget.TextView" clickable="false" enabled="true" text="Restore clipboard after paste" /></node>'
+                    "</hierarchy>"
+                )
+
+            def fake_adb_clip(command, timeout=60, check=True):
+                if command.startswith("pm path "):
+                    return 0, "package:/data/app/com.envi.wispr.test.apk"
+                if command.startswith("am start "):
+                    if eyes.CLIPBOARD_TARGET_ACTIVITY in command:
+                        clip_state["fg"] = "target"
+                    elif eyes.SETTINGS_ACTIVITY in command:
+                        clip_state["fg"] = "ours"
+                    return 0, "Starting: Intent {}"
+                if command.startswith("cat "):
+                    return 0, render_clip()
+                if command.startswith("input tap "):
+                    tx, ty = int(command.split()[2]), int(command.split()[3])
+                    if clip_state["fg"] == "ours":
+                        if ty <= 240 and tx <= 150:
+                            clip_state["drawer"] = True
+                        elif clip_state["drawer"] and 500 <= ty <= 600:
+                            clip_state["drawer"] = False
+                            clip_state["page"] = "Clipboard"
+                        elif 500 <= ty <= 650:
+                            clip_state["auto_copy"] = not clip_state["auto_copy"]
+                        elif 700 <= ty <= 850:
+                            clip_state["restore_clip"] = not clip_state["restore_clip"]
+                    return 0, ""
+                if command == "input keyevent 4" and clip_state["fg"] == "target":
+                    clip_state["fg"] = "ours"
+                    return 0, ""
+                return 0, ""
+
+            def fake_clip_debug_insert(sentence, target_package=None, expected_final=None):
+                clip_state["observed_at_insert"] = clip_state["fg"]
+                clip_state["field"] = expected_final
+                if clip_state["auto_copy"]:
+                    clip_state["probe"] = f"Clipboard: {expected_final}"
+                elif clip_state["restore_clip"]:
+                    clip_state["probe"] = f"Clipboard: {eyes.CLIPBOARD_SENTINEL_TEXT}"
+                return ["VERIFIED: inserted into clipboard target"]
+
+            def fake_clip_restore(keep_frozen_threads=False):
+                # When Auto-copy was toggled on Clipboard, cross-app restore runs back after target check.
+                restored = []
+                if clip_state["auto_copy"]:
+                    assert clip_state["page"] == "Clipboard"
+                    clip_state["fg"] = "ours"
+                    clip_state["auto_copy"] = False
+                    restored.append("Auto-copy back to false")
+                return restored or ["nothing was changed"]
+
+            eyes._adb = fake_adb_clip
+            eyes.debug_insert = fake_clip_debug_insert
+            eyes.restore = fake_clip_restore
+
+            clip_sent = eyes.check_clipboard(
+                "hello world",
+                expected_final="hello world",
+                auto_copy=False,
+                restore_clipboard=True,
+                use_debug_insert=True,
+                wait_s=0.5,
+            )
+            check("check_clipboard verifies sentinel preserved and stays green",
+                  any("clipboard sentinel restored" in l for l in clip_sent)
+                  and clip_state["observed_at_insert"] == "target"
+                  and eyes._print_report("clipboard", clip_sent, verbose=False) == 0,
+                  clip_sent)
+
+            clip_refused = eyes.check_clipboard(
+                "hello world",
+                expected_final="hello world",
+                auto_copy=True,
+                restore_clipboard=False,
+                use_debug_insert=True,
+            )
+            check("check_clipboard refuses auto_copy=True with use_debug_insert=True",
+                  clip_refused[0].startswith("BLOCKED:") and "Auto-copy" in clip_refused[0],
+                  clip_refused)
+
+            def fake_clip_dictate(sentence, target_package=None, expected_final=None,
+                                  restore_before=True, restore_after=True):
+                clip_state["observed_at_insert"] = clip_state["fg"]
+                clip_state["field"] = expected_final
+                clip_state["probe"] = f"Clipboard: {expected_final}"
+                return ["VERIFIED: dictated into clipboard target"]
+
+            eyes.dictate_emulator = fake_clip_dictate
+            clip_state["probe"] = f"Clipboard: {eyes.CLIPBOARD_SENTINEL_TEXT}"
+            clip_auto = eyes.check_clipboard(
+                "hello world",
+                expected_final="hello world",
+                auto_copy=True,
+                restore_clipboard=False,
+                use_debug_insert=False,
+                wait_s=0.5,
+            )
+            check("check_clipboard verifies auto-copy updates probe via voice take and restores Auto-copy switch",
+                  any("clipboard holds auto-copied text 'hello world'" in l for l in clip_auto)
+                  and clip_state["auto_copy"] is False,
+                  (clip_auto, clip_state))
+
+            # Codex r1 finding 4: CLI argument validation rejects unknown flags and extra args
+            check("CLI practice rejects typo flag --finsh instead of treating it as positional expected_final",
+                  eyes._main(["practice", "hello", "--finsh", "hello"]) == 2)
+            check("CLI practice rejects extra positional argument",
+                  eyes._main(["practice", "hello", "world", "extra"]) == 2)
+            check("CLI clipboard rejects unknown flag",
+                  eyes._main(["clipboard", "hello", "world", "--bad-flag"]) == 2)
+            check("CLI downloads rejects unknown flag",
+                  eyes._main(["downloads", "--bad-flag"]) == 2)
+        finally:
+            if saved_agent_env is None:
+                os.environ.pop("WISPR_AGENT", None)
+            else:
+                os.environ["WISPR_AGENT"] = saved_agent_env
+            for name, val in saved_attrs.items():
+                setattr(eyes, name, val)
+            eyes._STATE.update(saved_state)
 
 
 if __name__ == "__main__":

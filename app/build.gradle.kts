@@ -74,6 +74,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    lint {
+        // Android Lint classifies `NewApi` (calls added in API 34+ invoked under minSdk 33) as
+        // non-fatal by default, so `lintVitalRelease` exits 0 on calls that crash on Android 13/14.
+        fatal += "NewApi"
+        if (providers.gradleProperty("lintNewApiOnly").orNull == "true") {
+            checkOnly += "NewApi"
+        }
+    }
+
     kotlinOptions {
         jvmTarget = "21"
     }

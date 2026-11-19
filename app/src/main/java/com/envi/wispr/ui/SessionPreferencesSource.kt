@@ -110,6 +110,7 @@ internal data class TermsSnapshot(
     val read: PreferenceRead = PreferenceRead.Pending,
     val structuredTerms: List<CustomTerm> = emptyList(),
     val userSpellings: List<String> = emptyList(),
+    val userTerms: List<CustomTerm> = emptyList(),
 )
 
 /**
@@ -181,7 +182,14 @@ internal class SessionPreferencesSource(
                     log.warn("Unable to migrate custom terms: ${error.javaClass.simpleName}")
                 }
                 terms.collect { userTerms ->
-                    termsSnapshot.set(TermsSnapshot(PreferenceRead.Fresh, BuiltinVocabulary.withUserTerms(userTerms), userTerms.map { it.spelling }))
+                    termsSnapshot.set(
+                        TermsSnapshot(
+                            PreferenceRead.Fresh,
+                            BuiltinVocabulary.withUserTerms(userTerms),
+                            userTerms.map { it.spelling },
+                            userTerms,
+                        ),
+                    )
                     termsAnswered.complete(Unit)
                 }
                 // A flow that completes before its first emission is a failed read, not a pending one; one
@@ -276,7 +284,16 @@ internal class SessionPreferencesSource(
             // The stand-in for a read that never answered: today's null branch, kept on purpose (#193 plan
             // §14 weighs auto-copy on against off for this one case).
             clipboard = start.settings.clipboardPolicy ?: ClipboardInsertionPolicy(),
-            policy = policy,
+            policy = when (policy) {
+                is PolishPolicy.Cloud -> policy.copy(
+                    customVocabulary = policy.customVocabulary
+                        ?: com.envi.wispr.providers.CustomVocabularyFormatter.render(start.terms.userTerms),
+                )
+                PolishPolicy.Off,
+                PolishPolicy.CloudUnconfigured,
+                is PolishPolicy.LocalS1,
+                -> policy
+            },
             autoStopOnSilence = start.settings.autoStopOnSilence,
             silencePauseSeconds = start.settings.silencePauseSeconds,
             inputDevicePick = start.settings.inputDevicePick,

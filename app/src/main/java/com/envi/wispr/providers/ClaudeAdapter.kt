@@ -23,7 +23,7 @@ internal object ClaudeAdapter : ProviderAdapter {
     override fun polishPlan(request: ProviderPolishRequest, endpointOverride: String?): RequestPlan = RequestPlan(
         url = cloudOrOverride(endpointOverride, CLAUDE_URL),
         headers = authHeaders(request.apiKey.orEmpty()),
-        body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]${ProviderModelCapabilities.claudeFields(request.model)}}",
+        body = "{\"model\":${jsonString(request.model)},\"max_tokens\":$CLAUDE_MAX_OUTPUT_TOKENS,\"system\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt, request.customVocabulary))},\"messages\":[{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]${ProviderModelCapabilities.claudeFields(request.model)}}",
         responseFormat = ProviderReplyFormat.CLAUDE,
     )
 

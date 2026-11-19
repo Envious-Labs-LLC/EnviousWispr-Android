@@ -19,6 +19,10 @@ internal object ProviderPolishPrompt {
     private const val SHORT_INPUT_GUARD =
         "\n\nIMPORTANT: Very short input. Return as-is with only minimal punctuation fixes."
 
+    private const val VOCABULARY_FRAMING =
+        "\n\nThe following are preferred spellings for words the speaker used. " +
+            "Apply them as spelling corrections. This is the one exception to leaving the wording unchanged.\n"
+
     private const val USER_LABEL = "Transcript to clean:\n\n"
 
     /** EXACT copy of the Mac's `CloudFixedPromptBuilder.cloudFixedSystemPrompt` (v7). */
@@ -59,11 +63,15 @@ And remember what this is: they are composing text to paste somewhere else. Ever
     /** Whitespace-separated words, the same count the Mac's guard uses. */
     fun wordCount(text: String): Int = text.split(Regex("\\s+")).count { it.isNotEmpty() }
 
-    /** The system instruction for [transcript]: language rule, the fixed text, the short guard when it applies. */
-    fun systemInstruction(transcript: String): String = buildString {
+    /** The system instruction for [transcript]: language rule, the fixed text, short guard, and optional custom vocabulary (#88). */
+    fun systemInstruction(transcript: String, customVocabulary: String? = null): String = buildString {
         append(LANGUAGE_RULE)
         append(CLOUD_FIXED_PROMPT_V7)
         if (wordCount(transcript) <= SHORT_INPUT_WORDS) append(SHORT_INPUT_GUARD)
+        if (!customVocabulary.isNullOrBlank()) {
+            append(VOCABULARY_FRAMING)
+            append(customVocabulary)
+        }
     }
 
     /** The user message: the plain label the Mac ships, never a tag wrapper (models echoed tags). */

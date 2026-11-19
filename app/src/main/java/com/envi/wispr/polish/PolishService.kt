@@ -496,6 +496,7 @@ class PolishService : Service() {
                     apiKey = runCatching { secrets.get(policy.provider) }.getOrNull(),
                     endpoint = policy.endpoint,
                     selfHostedProtocol = policy.protocol,
+                    customVocabulary = policy.customVocabulary,
                 )
                 when (val result = providerClient.polish(request, entry.cancellation)) {
                     is ProviderPolishResult.Success -> result.text.also { answer -> log.words("cloud_answer") { answer } }

@@ -22,6 +22,7 @@ internal data class ProviderPolishRequest(
     val apiKey: String? = null,
     val endpoint: String? = null,
     val selfHostedProtocol: SelfHostedProtocol = SelfHostedProtocol.OPENAI_COMPATIBLE,
+    val customVocabulary: String? = null,
 ) {
     override fun toString(): String =
         "ProviderPolishRequest(provider=$provider, model=<redacted>, prompt=<redacted>, apiKey=<redacted>)"

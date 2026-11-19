@@ -26,7 +26,7 @@ internal object SelfHostedAdapter : ProviderAdapter {
         return RequestPlan(
             url = url,
             headers = authHeaders(request.apiKey.orEmpty()),
-            body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}},{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}],\"stream\":false}",
+            body = "{\"model\":${jsonString(request.model)},\"messages\":[{\"role\":\"system\",\"content\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt, request.customVocabulary))}},{\"role\":\"user\",\"content\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}],\"stream\":false}",
             responseFormat = when (request.selfHostedProtocol) {
                 SelfHostedProtocol.OPENAI_COMPATIBLE -> ProviderReplyFormat.OPENAI_CHAT
                 SelfHostedProtocol.OLLAMA -> ProviderReplyFormat.OLLAMA

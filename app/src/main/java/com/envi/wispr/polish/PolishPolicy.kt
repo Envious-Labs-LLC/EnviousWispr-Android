@@ -48,7 +48,11 @@ internal sealed class PolishPolicy : Parcelable {
         val model: String,
         val endpoint: String?,
         val protocol: SelfHostedProtocol,
-    ) : PolishPolicy()
+        val customVocabulary: String? = null,
+    ) : PolishPolicy() {
+        override fun toString(): String =
+            "Cloud(provider=$provider, model=$model, endpoint=$endpoint, protocol=$protocol, customVocabulary=${if (customVocabulary == null) "null" else "<redacted>"})"
+    }
 
     override fun describeContents(): Int = 0
 
@@ -71,6 +75,7 @@ internal sealed class PolishPolicy : Parcelable {
                 dest.writeString(model)
                 dest.writeString(endpoint)
                 dest.writeString(protocol.name)
+                dest.writeString(customVocabulary)
             }
         }
     }
@@ -107,6 +112,7 @@ internal sealed class PolishPolicy : Parcelable {
                     model = checkNotNull(source.readString()),
                     endpoint = source.readString(),
                     protocol = SelfHostedProtocol.valueOf(checkNotNull(source.readString())),
+                    customVocabulary = source.readString(),
                 )
                 else -> throw IllegalArgumentException("unknown PolishPolicy tag $tag")
             }

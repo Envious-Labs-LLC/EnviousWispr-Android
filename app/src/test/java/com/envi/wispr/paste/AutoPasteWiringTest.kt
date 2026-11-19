@@ -414,7 +414,7 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "the Permissions page rendering its calm card",
-                "calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->",
+                "calmAutoPasteNotice(readiness, autoPaste, providerSettings)?.let { notice ->",
                 source,
             ),
             Triple(

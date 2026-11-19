@@ -273,6 +273,8 @@ internal fun EnviousWisprApp(
                         SettingsPage.Permissions -> PermissionsPage(
                             readiness = readiness,
                             autoPaste = autoPaste,
+                            providerSettings = providerSettings,
+                            modelWorkRefreshTick = state.storageRefreshTick,
                             onboardingComplete = preferences.onboardingComplete,
                             onContinueSetup = actions.onboarding.onResume,
                             onOpenTab = { tab ->
@@ -280,6 +282,7 @@ internal fun EnviousWisprApp(
                                 closePages()
                                 if (tab == AppDestination.History) actions.history.onOpen()
                             },
+                            onOpenStorage = { settingsPageName = SettingsPage.Storage.name },
                             onRequestMicrophone = actions.permissions.onRequestMicrophone,
                             onRequestNotifications = actions.permissions.onRequestNotifications,
                             onOpenAccessibility = actions.permissions.onOpenAccessibility,

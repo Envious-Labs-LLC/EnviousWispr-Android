@@ -65,7 +65,7 @@ internal class EgOneMnnRuntime(
                 // Room for whatever this load and later prefix entries still have to write: the whole engine cache when
                 // the weights are not built yet, otherwise one prefix entry plus KV scratch (the native side re-checks
                 // before each new entry).
-                val needed = if (cacheBuilt(cache)) PREFIX_AND_SCRATCH_BYTES else ModelManifest.eg1Micro.engineCacheBytes
+                val needed = requiredEngineCacheBytes(cache)
                 check(StatFs(cache.path).availableBytes >= needed + MARGIN_BYTES) { "not enough storage for the engine cache" }
                 val status = try {
                     MnnNative.loadModel(model.path, if (unit == GPU) "opencl" else "cpu", threads, cache.path, prefix.path)
@@ -136,7 +136,7 @@ internal class EgOneMnnRuntime(
         private const val OPENCL_MODE = 68
         private const val MARGIN_BYTES = 128L * 1024L * 1024L
         // One saved prefix entry and the KV scratch at one thread, the larger case (`mnn_jni.cpp` ENTRY_BYTES, SCRATCH_BYTES).
-        private const val PREFIX_AND_SCRATCH_BYTES = 24_750_854L + 16_777_216L
+        internal const val PREFIX_AND_SCRATCH_BYTES = 24_750_854L + 16_777_216L
         // `mnn_jni.cpp` END_* codes.
         const val END_STOP = 0
         const val END_CAP = 1
@@ -144,5 +144,9 @@ internal class EgOneMnnRuntime(
 
         /** MNN marks a complete cache with a `*sync.static` file it writes once the cache is fully built. */
         fun cacheBuilt(cache: File): Boolean = cache.listFiles().orEmpty().any { it.isFile && it.name.endsWith("sync.static") }
+
+        /** Bytes the EG-1 Micro engine still needs free (above [MARGIN_BYTES]) before loading. */
+        fun requiredEngineCacheBytes(cache: File): Long =
+            if (cacheBuilt(cache)) PREFIX_AND_SCRATCH_BYTES else ModelManifest.eg1Micro.engineCacheBytes
     }
 }

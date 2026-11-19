@@ -37,6 +37,19 @@ class S1ControlCopyTest {
         assertEquals("Tone", S1ControlCopy.STYLING_LABEL)
     }
 
+    @Test fun casualTonesExplainLowercaseAndFinalPeriod() {
+        assertEquals(
+            "Keeps sentences lowercase and drops the final period.",
+            S1ControlCopy.stylingNote(S1Styling.CASUAL),
+        )
+        assertEquals(
+            "Keeps sentences lowercase and drops the final period.",
+            S1ControlCopy.stylingNote(S1Styling.SEMI_CASUAL),
+        )
+        assertEquals(null, S1ControlCopy.stylingNote(S1Styling.SEMI_FORMAL))
+        assertEquals(null, S1ControlCopy.stylingNote(S1Styling.FORMAL))
+    }
+
     @Test fun noUserFacingLineCarriesADash() {
         for (line in S1ControlCopy.allStrings()) assertFalse(line, line.contains('—') || line.contains('–'))
     }

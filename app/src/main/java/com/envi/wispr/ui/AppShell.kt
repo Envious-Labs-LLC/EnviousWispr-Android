@@ -33,6 +33,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.LifecycleStartEffect
+import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.providers.SelfHostedProtocol
 import kotlinx.coroutines.launch
@@ -195,6 +197,19 @@ internal fun EnviousWisprApp(
                             onKeep = actions.history.onKeep,
                             onDelete = actions.history.onDelete,
                             onDeleteAll = actions.history.onDeleteAll,
+                            onRetryInsert = { transcript, manualSwitch ->
+                                PasteAccessibilityService.insertFromHistory(
+                                    transcriptId = transcript.id,
+                                    text = transcript.finalText,
+                                    policy = ClipboardInsertionPolicy(
+                                        autoCopyToClipboard = preferences.autoCopyToClipboard,
+                                        restoreClipboardAfterPaste = preferences.restoreClipboardAfterPaste,
+                                        smartInsertion = preferences.smartInsertionEnabled,
+                                    ),
+                                    manualSwitch = manualSwitch,
+                                )
+                            },
+                            onFallbackToManualSwitch = PasteAccessibilityService::extendRecoveryTimeout,
                             showTimings = developerState.unlocked,
                         )
                         AppDestination.Dictionary -> DictionaryScreen(

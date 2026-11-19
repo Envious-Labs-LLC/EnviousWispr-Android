@@ -692,4 +692,22 @@ class InsertionAttemptTest {
         assertEquals(0, editor.pastes)
         assertEquals(0, attempt.writeCount)
     }
+
+    @Test
+    fun extendingDeadlineKeepsWaitingPastOriginalDeadlineAndDeliversWhenTargetReturns() {
+        val editor = FakeEditor(present = false)
+        val attempt = attempt(editor, deadline = 2_500L)
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+
+        // Simulate fallback from auto-return to manual switch extending the active deadline.
+        attempt.extendDeadline(10_000L)
+        editor.clock = 3_000L
+        assertEquals(InsertionAttempt.Tick.Waiting, attempt.tick())
+        assertEquals(0, editor.pastes)
+
+        editor.present = true
+        editor.clock = 4_500L
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
+        assertEquals(1, editor.pastes)
+    }
 }

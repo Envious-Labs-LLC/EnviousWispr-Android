@@ -43,10 +43,15 @@ internal class AccessibilityInsertionRunner(
      */
     private val outcomes: InsertionOutcomeRecorder = InsertionOutcomeRecorder.forProcess(service),
 ) {
-    private companion object {
+    internal companion object {
         const val TAG = "PasteService"
         const val INSERTION_TIMEOUT_MS = 2_500L
+        /** Bounded timeout when the user must manually switch panes in split screen before insertion runs (#17). */
+        const val MANUAL_RECOVERY_TIMEOUT_MS = 10_000L
         const val RETRY_INTERVAL_MS = 125L
+
+        fun recoveryTimeoutMs(manualSwitch: Boolean): Long =
+            if (manualSwitch) MANUAL_RECOVERY_TIMEOUT_MS else INSERTION_TIMEOUT_MS
     }
 
     /**
@@ -70,6 +75,10 @@ internal class AccessibilityInsertionRunner(
         val takeId: String?,
         /** The take's acceptance on `elapsedRealtime`, for its end-to-end time (#378 D8); 0 is unknown. */
         val takeAcceptedAtMs: Long,
+        /** Non-null when this insertion is a History recovery retry (#17). */
+        val recoveryTranscriptId: Long? = null,
+        /** True when [recoveryTranscriptId] already carried an uncertain-delivery warning before this retry. */
+        val recoveryHadPriorUncertain: Boolean = false,
         val clipboardOwnershipToken: String = UUID.randomUUID().toString(),
     ) {
         lateinit var attempt: InsertionAttempt
@@ -114,6 +123,9 @@ internal class AccessibilityInsertionRunner(
         policy: ClipboardInsertionPolicy,
         takeId: String?,
         acceptedAtMs: Long = 0L,
+        recoveryTranscriptId: Long? = null,
+        recoveryHadPriorUncertain: Boolean = false,
+        timeoutMs: Long = INSERTION_TIMEOUT_MS,
     ): InsertionHandoff {
         // Three separate refusals. Merging them into one answer is what made a crashed service and
         // a back-to-back dictation indistinguishable from the log and from the History row.
@@ -132,14 +144,17 @@ internal class AccessibilityInsertionRunner(
         mainHandler.removeCallbacks(retryRunnable)
         retryScheduled = false
         val now = SystemClock.elapsedRealtime()
+        val boundedTimeoutMs = timeoutMs.coerceIn(INSERTION_TIMEOUT_MS, MANUAL_RECOVERY_TIMEOUT_MS)
         val pending = PendingInsertion(
             row = row,
             text = text,
             policy = policy,
             startedAtMs = now,
-            deadlineMs = now + INSERTION_TIMEOUT_MS,
+            deadlineMs = now + boundedTimeoutMs,
             takeId = takeId,
             takeAcceptedAtMs = acceptedAtMs,
+            recoveryTranscriptId = recoveryTranscriptId,
+            recoveryHadPriorUncertain = recoveryHadPriorUncertain,
         )
         // A caller-supplied snapshot is honoured; otherwise the paste route takes its own immediately
         // before the first staging (#141, review round 3).
@@ -161,6 +176,13 @@ internal class AccessibilityInsertionRunner(
         // through an accessibility action's binder call into the editor's process. The deadline was set above.
         scheduleRetry(delayMs = 0L)
         return InsertionHandoff.SCHEDULED
+    }
+
+    fun extendPendingRecoveryDeadline(transcriptId: Long) {
+        val pending = pendingInsertion ?: return
+        if (pending.recoveryTranscriptId == transcriptId) {
+            pending.attempt.extendDeadline(SystemClock.elapsedRealtime() + MANUAL_RECOVERY_TIMEOUT_MS)
+        }
     }
 
     /**
@@ -192,7 +214,11 @@ internal class AccessibilityInsertionRunner(
         pendingInsertion?.let { pending ->
             pending.targetPackage = tracker.pinnedPackage
             logOutcome(pending, outcome, tracker.pinnedPackage)
-            recordAndAnnounce(reason, pending)
+            if (pending.attempt.written) {
+                recordAndAnnounce(ServiceFallbackReason.UNVERIFIED, pending)
+            } else {
+                recordAndAnnounce(reason, pending)
+            }
         }
         pendingInsertion = null
     }
@@ -204,6 +230,9 @@ internal class AccessibilityInsertionRunner(
             InsertionAttempt.Tick.Waiting -> scheduleRetry(RETRY_INTERVAL_MS)
             is InsertionAttempt.Tick.Verified -> {
                 DebugLogger.log(TAG, "Insertion completed via ${tick.route} after ${attempt.attempts} attempt(s)")
+                // Mark recovered BEFORE `finish` clears `pendingInsertion`, so a rapid second tap
+                // cannot re-enter before Room emits the updated row (#17).
+                pending.recoveryTranscriptId?.let { com.envi.wispr.ui.HistoryInsertionRecovery.markSessionRecovered(it) }
                 finish(pending, InsertionOutcomeLine.Outcome.VERIFIED)
                 if (pending.policy.restoreClipboardAfterPaste) {
                     restorePreviousClipboardIfSafe(pending)
@@ -301,7 +330,7 @@ internal class AccessibilityInsertionRunner(
      */
     private inner class ServiceEditor(private val pending: PendingInsertion) : EditorWrites {
         override fun locateTarget(): TargetState? =
-            tracker.withPinnedNode { node ->
+            tracker.withPinnedNode(requireWindowFocus = pending.recoveryTranscriptId != null) { node ->
                 val hint = node.isShowingHintText
                 val snapshot = snapshotOf(node)
                 TargetState(
@@ -312,6 +341,9 @@ internal class AccessibilityInsertionRunner(
 
         /** #201: one try to give focus back to the pinned field; a counts-only breadcrumb, never text. */
         override fun refocusOriginal(): RefocusResult {
+            // History recovery (#17) waits for the remembered field to receive focus on its own
+            // instead of pulling focus off another field the user tapped in split-screen.
+            if (pending.recoveryTranscriptId != null) return RefocusResult.DECLINED
             val result = tracker.refocusPinnedNode()
             if (result.sentAnAction) {
                 DebugLogger.log(TAG, "Refocus of the pinned editor: ${result.name.lowercase()}")
@@ -353,7 +385,7 @@ internal class AccessibilityInsertionRunner(
             // with input focus in the pinned window the session belongs to that view. Chrome's
             // FOCUS_INPUT search from the window root answers a different node than the pinned
             // editor (measured 2026-09-13 on the Android 16 AVD), so it is not the test.
-            if (tracker.withPinnedNode { node -> node.isFocused } != true) return "pinned editor not focused"
+            if (tracker.withPinnedNode(requireWindowFocus = pending.recoveryTranscriptId != null) { node -> node.isFocused } != true) return "pinned editor not focused"
             pending.commitSession = captured
             return null
         }
@@ -380,6 +412,11 @@ internal class AccessibilityInsertionRunner(
         }
 
         override fun commit(payload: String): CommitOutcome {
+            if (pending.recoveryTranscriptId != null &&
+                tracker.withPinnedNode(requireWindowFocus = true) { it.isFocused } != true
+            ) {
+                return CommitOutcome.SESSION_CHANGED
+            }
             val captured = liveCommitSession() ?: return CommitOutcome.SESSION_CHANGED
             captured.connection.commitText(payload, 1, null)
             return CommitOutcome.SENT
@@ -439,7 +476,7 @@ internal class AccessibilityInsertionRunner(
             // treat as written.
             var asked = false
             return try {
-                tracker.withPinnedNode { node ->
+                tracker.withPinnedNode(requireWindowFocus = pending.recoveryTranscriptId != null) { node ->
                     // The SAME derivation as locateTarget, so a null text compares equal to itself.
                     val now = snapshotOf(node)
                     when {
@@ -469,7 +506,7 @@ internal class AccessibilityInsertionRunner(
         }
 
         override fun readTarget(): AccessibilityInsertionRules.EditorRead? =
-            tracker.withPinnedNode { node ->
+            tracker.withPinnedNode(requireWindowFocus = pending.recoveryTranscriptId != null) { node ->
                 AccessibilityInsertionRules.EditorRead(node.text?.toString(), node.isShowingHintText)
             }
 
@@ -605,6 +642,8 @@ internal class AccessibilityInsertionRunner(
                 clipboard = clipboard,
                 latencyMs = endedAtMs - pending.startedAtMs,
                 endToEndMs = pending.takeAcceptedAtMs.takeIf { it > 0L }?.let { endedAtMs - it },
+                recoveryTranscriptId = pending.recoveryTranscriptId,
+                recoveryHadPriorUncertain = pending.recoveryHadPriorUncertain,
             ),
         )
     }

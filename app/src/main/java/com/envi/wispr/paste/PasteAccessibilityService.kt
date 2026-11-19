@@ -136,6 +136,82 @@ class PasteAccessibilityService : AccessibilityService() {
         }
 
         /**
+         * Re-attempts insertion of a saved History transcript whose delivery did not complete (#17).
+         * Pins either a currently focused external editor (multi-window) or the last remembered
+         * external editor, and schedules the existing insertion runner without emitting a duplicate
+         * take telemetry event.
+         */
+        internal fun insertFromHistory(
+            transcriptId: Long,
+            text: String,
+            policy: ClipboardInsertionPolicy = ClipboardInsertionPolicy(),
+            manualSwitch: Boolean = false,
+        ): InsertionHandoff {
+            if (text.isBlank()) return InsertionHandoff.EMPTY_TEXT
+            if (com.envi.wispr.ui.HistoryInsertionRecovery.isSessionRecovered(transcriptId)) {
+                return InsertionHandoff.INSERTION_ALREADY_PENDING
+            }
+            val service = instance ?: run {
+                DebugLogger.warn(TAG, "Accessibility service is not running; cannot retry History insertion")
+                return InsertionHandoff.SERVICE_NOT_RUNNING
+            }
+            return service.callOnMain(InsertionHandoff.SERVICE_DID_NOT_ANSWER) {
+                if (com.envi.wispr.ui.HistoryInsertionRecovery.isSessionRecovered(transcriptId)) {
+                    return@callOnMain InsertionHandoff.INSERTION_ALREADY_PENDING
+                }
+                when (service.tracker.pinTargetForRecovery(insertionPending = service.runner.isPending)) {
+                    DictationTargetPin.PINNED -> {
+                        val mark = com.envi.wispr.ui.HistoryInsertionRecovery.recordRecoveryStarted(
+                            service.applicationContext,
+                            transcriptId,
+                        )
+                        if (!mark.persisted) {
+                            DebugLogger.warn(TAG, "Unable to persist History recovery marker; refusing retry")
+                            if (!service.runner.isPending) {
+                                service.tracker.clearPinnedTarget()
+                            }
+                            return@callOnMain InsertionHandoff.SERVICE_DID_NOT_ANSWER
+                        }
+                        val handoff = service.runner.requestInsertion(
+                            row = HistoryRow.Saved,
+                            text = text,
+                            previousClipboard = null,
+                            policy = policy,
+                            takeId = null,
+                            acceptedAtMs = 0L,
+                            recoveryTranscriptId = transcriptId,
+                            recoveryHadPriorUncertain = mark.hadPriorUncertain,
+                            timeoutMs = AccessibilityInsertionRunner.recoveryTimeoutMs(manualSwitch),
+                        )
+                        if (handoff != InsertionHandoff.SCHEDULED) {
+                            if (!mark.hadPriorUncertain) {
+                                com.envi.wispr.ui.HistoryInsertionRecovery.clearPersistedUncertain(
+                                    service.applicationContext,
+                                    transcriptId,
+                                )
+                            }
+                            if (!service.runner.isPending) {
+                                service.tracker.clearPinnedTarget()
+                            }
+                        }
+                        handoff
+                    }
+                    DictationTargetPin.NO_TARGET -> InsertionHandoff.NO_PINNED_TARGET
+                    DictationTargetPin.INSERTION_BUSY -> InsertionHandoff.INSERTION_ALREADY_PENDING
+                    DictationTargetPin.SERVICE_NOT_RUNNING -> InsertionHandoff.SERVICE_NOT_RUNNING
+                    DictationTargetPin.SERVICE_DID_NOT_ANSWER -> InsertionHandoff.SERVICE_DID_NOT_ANSWER
+                }
+            }
+        }
+
+        internal fun extendRecoveryTimeout(transcriptId: Long) {
+            val service = instance ?: return
+            service.callOnMain(Unit) {
+                service.runner.extendPendingRecoveryDeadline(transcriptId)
+            }
+        }
+
+        /**
          * The single pin attempt for the take the session owner is admitting; the owner is the only
          * caller, once per take, through `InsertionGateway`, and the answer may be no pin (#192).
          *

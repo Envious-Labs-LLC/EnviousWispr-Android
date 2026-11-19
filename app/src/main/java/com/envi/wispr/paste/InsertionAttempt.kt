@@ -134,8 +134,14 @@ internal class InsertionAttempt(
     private val editor: EditorWrites,
     private val text: String,
     private val smartInsertion: Boolean,
-    private val deadlineMs: Long,
+    private var deadlineMs: Long,
 ) {
+    /** Raises the deadline up to [newDeadlineMs] when a UI fallback switches from auto-return to manual switch (#17). */
+    fun extendDeadline(newDeadlineMs: Long) {
+        if (newDeadlineMs > deadlineMs) {
+            deadlineMs = newDeadlineMs
+        }
+    }
     enum class Returned { NONE, TRUE, FALSE, VOID, THREW }
 
     enum class Evidence { NONE, SURROUNDING, NODE, UNREADABLE, COMMIT_TRUSTED }

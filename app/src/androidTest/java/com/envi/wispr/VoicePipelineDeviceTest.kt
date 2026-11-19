@@ -158,12 +158,17 @@ class VoicePipelineDeviceTest {
         )
         // The saved USER term, read alone, before anything is merged with built-ins: a built-in of the same
         // spelling must never stand in for the founder's own data. The exact `Prerequisite:` prefix is what
-        // the harness door reports as NOT RUN (#215).
+        // the harness door reports as NOT RUN (#215, #225).
         val userTerms = runBlocking { CustomTermRepository(context).list() }.map(CustomTermRecord::term)
         assertTrue(
             "Prerequisite: the saved custom name 'Saurabh' is not in this device's dictionary, so the row cannot judge " +
                 "saved spellings here (it is the founder's phone's data)",
             userTerms.any { it.spelling == "Saurabh" },
+        )
+        val savedNameTerm = userTerms.first { it.spelling == "Saurabh" }
+        assertTrue(
+            "Prerequisite: the saved custom name 'Saurabh' has no aliases configured, so restoration cannot be verified",
+            savedNameTerm.aliases.isNotEmpty(),
         )
         val (asr, asrConnection) = bind<IAsrService>(AsrService::class.java) { IAsrService.Stub.asInterface(it) }
         val (polish, polishConnection) = bind<IPolishService>(PolishService::class.java) { IPolishService.Stub.asInterface(it) }
@@ -199,12 +204,27 @@ class VoicePipelineDeviceTest {
             })
             assertTrue("ASR callback timed out", asrFinished.await(30, TimeUnit.SECONDS))
             assertTrue("ASR returned no text: $asrError", rawText.isNotBlank())
+            // Verify custom-name restoration is genuinely exercised (#225): raw ASR must carry a saved alias
+            // rather than already spelling 'Saurabh', and matcher.restore(rawText) must restore it before polish.
+            assertTrue(
+                "Raw ASR transcript already contained canonical 'Saurabh', so restoration was not exercised: $rawText",
+                !rawText.contains("Saurabh"),
+            )
+            assertTrue(
+                "Raw ASR transcript did not contain any saved alias for 'Saurabh' (${savedNameTerm.aliases}): $rawText",
+                savedNameTerm.aliases.any { alias -> rawText.contains(alias, ignoreCase = true) },
+            )
+            val restoredBeforePolish = matcher.restore(rawText)
+            assertTrue(
+                "Saved name 'Saurabh' was not restored before polish: $restoredBeforePolish",
+                restoredBeforePolish.contains("Saurabh"),
+            )
 
             val polishFinished = CountDownLatch(1)
             var polishedText = ""
             var engine = ""
             var latencyMs = -1L
-            polish.polishRequest(1L, matcher.restore(rawText), true, true, false, PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), object : IPolishCallback.Stub() {
+            polish.polishRequest(1L, restoredBeforePolish, true, true, false, PolishPolicy.LocalS1(S1ControlSettings.DEFAULT), object : IPolishCallback.Stub() {
                 override fun onOutcome(outcome: PolishOutcome?) {
                     polishedText = matcher.restore(outcome?.text.orEmpty())
                     engine = outcome?.engine.orEmpty()

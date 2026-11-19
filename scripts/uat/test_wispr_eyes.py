@@ -2557,13 +2557,29 @@ Group main:
         if leftover.exists():
             leftover.unlink()
 
-    # ---- #215: the real-boundary door, its preflight, its result policy, and fixture staging ----------
+    # ---- #215 / #225: the real-boundary door, its preflight, its result policy, and fixture staging ----
+    import hashlib as _hashlib225
+    _, _, parakeet_rev, parakeet_files = eyes.REAL_BOUNDARY_MODELS["parakeet"]
+    _, _, s1_rev, s1_files = eyes.REAL_BOUNDARY_MODELS["s1"]
+    parakeet_sha = eyes._expected_receipt_sha256(parakeet_rev, parakeet_files)
+    s1_sha = eyes._expected_receipt_sha256(s1_rev, s1_files)
+    parakeet_receipt = f"{parakeet_sha}  no_backup/models/parakeet-ultra/.verified-receipt\n"
+    parakeet_sizes = ".verified-receipt\t200\n" + "\n".join(f"{n}\t{sz}" for n, (sz, _) in parakeet_files.items()) + "\n"
+    s1_receipt = f"{s1_sha}  no_backup/models/s1-mini/.verified-receipt\n"
+    s1_sizes = ".verified-receipt\t100\n" + "\n".join(f"{n}\t{sz}" for n, (sz, _) in s1_files.items()) + "\n"
+    s1_crlf_sha = _hashlib225.sha256(
+        (s1_rev + "\r\n" + "\r\n".join(f"{n}={sz}:{sha}" for n, (sz, sha) in s1_files.items())).encode("utf-8")
+    ).hexdigest()
     ready_probes = {
         "target": (0, "package:/data/app/base.apk\n"),
         "test": (0, "package:/data/app/test.apk\n"),
         "runner": (0, f"instrumentation:{eyes.TEST_RUNNER} (target={eyes.PACKAGE})\n"),
         "runas": (0, ""),
         "fixture": (0, "32000\n"),
+        "parakeet_receipt": (0, parakeet_receipt),
+        "parakeet_sizes": (0, parakeet_sizes),
+        "s1_receipt": (0, s1_receipt),
+        "s1_sizes": (0, s1_sizes),
     }
     check("every prerequisite present answers ready", eyes._real_boundary_preflight(dict(ready_probes)) == [],
           eyes._real_boundary_preflight(dict(ready_probes)))
@@ -2575,11 +2591,24 @@ Group main:
         ("an empty fixture", "fixture", (0, "0\n"), "no usable fixture"),
         ("an odd-length fixture", "fixture", (0, "32001\n"), "no usable fixture"),
         ("a non-regular path at the fixture name", "fixture", (1, ""), "no usable fixture"),
+        ("missing Parakeet receipt (#225)", "parakeet_receipt", (1, ""), "Parakeet Ultra"),
+        ("wrong Parakeet receipt digest (#225)", "parakeet_receipt", (0, "0000  x\n"), "does not match pinned manifest"),
+        ("CRLF receipt digest rejected (#225)", "s1_receipt", (0, f"{s1_crlf_sha}  x\n"), "does not match pinned manifest"),
+        ("truncated Parakeet file (#225)", "parakeet_sizes", (0, ".verified-receipt\t200\nencoder-model.int8.onnx\t123\ndecoder_joint-model.int8.onnx\t18203490\nvocab.txt\t93939\n"), "wrong size"),
+        ("extra unexpected file in model dir (#225)", "s1_sizes", (0, s1_sizes + "stray.tmp\t12\n"), "do not match expected"),
+        ("blank line from newline-in-filename rejected (#225)", "s1_sizes", (0, "\n" + s1_sizes), "unexpected directory entry"),
+        ("missing S1-mini receipt (#225)", "s1_receipt", (1, ""), "S1-mini"),
+        ("missing S1-mini file (#225)", "s1_sizes", (1, ""), "could not be read"),
     ):
         probes = dict(ready_probes)
         probes[key] = value
         answer = eyes._real_boundary_preflight(probes)
         check(f"preflight: {label} answers its own NOT RUN", any(line.startswith("NOT RUN:") and needle in line for line in answer), answer)
+    probes = dict(ready_probes)
+    del probes["s1_receipt"]
+    answer = eyes._real_boundary_preflight(probes)
+    check("preflight (#225): omitted model probe key still answers NOT RUN",
+          any(line.startswith("NOT RUN:") and "S1-mini" in line for line in answer), answer)
     probes = dict(ready_probes)
     probes["runas"] = (1, "run-as: package not debuggable")
     answer = eyes._real_boundary_preflight(probes)

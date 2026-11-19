@@ -116,6 +116,7 @@ class SettingsActivity : ComponentActivity() {
             val discovery by polishViewModel.providerDiscovery.collectAsStateWithLifecycle()
             val models by modelWorkViewModel.models.collectAsStateWithLifecycle()
             val bubbleVisibility by bubbleVisibilityViewModel.state.collectAsStateWithLifecycle()
+            val storageRefreshTick by modelWorkViewModel.storageRefreshTick.collectAsStateWithLifecycle()
 
             EnviousWisprTheme(dynamicColor = shell.preferences.dynamicColorEnabled) {
                 val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel, modelWorkViewModel, bubbleVisibilityViewModel) {
@@ -219,6 +220,7 @@ class SettingsActivity : ComponentActivity() {
                         discovery = discovery,
                         models = models,
                         bubbleVisibility = bubbleVisibility,
+                        storageRefreshTick = storageRefreshTick,
                     ),
                     licenseNotices = thirdPartyNotices,
                     actions = actions,

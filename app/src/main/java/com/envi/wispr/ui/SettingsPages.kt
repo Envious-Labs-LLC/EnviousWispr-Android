@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import android.os.StatFs
 import androidx.compose.material3.RadioButton
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.BorderStroke
@@ -44,10 +45,25 @@ import com.envi.wispr.about.PlayStoreLink
 import com.envi.wispr.about.ReleaseNotes
 import com.envi.wispr.telemetry.InstallSource
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.envi.wispr.models.EngineCache
+import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.BubbleLook
+import com.envi.wispr.polish.EgOneMnnRuntime
+import com.envi.wispr.polish.LocalPolishModel
+import com.envi.wispr.polish.MNN_VERSION
+import com.envi.wispr.providers.PolishMode
+import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import com.envi.wispr.settings.AppPreferencesState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun WhatsNewPage() {
@@ -279,15 +295,74 @@ internal fun ClipboardPage(
 internal fun PermissionsPage(
     readiness: AppReadiness,
     autoPaste: AutoPasteAvailability,
+    providerSettings: ProviderSettingsUiState = ProviderSettingsUiState(),
+    modelWorkRefreshTick: Int = 0,
     onboardingComplete: Boolean,
     onContinueSetup: () -> Unit,
     onOpenTab: (AppDestination) -> Unit,
+    onOpenStorage: () -> Unit = {},
     onRequestMicrophone: () -> Unit,
     onRequestNotifications: () -> Unit,
     onOpenAccessibility: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var storageRefreshTick by remember { mutableIntStateOf(0) }
+    LifecycleResumeEffect(Unit) {
+        storageRefreshTick++
+        onPauseOrDispose {}
+    }
+    val storageRefreshKey = listOf(
+        storageRefreshTick,
+        modelWorkRefreshTick,
+        providerSettings.mode,
+        providerSettings.localPolishModel,
+        readiness.modelsChecked,
+        readiness.speechModelReady,
+        readiness.onboardingPolishModelReady,
+        readiness.eg1PolishModelReady,
+    )
+    val storageReadiness by produceState<StorageReadiness>(
+        initialValue = StorageReadiness.Checking,
+        key1 = storageRefreshKey,
+    ) {
+        // Keep the last measured reading visible during background progress refreshes so the
+        // Storage row and chip stay steady instead of flashing back to Checking on every tick.
+        value = withContext(Dispatchers.IO) {
+            try {
+                // Measure only the active setup's remaining engine cache without touching
+                // `ModelDeliveryStore`'s download lock, then read free space immediately after.
+                val remainingCache = buildMap {
+                    put(ModelManifest.parakeet.id, EngineCache.remainingBytes(context, ModelManifest.parakeet, MNN_VERSION))
+                    if (providerSettings.mode == PolishMode.OFFLINE_S1) {
+                        val polishModel = providerSettings.localPolishModel.descriptor()
+                        val neededCache = if (providerSettings.localPolishModel == LocalPolishModel.EG1_MICRO) {
+                            EgOneMnnRuntime.requiredEngineCacheBytes(
+                                EngineCache.folder(context, polishModel, MNN_VERSION),
+                            )
+                        } else {
+                            EngineCache.remainingBytes(context, polishModel, MNN_VERSION)
+                        }
+                        put(polishModel.id, neededCache)
+                    }
+                }
+                val available = StatFs(context.filesDir.path).availableBytes
+                if (available < 0L) {
+                    StorageReadiness.Unavailable
+                } else {
+                    StorageReadiness.Measured(available, remainingCache)
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+                StorageReadiness.Unavailable
+            }
+        }
+    }
+    val speechRow = ReadinessDiagnostics.speechModelRow(readiness)
+    val polishRow = ReadinessDiagnostics.polishAndProviderRow(readiness, providerSettings)
+    val storageRow = ReadinessDiagnostics.storageRow(storageReadiness, readiness, providerSettings)
     val onContinue = {
-        when (setupContinue(onboardingComplete, readiness)) {
+        when (setupContinue(onboardingComplete, readiness, providerSettings)) {
             SetupContinue.GUIDED_SETUP -> onContinueSetup()
             SetupContinue.SPEECH_MODEL -> onOpenTab(AppDestination.Transcription)
             SetupContinue.POLISH_MODEL -> onOpenTab(AppDestination.Polish)
@@ -296,7 +371,7 @@ internal fun PermissionsPage(
         }
     }
     ScreenContainer(subtitle = SettingsPage.Permissions.subtitle) {
-        if (setupCardShows(readiness, autoPaste)) {
+        if (setupCardShows(readiness, autoPaste, providerSettings)) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
             ) {
@@ -328,7 +403,7 @@ internal fun PermissionsPage(
         // cold start, and firing the red alarm through that window would train the user to ignore it.
         // Suppressed entirely while the setup card above is showing, so the screen never carries two
         // alarm cards for one unfinished setup; the row below still names the auto-paste state then.
-        calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->
+        calmAutoPasteNotice(readiness, autoPaste, providerSettings)?.let { notice ->
             AutoPasteNoticeCard(autoPaste, notice, onOpenAccessibility)
         }
 
@@ -344,13 +419,16 @@ internal fun PermissionsPage(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             ReadinessChip("Microphone", readiness.microphoneGranted)
-            ReadinessChip("Speech", readiness.speechModelReady)
-            ReadinessChip("Polish", readiness.polishModelReady)
+            speechRow.ready?.let { ready -> ReadinessChip("Speech", ready) }
+            polishRow.ready?.let { ready -> ReadinessChip("Polish", ready) }
             ReadinessChip(
                 label = "Insert",
                 ready = autoPaste == AutoPasteAvailability.LIVE,
                 description = autoPaste.statusDescription(),
             )
+            storageRow.ready?.let { ready ->
+                ReadinessChip("Storage", ready)
+            }
         }
 
         SettingsGroup("What EnviousWispr needs") {
@@ -396,6 +474,29 @@ internal fun PermissionsPage(
                 )
             }
         }
+
+        SettingsGroup("Models, providers, and storage") {
+            SettingsActionRow(
+                title = speechRow.title,
+                subtitle = speechRow.subtitle,
+                ready = speechRow.ready,
+                onClick = { onOpenTab(AppDestination.Transcription) },
+            )
+            HorizontalDivider()
+            SettingsActionRow(
+                title = polishRow.title,
+                subtitle = polishRow.subtitle,
+                ready = polishRow.ready,
+                onClick = { onOpenTab(AppDestination.Polish) },
+            )
+            HorizontalDivider()
+            SettingsActionRow(
+                title = storageRow.title,
+                subtitle = storageRow.subtitle,
+                ready = storageRow.ready,
+                onClick = onOpenStorage,
+            )
+        }
     }
 }
 
@@ -407,6 +508,27 @@ internal fun setupCardShows(readiness: AppReadiness, autoPaste: AutoPasteAvailab
     !readiness.microphoneGranted ||
         (readiness.modelsChecked && !readiness.requiredModelsReady) ||
         autoPaste == AutoPasteAvailability.NOT_PERMITTED
+
+/**
+ * Mode-aware setup card check (#35): only flags a missing local polish model when on-device polish
+ * is selected, so AI Polish Off or configured cloud polish does not contradict the readiness rows.
+ */
+internal fun setupCardShows(
+    readiness: AppReadiness,
+    autoPaste: AutoPasteAvailability,
+    providerSettings: ProviderSettingsUiState,
+): Boolean {
+    val polishNeeded = when (providerSettings.mode) {
+        PolishMode.OFF, PolishMode.PROVIDER -> false
+        PolishMode.OFFLINE_S1 -> !providerSettings.loading &&
+            readiness.modelsChecked &&
+            !ReadinessDiagnostics.localPolishModelReady(readiness, providerSettings.localPolishModel)
+    }
+    return !readiness.microphoneGranted ||
+        (readiness.modelsChecked && !readiness.speechModelReady) ||
+        polishNeeded ||
+        autoPaste == AutoPasteAvailability.NOT_PERMITTED
+}
 
 /** Where the setup card's Continue takes the user (#406). */
 internal enum class SetupContinue { GUIDED_SETUP, SPEECH_MODEL, POLISH_MODEL, MICROPHONE, AUTO_PASTE }
@@ -424,9 +546,47 @@ internal fun setupContinue(onboardingComplete: Boolean, readiness: AppReadiness)
     else -> SetupContinue.AUTO_PASTE
 }
 
+internal fun setupContinue(
+    onboardingComplete: Boolean,
+    readiness: AppReadiness,
+    providerSettings: ProviderSettingsUiState,
+): SetupContinue {
+    val polishNeedsAttention = when (providerSettings.mode) {
+        PolishMode.OFF, PolishMode.PROVIDER -> false
+        PolishMode.OFFLINE_S1 -> !providerSettings.loading &&
+            readiness.modelsChecked &&
+            !ReadinessDiagnostics.localPolishModelReady(readiness, providerSettings.localPolishModel)
+    }
+    return when {
+        !onboardingComplete -> SetupContinue.GUIDED_SETUP
+        readiness.modelsChecked && !readiness.speechModelReady -> SetupContinue.SPEECH_MODEL
+        polishNeedsAttention -> SetupContinue.POLISH_MODEL
+        !readiness.microphoneGranted -> SetupContinue.MICROPHONE
+        else -> SetupContinue.AUTO_PASTE
+    }
+}
+
 /** The calm card, only once core setup is done, so the page never carries two alarm cards. */
 internal fun calmAutoPasteNotice(readiness: AppReadiness, autoPaste: AutoPasteAvailability): AutoPasteNotice? =
     if (readiness.coreReady) autoPasteNotice(autoPaste, readiness.accessibilityShortcutOn) else null
+
+/**
+ * Mode-aware calm auto-paste card (#35): uses the same mode-aware core readiness as
+ * [setupCardShows], so Off / configured cloud polish can still show the auto-paste recovery card
+ * and a missing cloud key never shows both cards at once.
+ */
+internal fun calmAutoPasteNotice(
+    readiness: AppReadiness,
+    autoPaste: AutoPasteAvailability,
+    providerSettings: ProviderSettingsUiState,
+): AutoPasteNotice? =
+    if (ReadinessDiagnostics.coreReadyForMode(readiness, providerSettings) &&
+        !setupCardShows(readiness, autoPaste, providerSettings)
+    ) {
+        autoPasteNotice(autoPaste, readiness.accessibilityShortcutOn)
+    } else {
+        null
+    }
 
 /** The words of the Permissions page's calm auto-paste card. */
 internal data class AutoPasteNotice(val title: String, val body: String)

@@ -21,6 +21,8 @@ internal data class AppUiState(
     val models: ModelWorkUiState = ModelWorkUiState(),
     /** Where the floating button may appear, from `BubbleVisibilityViewModel` (#523). */
     val bubbleVisibility: BubbleVisibilityUiState = BubbleVisibilityUiState(),
+    /** Increments on model download/adoption work updates so Permissions storage stays fresh (#35). */
+    val storageRefreshTick: Int = 0,
 ) {
     /**
      * True until preferences, terms, transcripts and readiness have each emitted once. Read from each

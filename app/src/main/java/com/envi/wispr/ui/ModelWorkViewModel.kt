@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -128,16 +129,34 @@ internal class ModelWorkViewModel(
         }
     }
 
+    private val _storageRefreshTick = MutableStateFlow(0)
+    val storageRefreshTick: StateFlow<Int> = _storageRefreshTick.asStateFlow()
+    private var lastStorageSnapshot: List<Triple<java.util.UUID, WorkInfo.State, androidx.work.Data>>? = null
+
     /**
      * One signal per new set of finished works, across every item of each watched chain (WorkManager does not
      * promise the newly finished item is first), so a later finish is not lost behind an older finished work
      * and a repeated snapshot signals nothing. Cold: the activity collects it while started ([collectModelRefresh]).
+     *
+     * Also bumps [storageRefreshTick] whenever any watched work changes state or progress (#35) so
+     * Permissions Storage refreshes from this same single WorkManager subscription without double-subscribing.
      */
-    val finished: Flow<Unit> = combine(WATCHED.map(work)) { lists ->
-        lists.flatMap { infos -> infos.filter { it.state.isFinished } }
-            .map { it.id to it.state }
-            .toSet()
-    }.distinctUntilChanged().filter { it.isNotEmpty() }.map { }
+    val finished: Flow<Unit> = combine(WATCHED.map(work)) { lists -> lists.flatMap { it } }
+        .onEach { infos ->
+            val snapshotNow = infos.map { Triple(it.id, it.state, it.progress) }
+            if (snapshotNow != lastStorageSnapshot) {
+                lastStorageSnapshot = snapshotNow
+                _storageRefreshTick.update { it + 1 }
+            }
+        }
+        .map { infos ->
+            infos.filter { it.state.isFinished }
+                .map { it.id to it.state }
+                .toSet()
+        }
+        .distinctUntilChanged()
+        .filter { it.isNotEmpty() }
+        .map { }
 
     class Factory(
         private val appContext: Context,

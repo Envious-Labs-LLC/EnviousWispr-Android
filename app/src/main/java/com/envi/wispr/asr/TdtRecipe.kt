@@ -42,19 +42,23 @@ internal class TdtRecipe(private val runner: TdtRunner) {
     }
 
     /** Transcribe a whole take of 16 kHz mono samples. */
-    fun transcribe(samples: FloatArray): Result {
+    fun transcribe(samples: FloatArray): Result = transcribe(ArraySampleSource(samples))
+
+    /** Transcribe a whole take of 16 kHz mono samples from a random-access source (#117). */
+    fun transcribe(source: FloatSampleSource): Result {
         checkpoint(AsrObserver.Phase.WINDOW)
-        val n = samples.size
+        val n = source.size
         if (n < MIN_SAMPLES) return Result("", 0, 0)
         // Up to 30 s: one pass at the take's real length (#453). The macOS encoder has a fixed 15 s input, so the
         // recipe pads; this one runs on the CPU, where padding a 3 s take to 15 s made it 3 to 5x slower on Test Lab
         // phones (A15, A35, S24, 2026-10-21), and at 26 s one pass took 35 to 38% less time than two windows on the
         // S24 and A35. Longer takes keep the windowed path below.
         if (n <= ONE_PASS_SAMPLES) {
-            val aligned = if (n % FRAME == 0) samples else samples.copyOf(n + FRAME - n % FRAME)
+            val slice = source.copyRange(0, n)
+            val aligned = if (n % FRAME == 0) slice else slice.copyOf(n + FRAME - n % FRAME)
             return Result(text(decodeWindow(aligned, context = 0, offsetSample = 0, isLast = true, padToWindow = false)), 1, 0)
         }
-        val speechEnd = speechEnd(samples)
+        val speechEnd = speechEnd(source)
         val outputs = ArrayList<List<Token>>()
         var start = 0
         var index = 0
@@ -68,7 +72,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
             if (end <= start || audioEnd <= start) break
             val context = if (warmup > 0) 0 else if (index > 0) FRAME else 0
             val contextStart = start - max(warmup, context)
-            val segment = samples.copyOfRange(contextStart, audioEnd)
+            val segment = source.copyRange(contextStart, audioEnd)
             outputs += if (warmup > 0) {
                 // Final chunk backfilled with real audio: decode from frame 0, emit only from `start` (ChunkProcessor :528-565).
                 decodeWindow(segment, 0, contextStart, isLast, padToWindow = true, emitAfterFrame = start / FRAME, startFrame = 0)
@@ -85,7 +89,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         if (outputs.size > 1) merged = collapseSeamDuplicates(merged)
         var repairs = 0
         if (outputs.size > 1 && merged.size > 1) {
-            val repaired = repairSeamGaps(samples, merged)
+            val repaired = repairSeamGaps(source, merged)
             repairs = repaired.size - merged.size
             merged = repaired
         }
@@ -331,11 +335,24 @@ internal class TdtRecipe(private val runner: TdtRunner) {
 
     // ---- seam-gap repair (ChunkProcessor.repairSeamGaps :1394-1514)
 
-    internal fun repairSeamGaps(samples: FloatArray, tokens: List<Token>): List<Token> {
+    internal fun repairSeamGaps(samples: FloatArray, tokens: List<Token>): List<Token> =
+        repairSeamGaps(ArraySampleSource(samples), tokens)
+
+    internal fun repairSeamGaps(source: FloatSampleSource, tokens: List<Token>): List<Token> {
         checkpoint(AsrObserver.Phase.REPAIR)
-        val n = samples.size
+        val n = source.size
         val frameCount = n / FRAME
-        val rms = FloatArray(frameCount) { f -> frameRms(samples, f * FRAME, FRAME, AsrObserver.Phase.REPAIR) }
+        val rms = FloatArray(frameCount)
+        var blockFrame = 0
+        while (blockFrame < frameCount) {
+            val blockEndFrame = min(frameCount, blockFrame + RMS_BLOCK_FRAMES)
+            val blockStart = blockFrame * FRAME
+            val block = source.copyRange(blockStart, blockEndFrame * FRAME)
+            for (f in blockFrame until blockEndFrame) {
+                rms[f] = frameRms(block, (f - blockFrame) * FRAME, FRAME, AsrObserver.Phase.REPAIR, globalOffset = blockStart)
+            }
+            blockFrame = blockEndFrame
+        }
         val threshold = rms.filter { it > 0f }.sorted().let { sorted ->
             if (sorted.isEmpty()) SPEECH_RMS_CEILING else (sorted[min(sorted.size - 1, (sorted.size * 0.75).toInt())] * 0.3f).coerceIn(SPEECH_RMS_FLOOR, SPEECH_RMS_CEILING)
         }
@@ -379,7 +396,7 @@ internal class TdtRecipe(private val runner: TdtRunner) {
                     val windowStart = max(0, min(placement, n - REPAIR_WINDOW)) / FRAME * FRAME
                     val windowEnd = min(windowStart + REPAIR_WINDOW, n)
                     if (windowEnd <= windowStart) continue
-                    val window = decodeWindow(samples.copyOfRange(windowStart, windowEnd), 0, windowStart, windowEnd >= n, padToWindow = true)
+                    val window = decodeWindow(source.copyRange(windowStart, windowEnd), 0, windowStart, windowEnd >= n, padToWindow = true)
                     val candidate = window.filter { it.frame in (gapStart + 1) until (gapEnd - 1) }.toMutableList()
                     while (candidate.isNotEmpty() && candidate.first().id !in spliceSafe) { checkpoint(AsrObserver.Phase.REPAIR, candidate.size); candidate.removeAt(0) }
                     val lead = neighbour(working, i, -1)
@@ -404,26 +421,34 @@ internal class TdtRecipe(private val runner: TdtRunner) {
         return tokens.joinToString("") { checkpoint(AsrObserver.Phase.TEXT, it.frame); vocab[it.id] }.replace(BOUNDARY, " ").trim()
     }
 
-    private fun frameRms(samples: FloatArray, from: Int, count: Int, phase: AsrObserver.Phase): Float {
+    private fun frameRms(samples: FloatArray, from: Int, count: Int, phase: AsrObserver.Phase, globalOffset: Int = 0): Float {
         var sum = 0.0
         val end = min(samples.size, from + count)
-        for (i in from until end) { if ((i - from) % 256 == 0) checkpoint(phase, i); sum += samples[i] * samples[i] }
+        for (i in from until end) { if ((i - from) % 256 == 0) checkpoint(phase, globalOffset + i); sum += samples[i] * samples[i] }
         return if (end > from) sqrt(sum / (end - from)).toFloat() else 0f
     }
 
     /** Last speech-bearing sample: trailing 80 ms frames under the floor are trimmed (ChunkProcessor :112-128). */
-    private fun speechEnd(samples: FloatArray): Int {
-        var end = samples.size
-        while (end > 0) {
-            val from = max(0, end - FRAME)
-            if (frameRms(samples, from, end - from, AsrObserver.Phase.SPEECH_END) >= SPEECH_RMS_FLOOR) return end
-            end = from
+    private fun speechEnd(source: FloatSampleSource): Int {
+        var blockEnd = source.size
+        while (blockEnd > 0) {
+            val blockStart = max(0, blockEnd - RMS_BLOCK_FRAMES * FRAME)
+            val block = source.copyRange(blockStart, blockEnd)
+            var end = blockEnd
+            while (end > blockStart) {
+                val from = max(blockStart, end - FRAME)
+                if (frameRms(block, from - blockStart, end - from, AsrObserver.Phase.SPEECH_END, globalOffset = blockStart) >= SPEECH_RMS_FLOOR) {
+                    return end
+                }
+                end = from
+            }
+            blockEnd = blockStart
         }
-        return samples.size
+        return source.size
     }
 
-
     internal companion object {
+        private const val RMS_BLOCK_FRAMES = 64
         const val SAMPLE_RATE = 16_000
         const val FRAME = 1_280
         const val SECONDS_PER_FRAME = 0.08

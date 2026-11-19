@@ -60,15 +60,17 @@ class AsrServiceShapeTest {
         val transcribe = body("private fun transcribeFromFile(")
         val admission = transcribe.indexOf("owner.use(")
         assertTrue("the file path is admitted through the owner", admission >= 0)
+        val fileOpen = transcribe.indexOf("RandomAccessFile(file, \"r\")")
+        assertTrue("file transcription streams via RandomAccessFile instead of file.readBytes() (#117)", fileOpen > admission && !transcribe.contains("file.readBytes()"))
         listOf("AsrFailureReason.AUDIO_MISSING", "AsrFailureReason.OVER_LIMIT").forEach { reason ->
             val at = transcribe.indexOf(reason)
             assertTrue("$reason is answered in transcribeFromFile", at >= 0)
             assertTrue("$reason is classified inside the owned task", at > admission)
-            assertTrue("$reason precedes file reading and decoding", at < transcribe.indexOf("file.readBytes()"))
+            assertTrue("$reason precedes file reading and decoding", at < fileOpen)
         }
         assertTrue(transcribe.contains("owner.use(transcriptionBoundMs(RecordingLimits.MAX_AUDIO_BYTES), entry.request)"))
         val metadata = transcribe.indexOf("val audioBytes = file.length()")
         val tighten = transcribe.indexOf("entry.request.tighten(transcriptionBoundMs(audioBytes))")
-        assertTrue(metadata > admission && tighten > metadata && tighten < transcribe.indexOf("file.readBytes()"))
+        assertTrue(metadata > admission && tighten > metadata && tighten < fileOpen)
     }
 }

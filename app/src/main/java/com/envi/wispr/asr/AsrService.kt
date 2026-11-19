@@ -350,19 +350,29 @@ class AsrService : Service() {
             }
             if (!entry.request.tighten(transcriptionBoundMs(audioBytes))) return@use { }
             entry.request.check()
-            // The read is its own boundary (G1 D4): a failure here is the FILE, never the decoder.
-            val audioData = try {
-                file.readBytes()
+            // Stream PCM16 windows directly from disk (#117) instead of allocating full ByteArray + FloatArray.
+            // Opening, reading, and closing stay under the FILE boundary (G1 D4), never reported as a decoder error.
+            val durationSec = PcmAudio.durationSeconds(audioBytes)
+            val sampleCount = (audioBytes / PcmAudio.BYTES_PER_SAMPLE).toInt()
+            try {
+                java.io.RandomAccessFile(file, "r").use { raf ->
+                    log.log("Streaming $audioBytes bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
+                    log.mark("asr_file_read")
+                    entry.request.check()
+                    val source = PcmFileSampleSource(raf, sampleCount) { entry.request.check() }
+                    doTranscribeSource(rec, source, audioBytes, durationSec, callback, failure, log, entry.request, entry.observer())
+                }
+            } catch (cancelled: AsrCancelled) {
+                throw cancelled
+            } catch (cleanup: AsrCleanupFailure) {
+                throw cleanup
+            } catch (io: java.io.IOException) {
+                log.error("Failed to read audio file", io)
+                return@use { failure.report(AsrFailureReason.AUDIO_UNREADABLE, io.javaClass.simpleName) }
             } catch (e: Exception) {
-                log.error("Failed to read audio file", e)
-                val detail = e.javaClass.simpleName
-                return@use { failure.report(AsrFailureReason.AUDIO_UNREADABLE, detail) }
+                log.error("Failed to open audio file", e)
+                return@use { failure.report(AsrFailureReason.AUDIO_UNREADABLE, e.javaClass.simpleName) }
             }
-            val durationSec = PcmAudio.durationSeconds(audioData.size.toLong())
-            log.log("Read ${audioData.size} bytes (${String.format("%.1f", durationSec)}s) for take $takeId")
-            log.mark("asr_file_read")
-            entry.request.check()
-            doTranscribe(rec, audioData, durationSec, callback, failure, log, entry.request, entry.observer())
         }
     }
 
@@ -386,6 +396,50 @@ class AsrService : Service() {
         validBytes: Int = audioData.size,
         route: ResultRoute = ResultRoute.Ordinary,
     ): () -> Unit {
+        if (rec == null) {
+            log.log("Transcribing $validBytes bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
+            log.error("Recognizer not initialized")
+            return { failure.report(AsrFailureReason.MODEL_NOT_LOADED, "") }
+        }
+        val samples = try {
+            request.check()
+            PcmAudio.toFloatSamples(audioData, validBytes) { request.check() }
+        } catch (cancelled: AsrCancelled) {
+            throw cancelled
+        } catch (cleanup: AsrCleanupFailure) {
+            throw cleanup
+        } catch (e: Exception) {
+            if (route == ResultRoute.Ordinary) log.error("Transcription failed", e)
+            else log.warn("Protected speech decode failed")
+            val detail = if (route == ResultRoute.Ordinary) e.javaClass.simpleName else "protected_recovery_unavailable"
+            return { failure.report(AsrFailureReason.DECODE_FAILED, detail) }
+        }
+        return doTranscribeSource(
+            rec,
+            ArraySampleSource(samples),
+            validBytes.toLong(),
+            durationSec,
+            callback,
+            failure,
+            log,
+            request,
+            observer,
+            route,
+        )
+    }
+
+    private fun doTranscribeSource(
+        rec: LoadedRecognizer?,
+        source: FloatSampleSource,
+        validBytes: Long,
+        durationSec: Float,
+        callback: IAsrCallback?,
+        failure: FailureReporter,
+        log: TakeLog,
+        request: AsrRequest,
+        observer: AsrObserver,
+        route: ResultRoute = ResultRoute.Ordinary,
+    ): () -> Unit {
         log.log("Transcribing $validBytes bytes (${String.format("%.1f", durationSec)}s) (PID: ${android.os.Process.myPid()})")
 
         if (rec == null) {
@@ -397,13 +451,11 @@ class AsrService : Service() {
         // a throwing DELIVERY below can never be reported as a decode failure or produce a second callback.
         val rawText = try {
             request.check()
-            val samples = PcmAudio.toFloatSamples(audioData, validBytes) { request.check() }
-            request.check()
             log.mark("pcm_to_float")
 
             val t0 = SystemClock.elapsedRealtime()
 
-            val result = rec.engine.transcribe(samples, request.cancellation, observer)
+            val result = rec.engine.transcribe(source, request.cancellation, observer)
 
             val decodeMs = SystemClock.elapsedRealtime() - t0
             val text = result.text.trim()
@@ -420,6 +472,13 @@ class AsrService : Service() {
             throw cancelled
         } catch (cleanup: AsrCleanupFailure) {
             throw cleanup
+        } catch (io: java.io.IOException) {
+            if (route == ResultRoute.Ordinary) {
+                log.error("Failed to read audio file", io)
+                return { failure.report(AsrFailureReason.AUDIO_UNREADABLE, io.javaClass.simpleName) }
+            }
+            log.warn("Protected speech decode failed")
+            return { failure.report(AsrFailureReason.DECODE_FAILED, "protected_recovery_unavailable") }
         } catch (e: Exception) {
             if (route == ResultRoute.Ordinary) log.error("Transcription failed", e)
             else log.warn("Protected speech decode failed")

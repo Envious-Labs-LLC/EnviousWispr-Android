@@ -542,6 +542,16 @@ class AutoPasteWiringTest {
         )
     }
 
+    @Test
+    fun historyRecoveryDeclinesAutomaticSiblingRefocus() {
+        val runner = read("paste/AccessibilityInsertionRunner.kt")
+        val refocusBody = slice(runner, "override fun refocusOriginal(): RefocusResult {", "\n        }\n")
+        assertTrue(
+            "History recovery must wait for user focus instead of yanking focus off another field",
+            refocusBody.contains("if (pending.recoveryTranscriptId != null) return RefocusResult.DECLINED"),
+        )
+    }
+
     /*
      * DELETED, and recorded rather than dropped in silence:
      * `eachDictationRetractsThePreviousOnesClipboardClaim`.

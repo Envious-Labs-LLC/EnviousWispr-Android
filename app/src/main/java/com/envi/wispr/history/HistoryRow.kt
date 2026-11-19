@@ -27,4 +27,15 @@ internal interface HistoryRow {
         override val savedNow: Boolean = false
         override fun wordsKept(): WordsKept = WordsKept.LOST
     }
+
+    /**
+     * A row that is already durably saved in History (re-insertion from History, #17).
+     * Reports [savedNow] as true so fallback announcements stay accurate, while resolving to 0 on the
+     * regular finalization path so failed retries do not overwrite the stored row.
+     */
+    object Saved : HistoryRow {
+        override fun resolveOnQueue(): Long = 0L
+        override val savedNow: Boolean = true
+        override fun wordsKept(): WordsKept = WordsKept.LOST
+    }
 }

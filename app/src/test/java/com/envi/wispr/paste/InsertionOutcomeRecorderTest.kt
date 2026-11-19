@@ -29,6 +29,7 @@ import org.junit.Test
 class InsertionOutcomeRecorderTest {
     private class OutcomeDao(private val answer: Int) : TranscriptDao {
         val outcomes = mutableListOf<String>()
+        val statusUpdates = mutableListOf<String>()
         /** The timings each outcome write carried (#378 D8): insertion, then end to end. */
         val timings = mutableListOf<Pair<Long?, Long?>>()
         override fun observeAll(): Flow<List<TranscriptEntity>> = flowOf(emptyList())
@@ -43,7 +44,10 @@ class InsertionOutcomeRecorderTest {
         override suspend fun deleteAll() = Unit
         override suspend fun deleteById(id: Long): Int = 1
         override suspend fun deleteWordlessRows(): Int = 0
-        override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int = 1
+        override suspend fun updateStatus(id: Long, status: String, stateChangedAtMs: Long, interrupted: Boolean, insertionResult: String?): Int {
+            statusUpdates += "$id:$status:$insertionResult:$interrupted"
+            return 1
+        }
         override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?): Int = 1
         override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean, insertionMs: Long?, endToEndMs: Long?): Int {
             outcomes += "$id:$status:$result:$interrupted"
@@ -66,6 +70,7 @@ class InsertionOutcomeRecorderTest {
 
     private val events = mutableListOf<AnalyticsEvent>()
     private val crumbs = mutableListOf<Map<String, String?>>()
+    private val warnings = mutableListOf<String>()
 
     private fun recorder(dao: OutcomeDao, admitted: Enqueued = Enqueued.ACCEPTED) = InsertionOutcomeRecorder(
         enqueue = { _, kind, body ->
@@ -75,7 +80,7 @@ class InsertionOutcomeRecorderTest {
         },
         capture = { events += it },
         outcomeTrail = { crumbs += it },
-        warn = {},
+        warn = { warnings += it },
     )
 
     private fun ending(row: HistoryRow, takeId: String? = "take-1", endToEndMs: Long? = null) = InsertionEnding(
@@ -148,5 +153,53 @@ class InsertionOutcomeRecorderTest {
             assertTrue("the runner no longer holds $gone", !runner.contains(gone))
         }
         assertTrue(runner.contains("outcomes.record("))
+    }
+
+    /** #17: verified History recovery marks the row completed without emitting a duplicate terminal event; failed recovery leaves the row retryable. */
+    @Test fun historyRecoveryUpdatesRowOnlyOnVerifiedDelivery() {
+        val dao = OutcomeDao(answer = 1)
+        val verifiedRecovery = InsertionEnding(
+            row = HistoryRow.Saved,
+            takeId = null,
+            targetPackage = "com.google.android.gm",
+            status = TranscriptEntity.STATUS_COMPLETED,
+            result = InsertionResults.COMMITTED,
+            interrupted = false,
+            clipboard = null,
+            latencyMs = 180L,
+            recoveryTranscriptId = 19L,
+        )
+        recorder(dao).record(verifiedRecovery)
+        assertEquals(listOf("19:completed:committed:false"), dao.statusUpdates)
+        assertTrue("recovery must not call finalizeInsertionOutcome", dao.outcomes.isEmpty())
+        assertTrue("recovery must not emit duplicate insertion.terminal", events.isEmpty())
+
+        dao.statusUpdates.clear()
+        val failedRecovery = verifiedRecovery.copy(
+            status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+            result = InsertionResults.COPY_ONLY,
+            interrupted = true,
+            clipboard = ClipboardOutcome.COPIED,
+        )
+        recorder(dao).record(failedRecovery)
+        assertTrue("failed recovery leaves row unchanged", dao.statusUpdates.isEmpty())
+        assertTrue(events.isEmpty())
+
+        val unverifiedRecovery = verifiedRecovery.copy(
+            status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+            result = InsertionResults.COPY_ONLY_UNVERIFIED,
+            interrupted = true,
+            clipboard = ClipboardOutcome.COPIED,
+        )
+        recorder(dao).record(unverifiedRecovery)
+        assertEquals(listOf("19:insertion_interrupted:copy_only_unverified:true"), dao.statusUpdates)
+        assertTrue(
+            "unverified recovery is flagged in session state",
+            19L in com.envi.wispr.ui.HistoryInsertionRecovery.sessionUnverifiedIds.value,
+        )
+        com.envi.wispr.ui.HistoryInsertionRecovery.resetSessionRecoveredForTest()
+
+        recorder(dao, admitted = Enqueued.REJECTED).record(verifiedRecovery)
+        assertTrue("rejected recovery write logs a warning", warnings.any { it.contains("19") })
     }
 }

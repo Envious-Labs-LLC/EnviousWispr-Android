@@ -13,6 +13,11 @@ internal object PrivacyDisclosures {
     const val ON_DEVICE_SUMMARY = "Your voice stays on this phone. Audio never leaves it. Your dictated words stay here too, unless you " +
         "connect your own AI provider for cloud polish; then the selected text goes straight to that provider under your key."
 
+    /** Shown inside the Contacts import confirmation sheet before any contact name enters the word list (#32). */
+    const val CONTACTS_IMPORT = "Importing reads contact names on this phone to show this preview, and saves them only after you tap Add. " +
+        "EnviousWispr never uploads your address book. Later, if you connect a cloud AI provider for polish, " +
+        "your top saved custom words (including imported names) are sent with your text as spelling hints."
+
     /**
      * What leaves for telemetry (issue #176): the closed description of the two vendors' rows. Every
      * claim here is enforced by `telemetry/PayloadSanitizer.kt` (allowlist first: no words, no names, no

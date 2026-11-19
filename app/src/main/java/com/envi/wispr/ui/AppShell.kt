@@ -224,6 +224,8 @@ internal fun EnviousWisprApp(
                             onDelete = actions.dictionary.onDelete,
                             onBulkDelete = actions.dictionary.onBulkDelete,
                             onImport = actions.dictionary.onImport,
+                            onPreviewContacts = actions.dictionary.onPreviewContacts,
+                            onApplyContacts = actions.dictionary.onApplyContacts,
                         )
                         AppDestination.Transcription -> TranscriptionScreen(
                             speechModel = state.models.speech,

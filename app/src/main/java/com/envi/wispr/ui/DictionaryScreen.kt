@@ -1,10 +1,16 @@
 package com.envi.wispr.ui
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.Settings
 import kotlin.coroutines.cancellation.CancellationException
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -63,13 +69,18 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.envi.wispr.privacy.PrivacyDisclosures
 import com.envi.wispr.ui.theme.brandButtonColors
 import com.envi.wispr.ui.theme.brandCardBorder
+import com.envi.wispr.vocabulary.ContactNameShaper
+import com.envi.wispr.vocabulary.ContactsImportPlan
+import com.envi.wispr.vocabulary.ContactsReader
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermAuthoring
 import com.envi.wispr.vocabulary.CustomTermRecord
-import com.envi.wispr.vocabulary.MatchStrictness
+import com.envi.wispr.vocabulary.ImportPreview
 import com.envi.wispr.vocabulary.VocabularyExport
+import com.envi.wispr.vocabulary.MatchStrictness
 import com.envi.wispr.vocabulary.VocabularyTransfer
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -182,6 +193,33 @@ private fun ClipboardGlyph() {
     }
 }
 
+/** An address-card silhouette for importing names from Contacts (#32). */
+@Composable
+private fun ContactsGlyph() {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.size(18.dp)) {
+        val stroke = 1.7.dp.toPx()
+        drawCircle(
+            color,
+            radius = size.minDimension * 0.19f,
+            center = Offset(size.width * 0.50f, size.height * 0.34f),
+            style = Stroke(width = stroke),
+        )
+        val shoulders = androidx.compose.ui.graphics.Path().apply {
+            moveTo(size.width * 0.18f, size.height * 0.84f)
+            cubicTo(
+                size.width * 0.18f,
+                size.height * 0.58f,
+                size.width * 0.82f,
+                size.height * 0.58f,
+                size.width * 0.82f,
+                size.height * 0.84f,
+            )
+        }
+        drawPath(shoulders, color, style = Stroke(width = stroke, cap = StrokeCap.Round))
+    }
+}
+
 /** A right-pointing chevron, for a tappable picker card. */
 @Composable
 private fun ChevronGlyph() {
@@ -277,6 +315,8 @@ internal fun DictionaryScreen(
     onDelete: (CustomTermRecord) -> Unit,
     onBulkDelete: (Set<Long>) -> Unit,
     onImport: (String) -> Unit,
+    onPreviewContacts: suspend () -> ContactsImportPlan = { ContactsImportPlan.EMPTY },
+    onApplyContacts: (ContactsImportPlan) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -370,6 +410,48 @@ internal fun DictionaryScreen(
     var confirmBulkDelete by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
     var showImportPicker by remember { mutableStateOf(false) }
+    var pendingContactsPlan by remember { mutableStateOf<ContactsImportPlan?>(null) }
+    var loadingContactsPreview by remember { mutableStateOf(false) }
+    fun loadContactsPreview() {
+        if (loadingContactsPreview) return
+        loadingContactsPreview = true
+        scope.launch {
+            try {
+                runCatching { onPreviewContacts() }
+                    .onSuccess { pendingContactsPlan = it }
+                    .onFailure { failure ->
+                        if (failure is CancellationException) throw failure
+                        val message = if (failure is SecurityException) {
+                            "Contacts permission is needed to preview names."
+                        } else {
+                            failure.message ?: "Could not read Contacts."
+                        }
+                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                    }
+            } finally {
+                loadingContactsPreview = false
+            }
+        }
+    }
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            loadContactsPreview()
+        } else {
+            val activity = context as? Activity
+            val canPromptAgain = activity != null &&
+                ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.READ_CONTACTS)
+            if (!canPromptAgain && activity != null) {
+                Toast.makeText(context, "Allow Contacts in App Settings to import names.", Toast.LENGTH_LONG).show()
+                activity.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")),
+                )
+            } else {
+                Toast.makeText(context, "Contacts permission is needed to preview names.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     val selectionMode = selectedIds.isNotEmpty()
     ScreenContainer {
         if (selectionMode) {
@@ -554,6 +636,24 @@ internal fun DictionaryScreen(
                 showImportPicker = false
                 importFile.launch(arrayOf("application/json", "text/plain"))
             },
+            onImportContacts = {
+                showImportPicker = false
+                if (ContactsReader.hasPermission(context)) {
+                    loadContactsPreview()
+                } else {
+                    contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                }
+            },
+        )
+    }
+    pendingContactsPlan?.let { plan ->
+        ContactsImportConfirmDialog(
+            plan = plan,
+            onDismiss = { pendingContactsPlan = null },
+            onConfirm = {
+                onApplyContacts(plan)
+                pendingContactsPlan = null
+            },
         )
     }
 }
@@ -680,12 +780,19 @@ private fun ImportPickerDialog(
     onDismiss: () -> Unit,
     onPasteWords: () -> Unit,
     onOpenFile: () -> Unit,
+    onImportContacts: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Import") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ImportPickerCard(
+                    glyph = { ContactsGlyph() },
+                    title = "Import from Contacts",
+                    description = "Preview distinctive names from your address book.",
+                    onClick = onImportContacts,
+                )
                 ImportPickerCard(
                     glyph = { ClipboardGlyph() },
                     title = "Paste Words",
@@ -702,6 +809,51 @@ private fun ImportPickerDialog(
         },
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ContactsImportConfirmDialog(
+    plan: ContactsImportPlan,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val hasNew = plan.newContactCount > 0 && plan.newTermCount > 0
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import from Contacts") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    ContactNameShaper.confirmationSummary(plan),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (hasNew) {
+                    Text(
+                        PrivacyDisclosures.CONTACTS_IMPORT,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            if (hasNew) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+        confirmButton = {
+            if (hasNew) {
+                val label = if (plan.newContactCount == 1) "Add 1 name" else "Add ${plan.newContactCount} names"
+                Button(onClick = onConfirm, colors = brandButtonColors()) {
+                    Text(label)
+                }
+            } else {
+                Button(onClick = onDismiss, colors = brandButtonColors()) {
+                    Text("Done")
+                }
+            }
+        },
     )
 }
 

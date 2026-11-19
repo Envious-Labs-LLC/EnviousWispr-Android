@@ -71,6 +71,21 @@
             </intent-filter>
         </activity>
 
+        <!-- Quick-add selected text from any app into Your Words (#31) -->
+        <activity
+            android:name=".ui.QuickAddWordActivity"
+            android:exported="true"
+            android:label="Add to EnviousWispr"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.EnviousWispr.Launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <!-- Headless owner for the complete dictation session. -->
         <service
             android:name=".ui.DictationSessionService"

@@ -20,8 +20,10 @@ internal object CustomVocabularyFormatter {
 
     fun render(words: List<CustomTerm>): String? {
         if (words.isEmpty()) return null
+        // Sort higher priority first (`priority DESC`), matching CustomTermDao and VocabularyCore.rank,
+        // so user-added terms (priority 0) are never crowded out by lower-priority imports (-10).
         val sorted = words
-            .sortedWith(compareBy<CustomTerm>({ it.priority }, { it.spelling }))
+            .sortedWith(compareByDescending<CustomTerm> { it.priority }.thenBy { it.spelling })
             .take(MAX_WORDS)
         val lines = ArrayList<String>(sorted.size)
         var charCount = FULL_HEADER.length

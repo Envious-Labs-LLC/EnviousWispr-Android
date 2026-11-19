@@ -159,6 +159,8 @@ class SettingsActivity : ComponentActivity() {
                             onDelete = dictionaryViewModel::deleteCustomTerm,
                             onBulkDelete = dictionaryViewModel::bulkDeleteCustomTerms,
                             onImport = dictionaryViewModel::importCustomTerms,
+                            onPreviewContacts = dictionaryViewModel::previewContactsImport,
+                            onApplyContacts = dictionaryViewModel::applyContactsImport,
                         ),
                         transcription = TranscriptionActions(
                             onProcessingChanged = shellViewModel::setSpeechProcessing,

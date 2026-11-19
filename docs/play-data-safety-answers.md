@@ -7,8 +7,12 @@ Submission is not Google approval.
 
 ## FACT: what-the-app-actually-sends
 
-Audio stays on the phone. Optional cloud polish sends selected text/custom words straight to the
-chosen provider under the user's own key. Model downloads use the Envious Labs mirror with pinned
+Audio stays on the phone. Optional cloud polish sends selected text and top saved custom words
+straight to the chosen provider under the user's own key. Optional, user-initiated Contacts import
+(`READ_CONTACTS`) reads structured given and family names on-device to build a preview and saves
+them locally only after confirmation; EnviousWispr never uploads the address book or reads contacts
+silently, though saved imported names can travel as spelling hints with cloud polish if the user
+enables a cloud provider. Model downloads use the Envious Labs mirror with pinned
 Hugging Face fallback. Automatic PostHog/Sentry reports include usage, app/result/timing metadata,
 crash locations and a random install identifier; PostHog may derive approximate location from IP.
 Automatic reports exclude audio, dictated words, entered names, file contents and keys.
@@ -39,6 +43,13 @@ The submitted handling for every selected type is not ephemeral.
 Cloud sharing is declared conservatively. PostHog/Sentry process reports for Envious Labs and are not
 declared as sharing for that processor use. Installed apps covers target-app package metadata, not
 a claimed full app inventory. Email and submitted feedback must not disappear from the answers.
+
+### Pending candidate addition (#32, not yet submitted in Play Console)
+
+When the Contacts import candidate (`READ_CONTACTS`) ships in a public candidate, update the Play
+Console Data Safety form before release to include **Contacts** (`Collected: Yes`, `Shared: Yes`,
+`Choice: Optional`, `Purposes: App functionality`), matching optional cloud polish sending saved
+imported names as spelling hints when enabled by the user.
 
 The optional deletion badge/URL was not claimed; those optional form fields were left blank. The
 privacy policy provides a contact-request route. Do not substitute the old No-deletion-path statement

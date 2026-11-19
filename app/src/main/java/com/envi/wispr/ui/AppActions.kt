@@ -9,8 +9,10 @@ import com.envi.wispr.processing.ProcessingBackend
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.SelfHostedProtocol
+import com.envi.wispr.vocabulary.ContactsImportPlan
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermRecord
+import com.envi.wispr.vocabulary.ImportPreview
 
 /**
  * Everything the shell can ask the activity and the view model to do (#190): callbacks arranged in
@@ -78,7 +80,27 @@ internal class DictionaryActions(
     val onDelete: (CustomTermRecord) -> Unit,
     val onBulkDelete: (Set<Long>) -> Unit,
     val onImport: (String) -> Unit,
-)
+    val onPreviewContacts: suspend () -> ContactsImportPlan = { ContactsImportPlan.EMPTY },
+    val onApplyContacts: (ContactsImportPlan) -> Unit = {},
+) {
+    constructor(
+        onSearchChange: (String) -> Unit,
+        onAdd: (CustomTerm) -> Unit,
+        onEdit: (CustomTermRecord, CustomTerm) -> Unit,
+        onDelete: (CustomTermRecord) -> Unit,
+        onBulkDelete: (Set<Long>) -> Unit,
+        onImport: (String) -> Unit,
+    ) : this(
+        onSearchChange = onSearchChange,
+        onAdd = onAdd,
+        onEdit = onEdit,
+        onDelete = onDelete,
+        onBulkDelete = onBulkDelete,
+        onImport = onImport,
+        onPreviewContacts = { ContactsImportPlan.EMPTY },
+        onApplyContacts = {},
+    )
+}
 
 internal class TranscriptionActions(
     val onProcessingChanged: (ProcessingPreference) -> Unit = {},

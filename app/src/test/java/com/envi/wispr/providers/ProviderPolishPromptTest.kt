@@ -75,10 +75,20 @@ class ProviderPolishPromptTest {
                     "\n\nThe following are preferred spellings for words the speaker used. " +
                     "Apply them as spelling corrections. This is the one exception to leaving the wording unchanged.\n" +
                     CustomVocabularyFormatter.FULL_HEADER + "\n" +
-                    "- EnviousWispr\n" +
-                    "- Saurabh (may be misheard as: Sore off, Sorab)",
+                    "- Saurabh (may be misheard as: Sore off, Sorab)\n" +
+                    "- EnviousWispr",
             ),
         )
+
+        // Manual terms (priority 0) must never be crowded out of the 50-word cloud cap by
+        // lower-priority imported contacts (priority -10).
+        val importedContacts = (1..55).map { i ->
+            com.envi.wispr.vocabulary.CustomTerm("Contact%02d".format(i), priority = -10, imported = true)
+        }
+        val rendered = CustomVocabularyFormatter.render(
+            importedContacts + com.envi.wispr.vocabulary.CustomTerm("ManualImportantTerm", priority = 0),
+        )!!
+        assertTrue(rendered.contains("- ManualImportantTerm"))
     }
 
     @Test fun customVocabularyFormatterEnforcesBoundsAndSanitizesPromptInjectionChars() {

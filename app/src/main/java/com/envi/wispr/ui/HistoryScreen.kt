@@ -22,7 +22,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -48,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionOutcomeMessages
 import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.ui.theme.brandCardBorder
 import com.envi.wispr.polish.PolishEngineLabels
 import java.text.DateFormat
 import java.util.Date
@@ -120,7 +122,11 @@ internal fun HistoryScreen(
         }
         if (transcripts.isEmpty()) {
             item {
-                ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    border = brandCardBorder(),
+                ) {
                     Column(
                         Modifier.fillMaxWidth().padding(32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -240,7 +246,13 @@ private fun HistoryCard(
             .format(Date(transcript.createdAtMs))
     }
 
-    ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (expanded) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = brandCardBorder(selected = expanded),
+    ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier

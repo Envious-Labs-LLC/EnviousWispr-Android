@@ -1,10 +1,13 @@
 package com.envi.wispr.ui.theme
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -243,6 +246,7 @@ private val EnviousTypography: Typography = Typography().let { base ->
  * inconsistency they would notice.
  */
 private data class BrandFill(val container: Color, val content: Color)
+private data class BrandGreen(val track: Color, val thumb: Color, val statusText: Color)
 
 // No default. `Color.Unspecified` was one, and it is a PLAUSIBLE default rather than a sentinel: a
 // button outside the theme would render invisible rather than fail, which is the shape
@@ -250,6 +254,9 @@ private data class BrandFill(val container: Color, val content: Color)
 // is a programming error, so it throws.
 private val LocalBrandFill = staticCompositionLocalOf<BrandFill> {
     error("LocalBrandFill must be provided by EnviousWisprTheme")
+}
+private val LocalBrandGreen = staticCompositionLocalOf<BrandGreen> {
+    error("LocalBrandGreen must be provided by EnviousWisprTheme")
 }
 
 /** Colours for a primary action button, so a filled brand surface never renders as a pale lavender. */
@@ -261,6 +268,38 @@ internal fun brandButtonColors(): ButtonColors {
         contentColor = fill.content,
     )
 }
+
+/**
+ * Colours for toggle switches (#52): green when on in the brand palette (so enabled toggles stay
+ * distinct from purple labels and buttons), or Galaxy dynamic colours when the user opted into those.
+ * Verified in `scripts/generate-brand-palette.py` (`CONTRAST_PAIRS`).
+ */
+@Composable
+internal fun brandSwitchColors(): SwitchColors {
+    val green = LocalBrandGreen.current
+    return SwitchDefaults.colors(
+        checkedTrackColor = green.track,
+        checkedThumbColor = green.thumb,
+        checkedBorderColor = green.track,
+        disabledCheckedTrackColor = green.track.copy(alpha = 0.38f),
+        disabledCheckedThumbColor = green.thumb.copy(alpha = 0.6f),
+    )
+}
+
+/** Colour for green ready-status indicators (dots and inline status text). */
+@Composable
+internal fun brandReadyColor(): Color = LocalBrandGreen.current.track
+
+/** Accessible text colour for green inline ready status labels on card/page surfaces. */
+@Composable
+internal fun brandReadyTextColor(): Color = LocalBrandGreen.current.statusText
+
+/** Thin violet card outline (#52), brighter when the card is selected/active. */
+@Composable
+internal fun brandCardBorder(selected: Boolean = false): BorderStroke = BorderStroke(
+    width = if (selected) 1.5.dp else 1.dp,
+    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+)
 
 @Composable
 internal fun EnviousWisprTheme(
@@ -281,8 +320,16 @@ internal fun EnviousWisprTheme(
         darkTheme -> BrandFill(Color(0xFF8B46F0), Color(0xFFFFFFFF))
         else -> BrandFill(Color(0xFF7C3AED), Color(0xFFFFFFFF))
     }
+    val brandGreen = when {
+        usingDynamic -> BrandGreen(colorScheme.primary, colorScheme.onPrimary, colorScheme.primary)
+        darkTheme -> BrandGreen(Color(0xFF5CC99A), Color(0xFF063825), Color(0xFF5CC99A))
+        else -> BrandGreen(Color(0xFF008250), Color(0xFFFFFFFF), Color(0xFF006B42))
+    }
 
-    CompositionLocalProvider(LocalBrandFill provides brandFill) {
+    CompositionLocalProvider(
+        LocalBrandFill provides brandFill,
+        LocalBrandGreen provides brandGreen,
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = EnviousTypography,

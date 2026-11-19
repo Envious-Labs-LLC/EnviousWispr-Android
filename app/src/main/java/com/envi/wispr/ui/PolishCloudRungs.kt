@@ -57,6 +57,7 @@ import com.envi.wispr.providers.ModelAccess
 import com.envi.wispr.providers.Provider
 import com.envi.wispr.providers.capabilities
 import com.envi.wispr.providers.disclosure
+import com.envi.wispr.ui.theme.brandCardBorder
 
 /** Rungs 2 to 4. Split out so every piece of rung-3 state is keyed on the displayed tile. */
 @Composable
@@ -95,7 +96,10 @@ internal fun CloudRungs(
         }
     }
     if (settings.configured && settings.provider == Provider.SELF_HOSTED_POLISH) {
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f))) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)),
+            border = brandCardBorder(selected = true),
+        ) {
             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Self-hosted · ${hostOf(settings.endpoint)}", style = MaterialTheme.typography.titleSmall)
                 Text("Text is sent to your server.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -302,7 +306,7 @@ private fun ModelRung(
                     disabledContainerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     disabledContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
-                border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                border = brandCardBorder(selected = selected),
             ) {
                 Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f)) {
@@ -406,7 +410,7 @@ private fun ProviderTileButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     val name = provider.capabilities().displayName
     Surface(
         modifier = modifier
@@ -416,8 +420,8 @@ private fun ProviderTileButton(
             // the state is announced once rather than as an unlabelled mark beside a name.
             .semantics(mergeDescendants = true) { contentDescription = if (hasKey) "$name, key connected" else name },
         shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        color = if (selected) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceVariant,
+        border = brandCardBorder(selected = selected),
     ) {
         Box(Modifier.fillMaxSize()) {
             Column(
@@ -432,7 +436,7 @@ private fun ProviderTileButton(
             if (hasKey) {
                 Box(
                     Modifier.align(Alignment.TopEnd).padding(6.dp).size(7.dp)
-                        .background(if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, CircleShape),
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
                 )
             }
         }

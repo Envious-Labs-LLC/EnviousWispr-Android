@@ -33,7 +33,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -65,6 +64,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.ui.theme.brandButtonColors
+import com.envi.wispr.ui.theme.brandCardBorder
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermAuthoring
 import com.envi.wispr.vocabulary.CustomTermRecord
@@ -446,7 +446,10 @@ internal fun DictionaryScreen(
             Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         }
         if (terms.isEmpty()) {
-            ElevatedCard {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                border = brandCardBorder(),
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -465,7 +468,10 @@ internal fun DictionaryScreen(
                 }
             }
         } else {
-            Card {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                border = brandCardBorder(),
+            ) {
                 Column {
                     terms.forEachIndexed { index, record ->
                         DictionaryTermRow(
@@ -591,7 +597,10 @@ private fun CustomTermEditorDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 aliases.forEachIndexed { index, alias ->
-                    ElevatedCard {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        border = brandCardBorder(),
+                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -708,8 +717,9 @@ private fun ImportPickerCard(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ),
+        border = brandCardBorder(),
     ) {
         Row(
             modifier = Modifier
@@ -718,13 +728,7 @@ private fun ImportPickerCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center,
-            ) { glyph() }
+            BrandIconTile { glyph() }
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall)
                 Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

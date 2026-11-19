@@ -8,13 +8,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.envi.wispr.ui.theme.brandCardBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -46,18 +48,25 @@ internal fun ModelCard(
     facts: List<String>,
     /** The model this card is about, so the card can say what it costs in storage. */
     model: com.envi.wispr.models.ModelDescriptor? = null,
+    selected: Boolean = state.health == ModelHealth.READY,
+    icon: (@Composable () -> Unit)? = null,
     onAction: () -> Unit = {},
     onPause: () -> Unit = {},
     onResume: () -> Unit = {},
 ) {
-    ElevatedCard {
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = brandCardBorder(selected = selected),
+    ) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column {
+                icon?.let { BrandIconTile { it() } }
+                Column(Modifier.weight(1f)) {
                     Text(eyebrow, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     Text(title, style = MaterialTheme.typography.headlineMedium)
                 }
@@ -236,15 +245,19 @@ private fun ModelStorageLine(model: com.envi.wispr.models.ModelDescriptor, state
 @Composable
 private fun FactPill(text: String) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         shape = RoundedCornerShape(50),
+        border = brandCardBorder(),
     ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FactChipGlyph(text)
+            Text(text, style = MaterialTheme.typography.labelMedium)
+        }
     }
 }
 

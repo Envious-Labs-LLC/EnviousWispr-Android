@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Slider
@@ -33,6 +34,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -40,6 +42,10 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.ui.theme.brandCardBorder
+import com.envi.wispr.ui.theme.brandReadyColor
+import com.envi.wispr.ui.theme.brandReadyTextColor
+import com.envi.wispr.ui.theme.brandSwitchColors
 
 /**
  * The body of every screen and page.
@@ -89,9 +95,30 @@ internal fun ScreenContainer(
 internal fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-        Card {
+        Card(
+            shape = MaterialTheme.shapes.medium,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            border = brandCardBorder(),
+        ) {
             Column(Modifier.fillMaxWidth(), content = content)
         }
+    }
+}
+
+/** Stepped rounded-square icon tile used on model cards and featured setting rows (#52). */
+@Composable
+internal fun BrandIconTile(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(44.dp)
+            .clip(MaterialTheme.shapes.small)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
     }
 }
 
@@ -183,12 +210,17 @@ internal fun SettingsToggleRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        icon?.invoke()
+        icon?.let { BrandIconTile { it() } }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+            enabled = enabled,
+            colors = brandSwitchColors(),
+        )
     }
 }
 
@@ -276,7 +308,12 @@ internal fun ReadinessChip(label: String, ready: Boolean, description: String? =
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            StatusDot(ready, description)
+            StatusDot(
+                ready = ready,
+                description = description,
+                readyColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                notReadyColor = MaterialTheme.colorScheme.onErrorContainer,
+            )
             Text(label, style = MaterialTheme.typography.labelLarge)
         }
     }
@@ -284,31 +321,167 @@ internal fun ReadinessChip(label: String, ready: Boolean, description: String? =
 
 @Composable
 internal fun StatusPill(label: String, ready: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(100.dp),
-        color = if (ready) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer,
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        StatusDot(ready = ready, decorative = true)
         Text(
             label,
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelLarge,
-            color = if (ready) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer,
+            color = if (ready) brandReadyTextColor() else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
 @Composable
-internal fun StatusDot(ready: Boolean, description: String? = null) {
+internal fun StatusDot(
+    ready: Boolean,
+    description: String? = null,
+    readyColor: Color? = null,
+    notReadyColor: Color? = null,
+    decorative: Boolean = false,
+) {
     // The screen-reader label is the fifth surface that said Ready while auto-paste was dead, and
-    // the one that matters most on a feature built out of an accessibility service.
+    // the one that matters most on a feature built out of an accessibility service. Inline status rows
+    // with adjacent text pass decorative=true so TalkBack announces the status once.
     val label = description ?: if (ready) "Ready" else "Needs attention"
+    val color = if (ready) (readyColor ?: brandReadyColor()) else (notReadyColor ?: MaterialTheme.colorScheme.error)
     Box(
         modifier = Modifier
             .size(10.dp)
             .clip(CircleShape)
-            .background(if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-            .semantics { contentDescription = label },
+            .background(color)
+            .let { mod -> if (decorative) mod else mod.semantics { contentDescription = label } },
     )
+}
+
+/** Soundwave bars glyph for speech engine cards. */
+@Composable
+internal fun WaveformGlyph(
+    modifier: Modifier = Modifier.size(22.dp),
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    Canvas(modifier) {
+        val stroke = 2.4.dp.toPx()
+        val bars = listOf(0.2f to 0.42f, 0.4f to 0.78f, 0.6f to 0.56f, 0.8f to 0.70f)
+        bars.forEach { (xFraction, heightFraction) ->
+            val topY = (1f - heightFraction) * 0.5f * size.height
+            val bottomY = size.height - topY
+            drawLine(color, Offset(size.width * xFraction, topY), Offset(size.width * xFraction, bottomY), stroke, StrokeCap.Round)
+        }
+    }
+}
+
+/** Funnel glyph for filler-word filtering. */
+@Composable
+internal fun FilterGlyph(
+    modifier: Modifier = Modifier.size(22.dp),
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    Canvas(modifier) {
+        val stroke = 2.dp.toPx()
+        val path = Path().apply {
+            moveTo(size.width * 0.14f, size.height * 0.22f)
+            lineTo(size.width * 0.86f, size.height * 0.22f)
+            lineTo(size.width * 0.58f, size.height * 0.54f)
+            lineTo(size.width * 0.58f, size.height * 0.82f)
+            lineTo(size.width * 0.42f, size.height * 0.88f)
+            lineTo(size.width * 0.42f, size.height * 0.54f)
+            close()
+        }
+        drawPath(path, color, style = Stroke(stroke, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
+}
+
+/** Smiley glyph for spoken emoji formatting. */
+@Composable
+internal fun EmojiGlyph(
+    modifier: Modifier = Modifier.size(22.dp),
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    Canvas(modifier) {
+        val stroke = 2.dp.toPx()
+        drawCircle(color, radius = size.minDimension * 0.38f, style = Stroke(stroke))
+        drawCircle(color, radius = stroke * 0.55f, center = Offset(size.width * 0.38f, size.height * 0.42f))
+        drawCircle(color, radius = stroke * 0.55f, center = Offset(size.width * 0.62f, size.height * 0.42f))
+        val smile = Path().apply {
+            moveTo(size.width * 0.34f, size.height * 0.58f)
+            cubicTo(size.width * 0.42f, size.height * 0.72f, size.width * 0.58f, size.height * 0.72f, size.width * 0.66f, size.height * 0.58f)
+        }
+        drawPath(smile, color, style = Stroke(stroke, cap = StrokeCap.Round))
+    }
+}
+
+/** Comma/punctuation glyph for spoken punctuation formatting. */
+@Composable
+internal fun PunctuationGlyph(
+    modifier: Modifier = Modifier.size(22.dp),
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    Canvas(modifier) {
+        val stroke = 2.2.dp.toPx()
+        drawCircle(color, radius = size.minDimension * 0.16f, center = Offset(size.width * 0.36f, size.height * 0.38f))
+        val tail = Path().apply {
+            moveTo(size.width * 0.48f, size.height * 0.42f)
+            cubicTo(size.width * 0.50f, size.height * 0.64f, size.width * 0.38f, size.height * 0.78f, size.width * 0.28f, size.height * 0.82f)
+        }
+        drawPath(tail, color, style = Stroke(stroke, cap = StrokeCap.Round))
+        drawCircle(color, radius = size.minDimension * 0.10f, center = Offset(size.width * 0.70f, size.height * 0.68f))
+    }
+}
+
+/** Small leading glyph rendered inside fact chips (#52). */
+@Composable
+internal fun FactChipGlyph(fact: String, modifier: Modifier = Modifier.size(14.dp)) {
+    val color = MaterialTheme.colorScheme.primary
+    val lower = fact.lowercase()
+    Canvas(modifier) {
+        val stroke = 1.6.dp.toPx()
+        when {
+            "offline" in lower -> {
+                val arc1 = Path().apply {
+                    moveTo(size.width * 0.14f, size.height * 0.42f)
+                    cubicTo(size.width * 0.34f, size.height * 0.22f, size.width * 0.66f, size.height * 0.22f, size.width * 0.86f, size.height * 0.42f)
+                }
+                val arc2 = Path().apply {
+                    moveTo(size.width * 0.30f, size.height * 0.60f)
+                    cubicTo(size.width * 0.42f, size.height * 0.50f, size.width * 0.58f, size.height * 0.50f, size.width * 0.70f, size.height * 0.60f)
+                }
+                drawPath(arc1, color, style = Stroke(stroke, cap = StrokeCap.Round))
+                drawPath(arc2, color, style = Stroke(stroke, cap = StrokeCap.Round))
+                drawCircle(color, radius = stroke * 0.6f, center = Offset(size.width * 0.50f, size.height * 0.78f))
+                drawLine(color, Offset(size.width * 0.16f, size.height * 0.84f), Offset(size.width * 0.84f, size.height * 0.16f), stroke, StrokeCap.Round)
+            }
+            "stays on this phone" in lower || "private" in lower || "on-device" in lower -> {
+                val shield = Path().apply {
+                    moveTo(size.width * 0.50f, size.height * 0.12f)
+                    lineTo(size.width * 0.82f, size.height * 0.26f)
+                    lineTo(size.width * 0.80f, size.height * 0.56f)
+                    cubicTo(size.width * 0.76f, size.height * 0.76f, size.width * 0.58f, size.height * 0.86f, size.width * 0.50f, size.height * 0.90f)
+                    cubicTo(size.width * 0.42f, size.height * 0.86f, size.width * 0.24f, size.height * 0.76f, size.width * 0.20f, size.height * 0.56f)
+                    lineTo(size.width * 0.18f, size.height * 0.26f)
+                    close()
+                }
+                drawPath(shield, color, style = Stroke(stroke, join = StrokeJoin.Round))
+            }
+            "local" in lower || "audio" in lower -> {
+                drawRoundRect(
+                    color,
+                    topLeft = Offset(size.width * 0.34f, size.height * 0.14f),
+                    size = androidx.compose.ui.geometry.Size(size.width * 0.32f, size.height * 0.48f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.width * 0.16f),
+                    style = Stroke(stroke, cap = StrokeCap.Round),
+                )
+                drawLine(color, Offset(size.width * 0.50f, size.height * 0.72f), Offset(size.width * 0.50f, size.height * 0.88f), stroke, StrokeCap.Round)
+            }
+            else -> {
+                drawCircle(color, radius = size.minDimension * 0.36f, style = Stroke(stroke))
+                drawLine(color, Offset(size.width * 0.16f, size.height * 0.50f), Offset(size.width * 0.84f, size.height * 0.50f), stroke * 0.85f)
+                drawLine(color, Offset(size.width * 0.50f, size.height * 0.16f), Offset(size.width * 0.50f, size.height * 0.84f), stroke * 0.85f)
+            }
+        }
+    }
 }
 
 internal fun AutoPasteAvailability.statusDescription(): String = when (this) {

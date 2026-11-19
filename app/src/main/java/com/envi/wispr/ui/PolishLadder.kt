@@ -409,10 +409,16 @@ internal object S1ControlCopy {
     /** The Styling axis is labelled Tone on screen, as on the Mac; the wire token stays Styling. */
     const val STYLING_LABEL = "Tone"
     const val STYLING_HINT = "Semi-formal keeps capitals and full stops. Casual and semi-casual write the way you would text."
+    const val CASUAL_STYLING_NOTE = "Keeps sentences lowercase and drops the final period."
     const val STRUCTURE_LABEL = "Structure"
     const val STRUCTURE_HINT = "Lists turns a spoken run of items into bullet points. Prose keeps everything as sentences."
     const val CONTEXT_LABEL = "Context"
     const val CONTEXT_HINT = "Email lays out a greeting line and a sign-off block when you dictate them. It changes nothing else."
+
+    fun stylingNote(styling: S1Styling): String? = when (styling) {
+        S1Styling.CASUAL, S1Styling.SEMI_CASUAL -> CASUAL_STYLING_NOTE
+        S1Styling.SEMI_FORMAL, S1Styling.FORMAL -> null
+    }
 
     fun label(styling: S1Styling): String = when (styling) {
         S1Styling.CASUAL -> "Casual"
@@ -433,6 +439,16 @@ internal object S1ControlCopy {
 
     /** Everything a user can read on the card, for the drift guard. */
     fun allStrings(): List<String> =
-        listOf(EYEBROW, INTRO, STYLING_LABEL, STYLING_HINT, STRUCTURE_LABEL, STRUCTURE_HINT, CONTEXT_LABEL, CONTEXT_HINT) +
+        listOf(
+            EYEBROW,
+            INTRO,
+            STYLING_LABEL,
+            STYLING_HINT,
+            CASUAL_STYLING_NOTE,
+            STRUCTURE_LABEL,
+            STRUCTURE_HINT,
+            CONTEXT_LABEL,
+            CONTEXT_HINT,
+        ) +
             S1Styling.entries.map(::label) + S1Structure.entries.map(::label) + S1Context.entries.map(::label)
 }

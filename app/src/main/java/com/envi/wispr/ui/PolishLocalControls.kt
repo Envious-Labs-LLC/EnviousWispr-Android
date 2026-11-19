@@ -264,7 +264,7 @@ internal fun S1ControlCard(
 ) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Writing style", style = MaterialTheme.typography.titleSmall)
-        ControlAxis(S1ControlCopy.STYLING_LABEL) {
+        ControlAxis(S1ControlCopy.STYLING_LABEL, note = S1ControlCopy.stylingNote(control.styling)) {
             S1Styling.entries.forEach { option ->
                 FilterChip(
                     selected = control.styling == option,
@@ -298,13 +298,20 @@ internal fun S1ControlCard(
     }
 }
 
-/** One axis: its label, a wrapping row of chips, and the choices underneath. */
+/** One axis: its label, a wrapping row of chips, and an optional plain note underneath. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ControlAxis(label: String, chips: @Composable () -> Unit) {
+private fun ControlAxis(label: String, note: String? = null, chips: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { chips() }
+        if (note != null) {
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

@@ -12,6 +12,7 @@ app/src/main/java/com/envi/wispr/polish/PolishService.kt:PolishService  # manife
 app/src/main/java/com/envi/wispr/shortcuts/DictationTileService.kt:DictationTileService  # manifest <service>, quick settings tile
 app/src/main/java/com/envi/wispr/ui/AccessibilityGuideActivity.kt:AccessibilityGuideActivity  # manifest <activity>
 app/src/main/java/com/envi/wispr/ui/DictationSessionService.kt:DictationSessionService  # manifest <service>
+app/src/main/java/com/envi/wispr/ui/QuickAddWordActivity.kt:QuickAddWordActivity  # manifest <activity>, ACTION_PROCESS_TEXT quick add
 app/src/main/java/com/envi/wispr/ui/SettingsActivity.kt:SettingsActivity  # manifest <activity>, the launcher
 app/src/main/java/com/envi/wispr/ui/VoiceInputActivity.kt:VoiceInputActivity  # manifest <activity>, the recorder entry
 app/src/main/java/com/envi/wispr/vad/SilenceVadService.kt:SilenceVadService  # manifest <service>, process :vad

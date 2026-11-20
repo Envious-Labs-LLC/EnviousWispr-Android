@@ -6,6 +6,7 @@ internal object InsertionText {
     data class SmartPayloadPlan(
         val text: String,
         val changesDictatedText: Boolean,
+        val appendedTrailingSpace: Boolean = false,
     )
 
     /**
@@ -71,7 +72,11 @@ internal object InsertionText {
                 else -> true
             }
         if (needsTrailingSpace) payload += " "
-        return SmartPayloadPlan(payload, payload != inserted)
+        return SmartPayloadPlan(
+            text = payload,
+            changesDictatedText = payload != inserted,
+            appendedTrailingSpace = needsTrailingSpace,
+        )
     }
 
     fun mergeAtSelection(

@@ -22,6 +22,7 @@ CERTIFICATE = 'effeb59b8fbd6a4295bb732a58d43918e12c843bf57fa72a5ae258fd56d01184'
 ROOT = f'https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/edits'
 RELEASES = f'https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/tracks/{{track}}/releases'
 DIST = Path('dist')
+MAX_RELEASE_NOTES_CHARS = 500
 # The commit's default, CANCEL_IN_REVIEW_AND_SUBMIT, cancels a production review in progress and resubmits
 # everything with this tester build (#447). Refuse instead; the review keeps its place in Google's queue.
 # https://developers.google.com/android-publisher/api-ref/rest/v3/edits/commit
@@ -56,6 +57,41 @@ def unsent_releases(summaries):
         summary.get('track', '?') for summary in summaries
         if summary.get('releaseLifecycleState') == 'RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW'
     })
+
+
+def compiled_release_notes(version_name, receipt, artifact_path=None):
+    """Validate the compiled What's New JSON from :app:testReleaseUnitTest against the bundle versionName."""
+    if not version_name or not str(version_name).strip():
+        raise RuntimeError('Bundle versionName is missing')
+    path = (DIST / 'release-notes.json') if artifact_path is None else Path(artifact_path)
+    if not path.is_file():
+        raise RuntimeError('Compiled release-notes.json artifact is missing')
+    artifact = json.loads(path.read_text(encoding='utf-8'))
+    if artifact.get('version_name') != version_name or receipt.get('version_name') != version_name:
+        raise RuntimeError('Compiled release notes version_name does not match the bundle manifest')
+    notes = artifact.get('release_notes')
+    if not isinstance(notes, str) or not notes.strip() or receipt.get('release_notes') != notes:
+        raise RuntimeError('Compiled release notes text is missing or disagrees with build.json')
+    lines = notes.split('\n')
+    if any(not line.startswith('• ') or not line[2:].strip() for line in lines):
+        raise RuntimeError('Compiled release notes must be non-empty bulleted lines')
+    if '—' in notes or '–' in notes:
+        raise RuntimeError('Compiled release notes contain an em or en dash')
+    if len(notes) > MAX_RELEASE_NOTES_CHARS:
+        raise RuntimeError(f'Compiled release notes exceed {MAX_RELEASE_NOTES_CHARS} characters')
+    return notes
+
+
+def release_confirmed(state, version, notes):
+    """True when the track readback shows the committed version completed with matching en-US What's New text."""
+    target = notes.replace('\r\n', '\n')
+    for item in state.get('releases', []):
+        if str(version) in item.get('versionCodes', []) and item.get('status') == 'completed':
+            return any(
+                note.get('language') == 'en-US' and (note.get('text') or '').replace('\r\n', '\n') == target
+                for note in item.get('releaseNotes', [])
+            )
+    return False
 
 
 def command(args, **kwargs):
@@ -94,7 +130,8 @@ def require_bundle(source, version):
     root = ET.fromstring(command(['java', '-jar', tool, 'dump', 'manifest', '--bundle=' + str(source), '--module=base']))
     android = '{http://schemas.android.com/apk/res/android}'
     app = root.find('application')
-    if root.get('package') != PACKAGE or root.get(android + 'versionCode') != str(version):
+    version_name = (root.get(android + 'versionName') or '').strip()
+    if root.get('package') != PACKAGE or root.get(android + 'versionCode') != str(version) or not version_name:
         raise RuntimeError('Bundle identity does not match the pushed build')
     if app is None or app.get(android + 'debuggable', 'false') != 'false':
         raise RuntimeError('A debug bundle cannot be published')
@@ -122,6 +159,7 @@ def require_bundle(source, version):
                         raise RuntimeError('Native library fails 16 KB alignment')
     if hosts == 0:
         raise RuntimeError('No Android native libraries found')
+    return version_name
 
 
 def sign(source, output, material):
@@ -155,7 +193,8 @@ def main():
         raise RuntimeError('Artifact does not belong to this workflow run')
     if hashlib.sha256(source.read_bytes()).hexdigest() != receipt['sha256']:
         raise RuntimeError('Unsigned artifact changed')
-    require_bundle(source, version)
+    version_name = require_bundle(source, version)
+    notes = compiled_release_notes(version_name, receipt)
     credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/androidpublisher'])
     session = AuthorizedSession(credentials)
     edit = api(session, 'POST', ROOT, json={})['id']
@@ -183,7 +222,12 @@ def main():
             result = api(session, 'POST', upload, data=stream, headers={'Content-Type': 'application/octet-stream'})
         if int(result['versionCode']) != version or result['sha256'].lower() != signed_hash:
             raise RuntimeError('Uploaded bundle differs from the signed artifact')
-        release = {'name': f'Internal build {version} ({receipt["commit"][:7]})', 'versionCodes': [str(version)], 'status': 'completed'}
+        release = {
+            'name': f'Internal build {version} ({receipt["commit"][:7]})',
+            'versionCodes': [str(version)],
+            'status': 'completed',
+            'releaseNotes': [{'language': 'en-US', 'text': notes}],
+        }
         api(session, 'PUT', f'{ROOT}/{edit}/tracks/{TRACK}', json={'track': TRACK, 'releases': [release]})
         api(session, 'POST', f'{ROOT}/{edit}:validate')
         # A lost response may still have committed. Reconcile through a new edit, never retry blindly; keep the
@@ -196,7 +240,7 @@ def main():
         verification = read_api(session, 'POST', ROOT, json={})['id']
         try:
             state = read_api(session, 'GET', f'{ROOT}/{verification}/tracks/{TRACK}')
-            committed = any(str(version) in item.get('versionCodes', []) and item.get('status') == 'completed' for item in state.get('releases', []))
+            committed = release_confirmed(state, version, notes)
         finally:
             # Best effort, like the main edit's cleanup below: the verification edit is read-only, and a 5xx on
             # its delete (run 137, 2026-09-30: HTTP 503) must not turn a confirmed publication into a failure (#390).
@@ -207,11 +251,23 @@ def main():
         if not committed:
             reason = f' (commit: {commit_error})' if commit_error else ''
             raise RuntimeError(f'Publication not confirmed{reason}; inspect Play before retrying')
-        published = dict(receipt, package=PACKAGE, track=TRACK, signed_sha256=signed_hash, status='completed')
+        published = dict(
+            receipt,
+            package=PACKAGE,
+            track=TRACK,
+            version_name=version_name,
+            release_notes=notes,
+            signed_sha256=signed_hash,
+            status='completed',
+        )
         (DIST / 'published.json').write_text(json.dumps(published, indent=2) + '\n')
-        print(f'Confirmed {PACKAGE} version {version} on Google Play internal testing')
+        print(f'Confirmed {PACKAGE} version {version} ({version_name}) on Google Play internal testing')
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-            summary.write(f'Published internal test build **{version}** from `{receipt["commit"]}`.\n\nSigned SHA256: `{signed_hash}`\n')
+            summary.write(
+                f'Published internal test build **{version}** ({version_name}) from {receipt["commit"]}.\n\n'
+                f'Signed SHA256: {signed_hash}\n\n'
+                f"What's New (en-US, copy and verify on Console production promotion):\n{notes}\n"
+            )
     finally:
         if not committed:
             # Deleting an uncommitted edit is cleanup. A committed edit no longer exists.

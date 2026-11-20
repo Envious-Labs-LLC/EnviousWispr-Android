@@ -8,7 +8,7 @@ Use the latest successful publishing run and its Play read-back as the current d
 
 ## Release procedure
 
-1. Start from the latest internal-testing history, including other contributors' released features. Complete code review and relevant local/emulator validation. Record any physical-device tests that remain for internal testers; a test release is not public-release approval.
+1. Start from the latest internal-testing history, including other contributors' released features. Before cutting a candidate intended for consumer promotion on `production`, bump `versionName` in `app/build.gradle.kts` past the live `production` version and prepend the matching entry in `ReleaseNotes.kt`. Complete code review and relevant local/emulator validation. Record any physical-device tests that remain for internal testers; a test release is not public-release approval.
 2. Update `internal-testing` to the reviewed commit and push it. Preserve other contributors' commits; do not force-push.
 3. Open **Actions > Google Play internal testing**. A successful build alone does not publish: the publishing job must finish and its summary must name the confirmed Play version and source commit.
 4. Download `published-play-bundle` for the signed bundle and publication receipt. The separate test-results artifact contains the actual test reports.
@@ -22,6 +22,7 @@ Use the latest successful publishing run and its Play read-back as the current d
 - Keyless Google authentication restricted to this repository and the internal testing branch. The existing upload key remains in Google Secret Manager. No service-account JSON key is stored in GitHub.
 - GitHub environment `play-internal`, with variables `PLAY_WORKLOAD_IDENTITY_PROVIDER` and `PLAY_SERVICE_ACCOUNT`. The associated service account needs access to the one signing secret and Play Console rights for this app's testing releases.
 - Version code equals GitHub's workflow run number plus 100. Local builds retain their normal version code. The workflow serializes releases and rejects codes that are not newer than Play's current tracks.
+- `ReleaseNotesTest` exports the compiled `release-notes.json` during `:app:testReleaseUnitTest`, and `publish.py` (`compiled_release_notes`) checks its `version_name` against the bundle manifest, attaches the text as `en-US` `releaseNotes` on `internal`, and confirms it on post-commit readback (`release_confirmed`). Routine tester builds are not blocked when `production` already has the previous version or notes. When promoting a tested internal build to consumers on `production` in Play Console (**Add from library** or **Promote release**), verify in Console that the selected bundle's `versionCode`, signed hash and bumped `versionName` match `published.json` and move past live `production`, and copy and verify the receipt's exact `en-US` `release_notes` text (confirming it differs from the live `production` release notes) into Play Console's **Release notes** field before submitting.
 
 Use this workflow for tester releases across Claude Code and Codex. Coordinate any emergency manual Play upload first, and bring its source changes into `internal-testing` before the next automated release; a higher version number alone does not guarantee newer app features.
 

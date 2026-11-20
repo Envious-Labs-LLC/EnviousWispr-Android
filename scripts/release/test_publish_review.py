@@ -7,6 +7,7 @@ test_publish_retry.py; only the pure helpers and the commit call's source are ex
 import json
 import re
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -82,4 +83,83 @@ try:
     check('a refused call raises', False)
 except RuntimeError as error:
     check('a refused call raises with the reason', str(error) == 'Google API POST failed with HTTP 400 FAILED_PRECONDITION Changes are currently in review.')
+
+repo_root = Path(__file__).resolve().parents[2]
+gradle_text = (repo_root / 'app/build.gradle.kts').read_text(encoding='utf-8')
+gradle_version_match = re.search(r'^\s*versionName\s*=\s*"([^"]+)"', gradle_text, flags=re.MULTILINE)
+gradle_version = gradle_version_match.group(1) if gradle_version_match else ''
+check('app/build.gradle.kts defines a non-empty versionName', bool(gradle_version))
+
+compiled_json = repo_root / 'app/build/release-notes/release-notes.json'
+if compiled_json.is_file():
+    compiled_data = json.loads(compiled_json.read_text(encoding='utf-8'))
+    live_notes = publish.compiled_release_notes(
+        gradle_version,
+        {'version_name': compiled_data['version_name'], 'release_notes': compiled_data['release_notes']},
+        compiled_json,
+    )
+    check('compiled release-notes.json matches versionName and limits',
+          bool(live_notes) and len(live_notes) <= publish.MAX_RELEASE_NOTES_CHARS)
+
+sample_notes = '• Added "Quick Add" from text selection.\n• Faster cold start.'
+with tempfile.TemporaryDirectory() as tmp:
+    artifact_path = Path(tmp) / 'release-notes.json'
+    missing_path = Path(tmp) / 'missing.json'
+    try:
+        publish.compiled_release_notes('0.2.0', {'version_name': '0.2.0', 'release_notes': sample_notes}, missing_path)
+        check('missing compiled release-notes.json raises', False)
+    except RuntimeError:
+        check('missing compiled release-notes.json raises', True)
+
+    artifact_path.write_text(json.dumps({'version_name': '0.2.0', 'release_notes': sample_notes}), encoding='utf-8')
+    check('compiled_release_notes accepts escaped quotes when artifact and receipt agree',
+          publish.compiled_release_notes('0.2.0', {'version_name': '0.2.0', 'release_notes': sample_notes}, artifact_path) == sample_notes)
+
+    for label, mod_version, mod_artifact, mod_receipt in (
+        ('versionName mismatch with artifact', '0.3.0', {'version_name': '0.2.0', 'release_notes': sample_notes}, {'version_name': '0.2.0', 'release_notes': sample_notes}),
+        ('receipt version_name mismatch', '0.2.0', {'version_name': '0.2.0', 'release_notes': sample_notes}, {'version_name': '0.1.0', 'release_notes': sample_notes}),
+        ('receipt release_notes mismatch', '0.2.0', {'version_name': '0.2.0', 'release_notes': sample_notes}, {'version_name': '0.2.0', 'release_notes': '• Different'}),
+        ('blank line in compiled notes', '0.2.0', {'version_name': '0.2.0', 'release_notes': '• '}, {'version_name': '0.2.0', 'release_notes': '• '}),
+        ('non-bullet line in compiled notes', '0.2.0', {'version_name': '0.2.0', 'release_notes': 'Plain sentence.'}, {'version_name': '0.2.0', 'release_notes': 'Plain sentence.'}),
+        ('em dash in compiled notes', '0.2.0', {'version_name': '0.2.0', 'release_notes': '• Fixed latency — faster start.'}, {'version_name': '0.2.0', 'release_notes': '• Fixed latency — faster start.'}),
+        ('en dash in compiled notes', '0.2.0', {'version_name': '0.2.0', 'release_notes': '• Fixed latency – faster start.'}, {'version_name': '0.2.0', 'release_notes': '• Fixed latency – faster start.'}),
+        ('over 500 chars in compiled notes', '0.2.0', {'version_name': '0.2.0', 'release_notes': '• ' + 'x' * 500}, {'version_name': '0.2.0', 'release_notes': '• ' + 'x' * 500}),
+    ):
+        artifact_path.write_text(json.dumps(mod_artifact), encoding='utf-8')
+        try:
+            publish.compiled_release_notes(mod_version, mod_receipt, artifact_path)
+            check(f'compiled_release_notes rejects {label}', False)
+        except RuntimeError:
+            check(f'compiled_release_notes rejects {label}', True)
+
+internal_confirmed = {
+    'track': 'internal',
+    'releases': [{
+        'versionCodes': ['327'],
+        'status': 'completed',
+        'releaseNotes': [{'language': 'en-US', 'text': sample_notes}],
+    }],
+}
+internal_missing_notes = {'track': 'internal', 'releases': [{'versionCodes': ['327'], 'status': 'completed'}]}
+internal_wrong_notes = {
+    'track': 'internal',
+    'releases': [{
+        'versionCodes': ['327'],
+        'status': 'completed',
+        'releaseNotes': [{'language': 'en-US', 'text': '• Wrong'}],
+    }],
+}
+internal_incomplete = {
+    'track': 'internal',
+    'releases': [{
+        'versionCodes': ['327'],
+        'status': 'draft',
+        'releaseNotes': [{'language': 'en-US', 'text': sample_notes}],
+    }],
+}
+check('release_confirmed requires completed build with matching en-US releaseNotes on readback',
+      publish.release_confirmed(internal_confirmed, 327, sample_notes)
+      and not publish.release_confirmed(internal_missing_notes, 327, sample_notes)
+      and not publish.release_confirmed(internal_wrong_notes, 327, sample_notes)
+      and not publish.release_confirmed(internal_incomplete, 327, sample_notes))
 print(f'{passed} passed')

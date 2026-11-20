@@ -39,7 +39,7 @@ a draft release or a release saved ready but not sent for review, either of whic
 send for review. Store-listing and declaration changes are not visible to those checks, so inspect
 Console before a tester publish while such changes are saved but not submitted.
 
-For later production updates, promote the tested signed bundle, inspect Play validation, confirm
+For later production updates, confirm in Play Console that `versionName` in `app/build.gradle.kts` and `ReleaseNotes.kt` were bumped past the live `production` release before building the candidate, confirm the selected bundle's `versionCode` and signed SHA256 match `published.json`, and copy and verify the exact `en-US` `release_notes` from `published.json` into Play Console's **Release notes** field (confirming they differ from the live `production` notes) before submitting. Inspect Play validation, confirm
 the intended countries and release behavior, then submit the reviewed candidate. Preserve settings,
 history, vocabulary, keys and models across upgrades. Qualify an intentional required-model replacement
 before changing its manifest. The Parakeet Ultra swap (#458) accepted that an upgraded phone cannot

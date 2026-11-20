@@ -710,4 +710,252 @@ class InsertionAttemptTest {
         assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.PASTE), attempt.tick())
         assertEquals(1, editor.pastes)
     }
+
+    /**
+     * REPRODUCIBLE (#495): Chrome's address bar drops the trailing space appended by smart insertion
+     * on an empty field. The commit verifies on the first tick through node rescue (when the
+     * surrounding-text pipe reports a MISS on the trimmed space) without stalling 2.5 s, while a
+     * dropped letter, hidden text past the pipe's read, or a pre-write range selection stays
+     * unverified and falls back to the clipboard.
+     */
+    @Test
+    fun aSmartCommitWhoseTrailingSpaceIsTrimmedByTheEditorVerifiesOnTheFirstTick() {
+        val rawText = "please send the report to the team tomorrow morning"
+        val expectedSmartPayload = "Please send the report to the team tomorrow morning "
+        val expectedLanded = "Please send the report to the team tomorrow morning"
+
+        val baseEditor = FakeEditor(field = "", selection = EditorSelection(0, 0), commitEligible = true)
+        val trimmingEditor = object : EditorWrites by baseEditor {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals(expectedSmartPayload, payload)
+                return baseEditor.commit(payload.trimEnd(' '))
+            }
+        }
+        val attempt = InsertionAttempt(
+            trimmingEditor,
+            rawText,
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), attempt.tick())
+        assertEquals(1, attempt.attempts)
+        assertEquals(1, baseEditor.commits)
+        assertEquals(0, baseEditor.stagings)
+        assertEquals(InsertionAttempt.Evidence.NODE, attempt.evidence)
+        assertEquals(expectedLanded, baseEditor.field)
+
+        // Stale-window variant: frozen surrounding read triggers node rescue, which verifies when only
+        // the trailing ASCII space was stripped.
+        val staleBase = FakeEditor(
+            field = "",
+            selection = EditorSelection(0, 0),
+            commitEligible = true,
+            frozenSurrounding = "",
+        )
+        val staleTrimmingEditor = object : EditorWrites by staleBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals(expectedSmartPayload, payload)
+                return staleBase.commit(payload.trimEnd(' '))
+            }
+        }
+        val staleAttempt = InsertionAttempt(
+            staleTrimmingEditor,
+            rawText,
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), staleAttempt.tick())
+        assertEquals(1, staleBase.commits)
+        assertEquals(InsertionAttempt.Evidence.NODE, staleAttempt.evidence)
+        assertEquals(expectedLanded, staleBase.field)
+
+        // Paired negative control: dropping the trailing space AND the final letter must never verify.
+        val badBase = FakeEditor(
+            field = "",
+            selection = EditorSelection(0, 0),
+            commitEligible = true,
+            frozenSurrounding = "",
+        )
+        val truncatingEditor = object : EditorWrites by badBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals(expectedSmartPayload, payload)
+                return badBase.commit(payload.trimEnd(' ').dropLast(1))
+            }
+        }
+        val badAttempt = InsertionAttempt(
+            truncatingEditor,
+            rawText,
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Waiting, badAttempt.tick())
+        assertEquals(Judgement.MISS, badAttempt.lastJudgement)
+        badBase.clock = 2_500L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), badAttempt.tick())
+        assertEquals(1, badBase.commits)
+
+        // Bounded surrounding pipe showing only "Hello" while the node holds double insertion
+        // "HelloHello": judgeWindow returns MISS and node rescue confirms "HelloHello" != "Hello",
+        // so the attempt expires after one write instead of falsely trusting a truncated window.
+        val truncatedWindowBase = FakeEditor(
+            field = "",
+            selection = EditorSelection(0, 0),
+            commitEligible = true,
+            frozenSurrounding = "",
+        )
+        val truncatedWindowEditor = object : EditorWrites by truncatedWindowBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals("Hello ", payload)
+                truncatedWindowBase.frozenSurrounding = "Hello"
+                return truncatedWindowBase.commit("HelloHello")
+            }
+        }
+        val truncatedWindowAttempt = InsertionAttempt(
+            truncatedWindowEditor,
+            "Hello",
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Waiting, truncatedWindowAttempt.tick())
+        assertEquals(Judgement.MISS, truncatedWindowAttempt.lastJudgement)
+        truncatedWindowBase.clock = 2_500L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), truncatedWindowAttempt.tick())
+        assertEquals(1, truncatedWindowBase.commits)
+
+        // Paired "See: " selection test: collapsed 0/0 caret verifies via Evidence.NODE (both with
+        // live and frozen surrounding reads), whereas a pre-write range selection 0..3 stays
+        // unverified and expires after one write even when both reads hold "See: hello".
+        val nonEmptyLiveBase = FakeEditor(
+            field = "See: ",
+            selection = EditorSelection(0, 0),
+            commitEligible = true,
+        )
+        val nonEmptyLiveEditor = object : EditorWrites by nonEmptyLiveBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals("hello ", payload)
+                return nonEmptyLiveBase.commit(payload.trimEnd(' '))
+            }
+        }
+        val nonEmptyLiveAttempt = InsertionAttempt(
+            nonEmptyLiveEditor,
+            "hello",
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), nonEmptyLiveAttempt.tick())
+        assertEquals(1, nonEmptyLiveAttempt.attempts)
+        assertEquals(1, nonEmptyLiveBase.commits)
+        assertEquals(InsertionAttempt.Evidence.NODE, nonEmptyLiveAttempt.evidence)
+        assertEquals("See: hello", nonEmptyLiveBase.field)
+
+        val nonEmptyStaleBase = FakeEditor(
+            field = "See: ",
+            selection = EditorSelection(0, 0),
+            commitEligible = true,
+            frozenSurrounding = "See: ",
+        )
+        val nonEmptyStaleEditor = object : EditorWrites by nonEmptyStaleBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals("hello ", payload)
+                return nonEmptyStaleBase.commit(payload.trimEnd(' '))
+            }
+        }
+        val nonEmptyStaleAttempt = InsertionAttempt(
+            nonEmptyStaleEditor,
+            "hello",
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Verified(InsertionRoute.COMMIT), nonEmptyStaleAttempt.tick())
+        assertEquals(1, nonEmptyStaleAttempt.attempts)
+        assertEquals(1, nonEmptyStaleBase.commits)
+        assertEquals(InsertionAttempt.Evidence.NODE, nonEmptyStaleAttempt.evidence)
+        assertEquals("See: hello", nonEmptyStaleBase.field)
+
+        val rangeSelectionBase = FakeEditor(
+            field = "See: ",
+            selection = EditorSelection(0, 3),
+            commitEligible = true,
+        )
+        val rangeSelectionEditor = object : EditorWrites by rangeSelectionBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals("hello ", payload)
+                return rangeSelectionBase.commit(payload.trimEnd(' '))
+            }
+        }
+        val rangeSelectionAttempt = InsertionAttempt(
+            rangeSelectionEditor,
+            "hello",
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Waiting, rangeSelectionAttempt.tick())
+        assertEquals(Judgement.MISS, rangeSelectionAttempt.lastJudgement)
+        rangeSelectionBase.clock = 2_500L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), rangeSelectionAttempt.tick())
+        assertEquals(1, rangeSelectionBase.commits)
+
+        // Double insertion in an offset-0 window when the node is unreadable must latch MISS and
+        // expire to the clipboard fallback after one write, never falsely trust after 250 ms.
+        val doubleBase = FakeEditor(
+            field = "",
+            selection = EditorSelection(0, 0),
+            commitEligible = true,
+            readThrowsAfterWrite = true,
+        )
+        val doubleEditor = object : EditorWrites by doubleBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals("Hello ", payload)
+                return doubleBase.commit("HelloHello")
+            }
+        }
+        val doubleAttempt = InsertionAttempt(
+            doubleEditor,
+            "Hello",
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Waiting, doubleAttempt.tick())
+        assertEquals(Judgement.MISS, doubleAttempt.lastJudgement)
+        assertEquals(InsertionAttempt.Evidence.SURROUNDING, doubleAttempt.evidence)
+        doubleBase.clock = 250L
+        assertEquals(InsertionAttempt.Tick.Waiting, doubleAttempt.tick())
+        assertEquals(Judgement.MISS, doubleAttempt.lastJudgement)
+        doubleBase.clock = 2_500L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), doubleAttempt.tick())
+        assertEquals(1, doubleBase.commits)
+
+        // Partial-window (> 2*WINDOW_CHARS) unreadable-node negative control: a truncated post-write
+        // offset-0 read holding a trimmed-space payload after a non-document-start pre-write window
+        // must judge MISS on every tick and expire without falsely trusting after 250 ms.
+        val longDraft = "x".repeat(150)
+        val longBase = FakeEditor(
+            field = longDraft,
+            selection = EditorSelection(150, 150),
+            commitEligible = true,
+            readThrowsAfterWrite = true,
+        )
+        val longTrimmingEditor = object : EditorWrites by longBase {
+            override fun commit(payload: String): CommitOutcome {
+                assertEquals(" hello ", payload)
+                val outcome = longBase.commit(" hello")
+                longBase.field = "x".repeat(64) + " hello"
+                return outcome
+            }
+        }
+        val longAttempt = InsertionAttempt(
+            longTrimmingEditor,
+            "hello",
+            smartInsertion = true,
+            deadlineMs = 2_500L,
+        )
+        assertEquals(InsertionAttempt.Tick.Waiting, longAttempt.tick())
+        assertEquals(Judgement.MISS, longAttempt.lastJudgement)
+        longBase.clock = 250L
+        assertEquals(InsertionAttempt.Tick.Waiting, longAttempt.tick())
+        assertEquals(Judgement.MISS, longAttempt.lastJudgement)
+        longBase.clock = 2_500L
+        assertEquals(InsertionAttempt.Tick.Expired(written = true), longAttempt.tick())
+        assertEquals(1, longBase.commits)
+    }
 }

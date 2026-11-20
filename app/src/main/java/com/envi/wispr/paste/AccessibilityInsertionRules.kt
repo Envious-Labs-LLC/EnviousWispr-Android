@@ -48,6 +48,11 @@ internal object AccessibilityInsertionRules {
         val insertedText: String,
         /** The commit route's pre-write read off the input connection; null on the paste route. */
         val beforeWindow: SurroundingWindow? = null,
+        /**
+         * True only on a COMMIT at the end of a complete document-start window where smart
+         * insertion appended a single trailing ASCII space (#495).
+         */
+        val allowsTrimmedTrailingSpace: Boolean = false,
     )
 
     /**
@@ -171,11 +176,14 @@ internal object AccessibilityInsertionRules {
         ) {
             return Judgement.UNREADABLE
         }
-        return if (isSingleInsertion(before, selection, inserted, actual)) {
-            Judgement.VERIFIED
-        } else {
-            Judgement.MISS
+        if (isSingleInsertion(before, selection, inserted, actual)) {
+            return Judgement.VERIFIED
         }
+        val trimmedInserted = trimmedTrailingSpaceCandidate(verification)
+        if (trimmedInserted != null && actual == before + trimmedInserted) {
+            return Judgement.VERIFIED
+        }
+        return Judgement.MISS
     }
 
     /**
@@ -242,6 +250,48 @@ internal object AccessibilityInsertionRules {
      */
     private fun foldSpaces(text: String): String =
         if (text.indexOf(' ') < 0) text else text.replace(' ', ' ')
+
+    /**
+     * Whether [beforeWindow] captures the entire field up to a collapsed caret at document end and
+     * agrees with [beforeText] and [selection] when the node exposed them.
+     */
+    fun isCompleteDocumentEndCommitWindow(
+        beforeText: String?,
+        selection: EditorSelection?,
+        beforeWindow: SurroundingWindow?,
+    ): Boolean =
+        (selection == null || selection.start == selection.end) &&
+            beforeWindow != null &&
+            beforeWindow.atDocumentStart &&
+            beforeWindow.selected.isEmpty() &&
+            beforeWindow.after.isEmpty() &&
+            (beforeText == null || foldSpaces(beforeText) == foldSpaces(beforeWindow.before))
+
+    /**
+     * When a COMMIT at the end of a complete document-start window carries a single trailing ASCII
+     * space appended by [com.envi.wispr.insertion.InsertionText.smartPayloadPlan], returns the
+     * payload without that one space (checked before NBSP folding, and only when non-whitespace
+     * content precedes it). Chrome's address bar strips that trailing space on an initial commit,
+     * causing [judgeWindow] to report [Judgement.MISS] and hand off to node rescue (#495).
+     */
+    private fun trimmedTrailingSpaceCandidate(verification: Verification): String? {
+        if (verification.action != Action.COMMIT || !verification.allowsTrimmedTrailingSpace) return null
+        if (!isCompleteDocumentEndCommitWindow(
+                verification.beforeText,
+                verification.selection,
+                verification.beforeWindow,
+            )
+        ) {
+            return null
+        }
+        val raw = verification.insertedText
+        if (!raw.endsWith(' ')) return null
+        val withoutFinalSpace = raw.dropLast(1)
+        if (withoutFinalSpace.isEmpty() || withoutFinalSpace.last().isWhitespace() || withoutFinalSpace.endsWith('\u00A0')) {
+            return null
+        }
+        return foldSpaces(withoutFinalSpace)
+    }
 
     /**
      * Whether [after] is [before] with [inserted] spliced in exactly once.

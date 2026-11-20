@@ -19,10 +19,25 @@ source "$(dirname "$0")/../ci/setup-android-deps.sh"
 python3 scripts/release/test_receipt.py
 mkdir -p dist
 cp app/build/outputs/bundle/release/app-release.aab dist/unsigned.aab
+cp app/build/release-notes/release-notes.json dist/release-notes.json
 python3 - <<'PY'
-import hashlib, json, os
+import hashlib, json, os, sys, types
 from pathlib import Path
-p=Path('dist/unsigned.aab')
-receipt={'commit':os.environ['GITHUB_SHA'],'version_code':int(os.environ['PLAY_VERSION_CODE']),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
-Path('dist/build.json').write_text(json.dumps(receipt,indent=2)+'\n')
+for name in ('google', 'google.auth', 'google.auth.transport', 'google.auth.transport.requests'):
+    sys.modules.setdefault(name, types.ModuleType(name))
+sys.modules['google.auth.transport.requests'].AuthorizedSession = object
+sys.path.insert(0, 'scripts/release')
+import publish
+p = Path('dist/unsigned.aab')
+rendered_path = Path('dist/release-notes.json')
+rendered = json.loads(rendered_path.read_text(encoding='utf-8'))
+receipt = {
+    'commit': os.environ['GITHUB_SHA'],
+    'version_code': int(os.environ['PLAY_VERSION_CODE']),
+    'version_name': rendered['version_name'],
+    'release_notes': rendered['release_notes'],
+    'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+}
+publish.compiled_release_notes(rendered['version_name'], receipt, rendered_path)
+Path('dist/build.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
 PY

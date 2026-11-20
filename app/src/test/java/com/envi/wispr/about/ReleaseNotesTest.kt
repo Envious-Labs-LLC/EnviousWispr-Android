@@ -1,9 +1,11 @@
 package com.envi.wispr.about
 
 import com.envi.wispr.BuildConfig
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * DRIFT GUARD, not product coverage.
@@ -37,6 +39,16 @@ class ReleaseNotesTest {
     }
 
     @Test
+    fun versionsAreUniqueAndDated() {
+        val versions = ReleaseNotes.entries.map(ReleaseNote::version)
+        assertEquals("ReleaseNotes entries must use distinct version names.", versions.distinct(), versions)
+        ReleaseNotes.entries.forEach { note ->
+            assertTrue("Version name must not be blank.", note.version.isNotBlank())
+            assertTrue("Version ${note.version} must include a release date.", note.date.isNotBlank())
+        }
+    }
+
+    @Test
     fun noNoteIsEmptyAndNoLineUsesADash() {
         ReleaseNotes.entries.forEach { note ->
             assertTrue(
@@ -44,6 +56,7 @@ class ReleaseNotesTest {
                 note.lines.isNotEmpty(),
             )
             note.lines.forEach { line ->
+                assertTrue("Version ${note.version} has a blank release note line.", line.isNotBlank())
                 // content-brand.md RULE: no-dashes-in-user-facing-text.
                 assertEquals(
                     "A release note the user reads contains a dash: \"$line\"",
@@ -52,5 +65,25 @@ class ReleaseNotesTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun theShippedVersionFitsGooglePlayWhatsNewLimit() {
+        val text = ReleaseNotes.playStoreText()
+        assertTrue(
+            "Google Play rejects en-US What's New text over ${ReleaseNotes.MAX_PLAY_RELEASE_NOTES_CHARS} " +
+                "characters; version ${BuildConfig.VERSION_NAME} is ${text.length} characters.",
+            text.isNotEmpty() && text.length <= ReleaseNotes.MAX_PLAY_RELEASE_NOTES_CHARS,
+        )
+        val outFile = File("build/release-notes/release-notes.json")
+        outFile.parentFile?.mkdirs()
+        val payload = JSONObject()
+            .put("version_name", BuildConfig.VERSION_NAME)
+            .put("release_notes", text)
+            .toString(2) + "\n"
+        outFile.writeText(payload, Charsets.UTF_8)
+        val parsed = JSONObject(outFile.readText(Charsets.UTF_8))
+        assertEquals(BuildConfig.VERSION_NAME, parsed.getString("version_name"))
+        assertEquals(text, parsed.getString("release_notes"))
     }
 }

@@ -51,6 +51,26 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
     suspend fun updateStatus(id: Long, status: String, interrupted: Boolean = false, insertionResult: String? = null) =
         dao.updateStatus(id, status, clock(), interrupted, insertionResult)
 
+    /** Marks a previously undelivered History row as delivered after a verified recovery insertion (#17). */
+    suspend fun markRecoveredInsertion(id: Long, result: String) =
+        dao.updateStatus(
+            id = id,
+            status = TranscriptEntity.STATUS_COMPLETED,
+            stateChangedAtMs = clock(),
+            interrupted = false,
+            insertionResult = result,
+        )
+
+    /** Records an uncertain recovery insertion outcome so History prompts before a second insert (#17). */
+    suspend fun markRecoveryUnverified(id: Long, result: String) =
+        dao.updateStatus(
+            id = id,
+            status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+            stateChangedAtMs = clock(),
+            interrupted = true,
+            insertionResult = result,
+        )
+
     suspend fun finalize(
         id: Long,
         originalText: String,

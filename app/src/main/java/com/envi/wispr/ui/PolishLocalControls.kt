@@ -51,6 +51,7 @@ import com.envi.wispr.models.ModelDownloadPolicy
 import com.envi.wispr.models.ModelFootprint
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.ui.theme.brandButtonColors
+import com.envi.wispr.ui.theme.brandCardBorder
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
@@ -84,7 +85,7 @@ internal fun LocalPolishModelSelector(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 shape = MaterialTheme.shapes.small,
                 color = if (selected) colors.surfaceContainerLow else colors.surfaceVariant,
-                border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) colors.primary else colors.outlineVariant),
+                border = brandCardBorder(selected = selected),
             ) {
                 Column(
                     Modifier.selectable(selected, enabled = enabled, role = Role.Tab, onClick = { onSelect(model) })
@@ -226,7 +227,10 @@ internal fun LocalPolishDeliveryActions(
 
 @Composable
 internal fun Eg1Strengths() {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = brandCardBorder(),
+    ) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Turn spoken thoughts into finished text", style = MaterialTheme.typography.titleSmall)
             Text(
@@ -264,7 +268,7 @@ internal fun S1ControlCard(
 ) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Writing style", style = MaterialTheme.typography.titleSmall)
-        ControlAxis(S1ControlCopy.STYLING_LABEL) {
+        ControlAxis(S1ControlCopy.STYLING_LABEL, note = S1ControlCopy.stylingNote(control.styling)) {
             S1Styling.entries.forEach { option ->
                 FilterChip(
                     selected = control.styling == option,
@@ -298,13 +302,20 @@ internal fun S1ControlCard(
     }
 }
 
-/** One axis: its label, a wrapping row of chips, and the choices underneath. */
+/** One axis: its label, a wrapping row of chips, and an optional plain note underneath. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ControlAxis(label: String, chips: @Composable () -> Unit) {
+private fun ControlAxis(label: String, note: String? = null, chips: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { chips() }
+        if (note != null) {
+            Text(
+                note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -357,7 +368,11 @@ internal fun DevelopmentModelCard() {
     if (measurement == null && !lastRemovalFailed) return
     if (bytes == 0L && !lastRemovalFailed) return
 
-    ElevatedCard {
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = brandCardBorder(),
+    ) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
                 "DEVELOPMENT ONLY",

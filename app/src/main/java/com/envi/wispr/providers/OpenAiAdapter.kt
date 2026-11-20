@@ -32,7 +32,7 @@ internal object OpenAiAdapter : ProviderAdapter {
     override fun polishPlan(request: ProviderPolishRequest, endpointOverride: String?): RequestPlan = RequestPlan(
         url = cloudOrOverride(endpointOverride, OPENAI_URL),
         headers = authHeaders(request.apiKey.orEmpty()),
-        body = "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false${ProviderModelCapabilities.openAiFields(request.model)}}",
+        body = "{\"model\":${jsonString(request.model)},\"instructions\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt, request.customVocabulary))},\"input\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))},\"store\":false${ProviderModelCapabilities.openAiFields(request.model)}}",
         responseFormat = ProviderReplyFormat.OPENAI_RESPONSES,
     )
 

@@ -127,6 +127,39 @@ internal class EditorTargetTracker(
             notifyObservedField()
         }
         target ?: return DictationTargetPin.NO_TARGET
+        return pinResolvedTarget(target, "original")
+    }
+
+    /**
+     * Pins an editor for a History recovery insertion (#17).
+     *
+     * Unlike [pinTarget], EnviousWispr itself is usually in the foreground when the user taps
+     * Insert from History, so a live focused field in another app exists only in multi-window mode.
+     * Check for a currently focused external editor first; otherwise reuse the last remembered
+     * external editor without discarding it, so returning to that app lets the runner insert.
+     */
+    fun pinTargetForRecovery(insertionPending: Boolean): DictationTargetPin {
+        // Refuse if an insertion is pending OR a live dictation already owns the pin, so History
+        // recovery can never steal or clear an active dictation's destination.
+        if (insertionPending || pinnedTarget != null) return DictationTargetPin.INSERTION_BUSY
+        val liveExternal = runCatching {
+            findFocusedEditableTarget()?.takeIf {
+                OwnFieldAdmission.accepts(service.packageName, it.packageName, it.viewId) &&
+                    isInFocusedWindow(it.windowId)
+            }
+        }.getOrNull()
+        val target = if (liveExternal != null) {
+            clearTarget()
+            lastTarget = liveExternal
+            notifyObservedField()
+            liveExternal
+        } else {
+            lastTarget?.takeIf { OwnFieldAdmission.accepts(service.packageName, it.packageName, it.viewId) }
+        } ?: return DictationTargetPin.NO_TARGET
+        return pinResolvedTarget(target, "recovery")
+    }
+
+    private fun pinResolvedTarget(target: TargetSnapshot, role: String): DictationTargetPin {
         pinnedTarget = TargetToken(
             node = AccessibilityNodeInfo.obtain(target.node),
             packageName = target.packageName,
@@ -134,7 +167,7 @@ internal class EditorTargetTracker(
             className = target.className,
             viewId = target.viewId,
         )
-        DebugLogger.log(TAG, "Pinned original editor package=${target.packageName} window=${target.windowId}")
+        DebugLogger.log(TAG, "Pinned $role editor package=${target.packageName} window=${target.windowId}")
         return DictationTargetPin.PINNED
     }
 
@@ -194,8 +227,9 @@ internal class EditorTargetTracker(
      * while a temporary Activity is above the editor; in that case reacquire only a focused node whose
      * framework identity is equal to the originally pinned node.
      */
-    fun <T> withPinnedNode(block: (AccessibilityNodeInfo) -> T): T? {
+    fun <T> withPinnedNode(requireWindowFocus: Boolean = false, block: (AccessibilityNodeInfo) -> T): T? {
         val expected = pinnedTarget ?: return null
+        if (requireWindowFocus && !isInFocusedWindow(expected.windowId)) return null
         val pinnedWindowRoot = findPinnedWindowRoot(expected) ?: return null
         var reacquiredNode: AccessibilityNodeInfo? = null
         try {

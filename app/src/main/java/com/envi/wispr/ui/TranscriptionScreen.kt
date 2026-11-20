@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -22,6 +23,7 @@ import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.models.ModelUiState
 import com.envi.wispr.settings.AppPreferencesState
+import com.envi.wispr.ui.theme.brandCardBorder
 
 /**
  * The words this sentence NAMES must be words cleanup actually removes. `um` was named here while it was
@@ -70,6 +72,7 @@ internal fun TranscriptionScreen(
             state = parakeetState,
             facts = listOf("Offline", "25 languages", "Stays on this phone"),
             model = ModelManifest.parakeet,
+            icon = { WaveformGlyph() },
             onAction = {
                 // Exhaustive with no `else`, so a new ModelUiAction is a compile error here rather
                 // than a silent download. The four inert members are the ones `ModelCard` routes to
@@ -106,6 +109,7 @@ internal fun TranscriptionScreen(
                 title = "Stop recording on silence",
                 subtitle = "End the recording by itself when you stop speaking, instead of pressing stop.",
                 checked = preferences.autoStopOnSilenceEnabled,
+                icon = { MicrophoneGlyph(Modifier.size(22.dp), color = MaterialTheme.colorScheme.primary) },
                 onCheckedChange = { updateWithHaptic(it, onAutoStopOnSilenceChanged) },
             )
             if (preferences.autoStopOnSilenceEnabled) {
@@ -137,6 +141,7 @@ internal fun TranscriptionScreen(
                 title = "Remove filler words",
                 subtitle = FILLER_TOGGLE_SUBTITLE,
                 checked = preferences.fillerRemovalEnabled,
+                icon = { FilterGlyph() },
                 onCheckedChange = { updateWithHaptic(it, onFillerRemovalChanged) },
             )
             HorizontalDivider(Modifier.padding(horizontal = 18.dp))
@@ -144,6 +149,7 @@ internal fun TranscriptionScreen(
                 title = "Spoken emoji",
                 subtitle = "Turn explicit commands such as thumbs up emoji into symbols.",
                 checked = preferences.emojiFormatterEnabled,
+                icon = { EmojiGlyph() },
                 onCheckedChange = { updateWithHaptic(it, onEmojiFormatterChanged) },
             )
             HorizontalDivider(Modifier.padding(horizontal = 18.dp))
@@ -151,6 +157,7 @@ internal fun TranscriptionScreen(
                 title = "Spoken punctuation",
                 subtitle = "Turn commands such as comma, new paragraph and backslash into punctuation. Contextual slash commands work with this off too.",
                 checked = preferences.spokenPunctuationEnabled,
+                icon = { PunctuationGlyph() },
                 onCheckedChange = { updateWithHaptic(it, onSpokenPunctuationChanged) },
             )
             HorizontalDivider(Modifier.padding(horizontal = 18.dp))
@@ -174,13 +181,16 @@ internal fun TranscriptionScreen(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            border = brandCardBorder(),
+        ) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Languages", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "EnviousWispr transcribes 25 European languages. There is nothing to choose: speak, and it writes what it hears, with no network. Spoken numbers, dates and money are cleaned up in English. Spoken addresses, links and codes also have support for French, Spanish, Polish, Dutch, German, Russian, Portuguese and Italian.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

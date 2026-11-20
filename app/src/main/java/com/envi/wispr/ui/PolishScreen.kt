@@ -39,6 +39,7 @@ import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.S1ControlSettings
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.Provider
+import com.envi.wispr.ui.theme.brandCardBorder
 
 /** Which write the tab is waiting on, so its failure lands under the rung that started it. */
 internal enum class WriteKind { MODE, LOCAL_MODEL, KEY, MODEL, REMOVE, S1_CONTROL, S1_PROCESSING }
@@ -268,7 +269,10 @@ internal fun ErrorLine(text: String) {
 
 @Composable
 private fun QuietCard(text: String) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = brandCardBorder(),
+    ) {
         Text(text, modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium)
     }
 }
@@ -283,12 +287,12 @@ private fun RungOneButton(
     modifier: Modifier = Modifier,
     glyph: @Composable (Color) -> Unit,
 ) {
-    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    val fg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         modifier = modifier.height(72.dp).selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick),
         shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        color = if (selected) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceVariant,
+        border = brandCardBorder(selected = selected),
     ) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             glyph(fg)

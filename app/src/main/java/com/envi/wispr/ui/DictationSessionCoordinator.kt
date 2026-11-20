@@ -614,11 +614,12 @@ internal class DictationSessionCoordinator(
                 }
             }
             SpeechWait.Loss.FINISHED -> {
-                if (attempt != null) log.log("Late speech Binder loss ignored")
-                // An old attempt's throw must not cancel polish for its replacement's accepted words.
-                if (attempt == null) {
-                    val text = synchronized(polishSubmissionLock) { rawTranscript }
-                    if (text.isNotBlank()) polish?.claimSpeechLossFallback(text)
+                if (attempt != null) {
+                    log.log("Late speech Binder loss ignored")
+                } else {
+                    // Speech already delivered its transcript; a healthy :polish process continues and keeps
+                    // its own disconnect and watchdog fallbacks (#365).
+                    log.log("Speech service disconnected after transcript received; polish continues")
                 }
             }
         }

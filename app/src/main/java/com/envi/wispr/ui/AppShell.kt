@@ -33,6 +33,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.LifecycleStartEffect
+import com.envi.wispr.insertion.ClipboardInsertionPolicy
+import com.envi.wispr.paste.PasteAccessibilityService
 import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.providers.SelfHostedProtocol
 import kotlinx.coroutines.launch
@@ -195,6 +197,19 @@ internal fun EnviousWisprApp(
                             onKeep = actions.history.onKeep,
                             onDelete = actions.history.onDelete,
                             onDeleteAll = actions.history.onDeleteAll,
+                            onRetryInsert = { transcript, manualSwitch ->
+                                PasteAccessibilityService.insertFromHistory(
+                                    transcriptId = transcript.id,
+                                    text = transcript.finalText,
+                                    policy = ClipboardInsertionPolicy(
+                                        autoCopyToClipboard = preferences.autoCopyToClipboard,
+                                        restoreClipboardAfterPaste = preferences.restoreClipboardAfterPaste,
+                                        smartInsertion = preferences.smartInsertionEnabled,
+                                    ),
+                                    manualSwitch = manualSwitch,
+                                )
+                            },
+                            onFallbackToManualSwitch = PasteAccessibilityService::extendRecoveryTimeout,
                             showTimings = developerState.unlocked,
                         )
                         AppDestination.Dictionary -> DictionaryScreen(
@@ -209,6 +224,8 @@ internal fun EnviousWisprApp(
                             onDelete = actions.dictionary.onDelete,
                             onBulkDelete = actions.dictionary.onBulkDelete,
                             onImport = actions.dictionary.onImport,
+                            onPreviewContacts = actions.dictionary.onPreviewContacts,
+                            onApplyContacts = actions.dictionary.onApplyContacts,
                         )
                         AppDestination.Transcription -> TranscriptionScreen(
                             speechModel = state.models.speech,
@@ -273,6 +290,8 @@ internal fun EnviousWisprApp(
                         SettingsPage.Permissions -> PermissionsPage(
                             readiness = readiness,
                             autoPaste = autoPaste,
+                            providerSettings = providerSettings,
+                            modelWorkRefreshTick = state.storageRefreshTick,
                             onboardingComplete = preferences.onboardingComplete,
                             onContinueSetup = actions.onboarding.onResume,
                             onOpenTab = { tab ->
@@ -280,6 +299,7 @@ internal fun EnviousWisprApp(
                                 closePages()
                                 if (tab == AppDestination.History) actions.history.onOpen()
                             },
+                            onOpenStorage = { settingsPageName = SettingsPage.Storage.name },
                             onRequestMicrophone = actions.permissions.onRequestMicrophone,
                             onRequestNotifications = actions.permissions.onRequestNotifications,
                             onOpenAccessibility = actions.permissions.onOpenAccessibility,

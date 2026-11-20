@@ -88,6 +88,16 @@ MACOS_ACCENT = {
     "light": {"accent": "#7C3AED", "on_accent": "#FFFFFF", "solid": "#7C3AED", "on_solid": "#FFFFFF"},
 }
 
+# Green switch and ready-status colours (#52). macOS `SettingsDesignTokens.swift` uses `#5CC99A`
+# dark (`stToggleOn`) and `#00A366` light. `#5CC99A` clears every dark card surface at 6.72+; light
+# `#00A366` measures only 2.31 on `#DDD5EE` and 2.59 on `#E8E2F5` (below the 3.0 UI bar), so light
+# uses `#008250` for switch tracks (3.44+ vs cards, 4.87 vs white thumb) and `#006B42` for ready text
+# (4.66+ vs `#DDD5EE`, 5.23 vs `#E8E2F5`). Checked in CONTRAST_PAIRS below.
+MACOS_GREEN = {
+    "dark": {"track": "#5CC99A", "thumb": "#063825", "statusText": "#5CC99A"},
+    "light": {"track": "#008250", "thumb": "#FFFFFF", "statusText": "#006B42"},
+}
+
 GENERATED_ROLES = [
     "primary", "onPrimary", "primaryContainer", "onPrimaryContainer",
     "secondary", "onSecondary", "secondaryContainer", "onSecondaryContainer",
@@ -147,6 +157,18 @@ CONTRAST_PAIRS = [
     ("onSecondaryContainer", "secondaryContainer", 4.5),
     ("onTertiaryContainer", "tertiaryContainer", 4.5),
     ("onErrorContainer", "errorContainer", 4.5),
+    # Brand green switch + ready-status pairs (#52), checked across card and page surfaces.
+    ("toggleTrack", "surface", 3.0),
+    ("toggleTrack", "surfaceContainerLow", 3.0),
+    ("toggleTrack", "surfaceContainer", 3.0),
+    ("toggleTrack", "surfaceContainerHighest", 3.0),
+    ("toggleThumb", "toggleTrack", 4.5),
+    ("statusReadyText", "surface", 4.5),
+    ("statusReadyText", "surfaceContainerLow", 4.5),
+    ("statusReadyText", "surfaceContainer", 4.5),
+    ("statusReadyText", "surfaceContainerHighest", 4.5),
+    ("primary", "surfaceContainerHigh", 3.0),
+    ("primary", "surfaceContainerHighest", 3.0),
 ]
 
 
@@ -194,6 +216,10 @@ def build(dark: bool) -> dict[str, int]:
     scheme["inverseSurface"] = opaque(other["page"])
     scheme["inverseOnSurface"] = opaque(other["text"])
     scheme["scrim"] = 0xFF000000
+    green = MACOS_GREEN["dark" if dark else "light"]
+    scheme["toggleTrack"] = opaque(green["track"])
+    scheme["toggleThumb"] = opaque(green["thumb"])
+    scheme["statusReadyText"] = opaque(green["statusText"])
     return scheme
 
 

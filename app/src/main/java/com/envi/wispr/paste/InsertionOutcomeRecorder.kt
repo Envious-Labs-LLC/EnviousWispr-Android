@@ -4,9 +4,11 @@ import android.content.Context
 import com.envi.wispr.debug.DebugLogger
 import com.envi.wispr.history.Enqueued
 import com.envi.wispr.history.HistoryRow
+import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.history.WriteKind
 import com.envi.wispr.insertion.ClipboardOutcome
+import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.telemetry.AnalyticsEvent
 import com.envi.wispr.telemetry.InsertionResultKind
@@ -28,6 +30,10 @@ internal data class InsertionEnding(
     val latencyMs: Long,
     /** The take's acceptance to this ending (#378 D8); null from a debug probe or when acceptance is unknown. */
     val endToEndMs: Long? = null,
+    /** Non-null when this insertion is a History recovery retry (#17); only verified deliveries update the row. */
+    val recoveryTranscriptId: Long? = null,
+    /** True when the row already carried an uncertain-delivery warning before this retry started. */
+    val recoveryHadPriorUncertain: Boolean = false,
 )
 
 /**
@@ -41,9 +47,45 @@ internal class InsertionOutcomeRecorder(
     /** The `insertion`/`outcome` breadcrumb with its data; the literal pair is written where the sink is built. */
     private val outcomeTrail: (Map<String, String?>) -> Unit,
     private val warn: (String) -> Unit,
+    private val onRecoveryUncertainCleared: (Long) -> Unit = {},
 ) {
     fun record(ending: InsertionEnding) {
         val kind = InsertionResultKind.fromStored(ending.result)
+        val recoveryId = ending.recoveryTranscriptId
+        if (recoveryId != null) {
+            outcomeTrail(mapOf("take_id" to ending.takeId, "result" to ending.result, "target_app" to ending.targetPackage))
+            if (ending.status == TranscriptEntity.STATUS_COMPLETED &&
+                (ending.result == InsertionResults.COMMITTED || ending.result == InsertionResults.PASTED)
+            ) {
+                val admitted = enqueue("recovery insertion outcome", WriteKind.TERMINAL) { repository ->
+                    val updated = runCatching { repository.markRecoveredInsertion(recoveryId, ending.result) }
+                        .onFailure { error -> warn("Unable to update recovered transcript result: ${error.javaClass.simpleName}") }
+                        .getOrDefault(0)
+                    // Clear the persisted uncertain marker only after Room confirms the row was updated.
+                    if (updated > 0) {
+                        onRecoveryUncertainCleared(recoveryId)
+                    }
+                }
+                if (admitted == Enqueued.REJECTED) {
+                    warn("History write queue rejected recovered transcript update for id=$recoveryId")
+                }
+            } else if (ending.result == InsertionResults.COPY_ONLY && !ending.recoveryHadPriorUncertain) {
+                // Known-unwritten fallback with no prior warning: safe to clear the newly added in-flight marker.
+                onRecoveryUncertainCleared(recoveryId)
+            } else if (ending.result == InsertionResults.COPY_ONLY_UNVERIFIED ||
+                ending.result == InsertionResults.UNVERIFIED_NOT_COPIED
+            ) {
+                com.envi.wispr.ui.HistoryInsertionRecovery.markSessionUnverified(recoveryId)
+                val admitted = enqueue("recovery unverified outcome", WriteKind.TERMINAL) { repository ->
+                    runCatching { repository.markRecoveryUnverified(recoveryId, ending.result) }
+                        .onFailure { error -> warn("Unable to update unverified recovery result: ${error.javaClass.simpleName}") }
+                }
+                if (admitted == Enqueued.REJECTED) {
+                    warn("History write queue rejected unverified recovery update for id=$recoveryId")
+                }
+            }
+            return
+        }
         fun emit() {
             outcomeTrail(mapOf("take_id" to ending.takeId, "result" to ending.result, "target_app" to ending.targetPackage))
             if (ending.takeId == null) return
@@ -95,6 +137,9 @@ internal class InsertionOutcomeRecorder(
             capture = Telemetry::capture,
             outcomeTrail = { data -> Telemetry.breadcrumb("insertion", "outcome", data) },
             warn = { DebugLogger.warn(TAG, it) },
+            onRecoveryUncertainCleared = { id ->
+                com.envi.wispr.ui.HistoryInsertionRecovery.clearPersistedUncertain(context.applicationContext, id)
+            },
         )
     }
 }

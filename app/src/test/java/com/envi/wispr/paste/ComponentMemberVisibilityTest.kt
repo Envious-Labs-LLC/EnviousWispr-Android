@@ -10,6 +10,7 @@ import com.envi.wispr.polish.PolishService
 import com.envi.wispr.shortcuts.DictationTileService
 import com.envi.wispr.ui.AccessibilityGuideActivity
 import com.envi.wispr.ui.DictationSessionService
+import com.envi.wispr.ui.QuickAddWordActivity
 import com.envi.wispr.ui.SettingsActivity
 import com.envi.wispr.ui.VoiceInputActivity
 import com.envi.wispr.vad.SilenceVadService
@@ -49,7 +50,7 @@ class ComponentMemberVisibilityTest {
         AsrService::class.java, AudioCaptureService::class.java, ModelBootstrapApplication::class.java,
         ModelDeliveryCancelReceiver::class.java, ModelDeliveryWorker::class.java, PasteAccessibilityService::class.java,
         PolishService::class.java, DictationTileService::class.java, AccessibilityGuideActivity::class.java,
-        DictationSessionService::class.java, SettingsActivity::class.java, VoiceInputActivity::class.java,
+        DictationSessionService::class.java, QuickAddWordActivity::class.java, SettingsActivity::class.java, VoiceInputActivity::class.java,
         SilenceVadService::class.java, FeedbackDeliveryWorker::class.java,
     )
 

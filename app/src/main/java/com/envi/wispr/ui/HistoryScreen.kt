@@ -1,7 +1,10 @@
 package com.envi.wispr.ui
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.ContextWrapper
 import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
@@ -19,7 +22,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -27,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +48,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionOutcomeMessages
+import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.ui.theme.brandCardBorder
 import com.envi.wispr.polish.PolishEngineLabels
 import java.text.DateFormat
 import java.util.Date
@@ -72,6 +79,10 @@ internal fun HistoryScreen(
     onKeep: (TranscriptEntity) -> Unit,
     onDelete: (TranscriptEntity) -> Unit,
     onDeleteAll: () -> Unit,
+    /** Re-attempts insertion into the focused or last remembered editor (#17). `manualSwitch` uses a longer bounded timeout when History stays visible. */
+    onRetryInsert: (TranscriptEntity, Boolean) -> InsertionHandoff = { _, _ -> InsertionHandoff.SERVICE_NOT_RUNNING },
+    /** Extends the recovery deadline to the manual-switch window if `moveTaskToBack` was declined (#17). */
+    onFallbackToManualSwitch: (Long) -> Unit = {},
     /** The Developer page is unlocked (#378 D8): the open card also shows the take's timings. */
     showTimings: Boolean = false,
 ) {
@@ -111,7 +122,11 @@ internal fun HistoryScreen(
         }
         if (transcripts.isEmpty()) {
             item {
-                ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    border = brandCardBorder(),
+                ) {
                     Column(
                         Modifier.fillMaxWidth().padding(32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -145,6 +160,8 @@ internal fun HistoryScreen(
                     },
                     onKeep = { onKeep(transcript) },
                     onDelete = { confirmDelete = transcript },
+                    onRetryInsert = { manualSwitch -> onRetryInsert(transcript, manualSwitch) },
+                    onFallbackToManualSwitch = { onFallbackToManualSwitch(transcript.id) },
                     showTimings = showTimings,
                 )
             }
@@ -191,6 +208,8 @@ private fun HistoryCard(
     onToggle: () -> Unit,
     onKeep: () -> Unit,
     onDelete: () -> Unit,
+    onRetryInsert: (Boolean) -> InsertionHandoff,
+    onFallbackToManualSwitch: () -> Unit,
     showTimings: Boolean,
 ) {
     val context = LocalContext.current
@@ -227,7 +246,13 @@ private fun HistoryCard(
             .format(Date(transcript.createdAtMs))
     }
 
-    ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().widthIn(max = 900.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (expanded) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = brandCardBorder(selected = expanded),
+    ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
@@ -304,10 +329,71 @@ private fun HistoryCard(
             }
             if (expanded) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                val recoveredIds by HistoryInsertionRecovery.sessionRecoveredIds.collectAsState()
+                var confirmDuplicateInsert by remember { mutableStateOf(false) }
+
+                fun executeRetryInsert() {
+                    if (!HistoryInsertionRecovery.canRetry(transcript)) {
+                        Toast.makeText(context, "Already inserted", Toast.LENGTH_SHORT).show()
+                        return
+                    }
+                    val activity = context.findActivity()
+                    val requiresManualSwitch = activity == null || activity.isInMultiWindowMode
+                    val handoff = onRetryInsert(requiresManualSwitch)
+                    val feedback = HistoryInsertionRecovery.feedbackMessage(handoff)
+                    if (feedback != null) {
+                        Toast.makeText(context, feedback, Toast.LENGTH_LONG).show()
+                    } else {
+                        val moved = activity != null && !activity.isInMultiWindowMode && activity.moveTaskToBack(true)
+                        if (!requiresManualSwitch && !moved) {
+                            onFallbackToManualSwitch()
+                        }
+                        Toast.makeText(
+                            context,
+                            if (moved) {
+                                "Returning to your editor to insert"
+                            } else {
+                                "Switch to your editor to finish inserting"
+                            },
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+
+                if (confirmDuplicateInsert) {
+                    AlertDialog(
+                        onDismissRequest = { confirmDuplicateInsert = false },
+                        title = { Text("Insert again?") },
+                        text = {
+                            Text("These words may already be in the editor. Check your editor first so you don't paste them twice.")
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmDuplicateInsert = false
+                                executeRetryInsert()
+                            }) { Text("Insert anyway") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmDuplicateInsert = false }) { Text("Cancel") }
+                        },
+                    )
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (HistoryInsertionRecovery.canRetry(transcript, recoveredIds)) {
+                        CardAction("Insert", Modifier.weight(1f)) {
+                            HistoryInsertionRecovery.hydratePersistedUncertain(context)
+                            if (HistoryInsertionRecovery.needsDuplicateCheck(transcript)) {
+                                confirmDuplicateInsert = true
+                            } else {
+                                executeRetryInsert()
+                            }
+                        }
+                        ActionSeparator()
+                    }
                     CardAction("Copy", Modifier.weight(1f)) {
                         val copied = runCatching {
                             context.getSystemService(ClipboardManager::class.java)
@@ -394,4 +480,10 @@ private fun Chevron(expanded: Boolean) {
             StrokeCap.Round,
         )
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

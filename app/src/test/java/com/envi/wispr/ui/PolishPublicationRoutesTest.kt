@@ -98,8 +98,9 @@ class PolishPublicationRoutesTest {
         assertTrue("the notice is posted before the continuation coroutine starts", notice >= 0 && notice < continuation)
     }
 
-    @Test fun theSevenFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
-        assertEquals(2, Regex("""fallBack\([^\n]*PolishReason\.SERVICE_DIED\)""").findAll(polish).count())
+    @Test fun theSixFallbackProducersCarryTheirReasonsAndTheReadyInsertStoresAllThreeFacts() {
+        // One direct SERVICE_DIED producer since #365 (polish disconnect); post-answer speech drops no longer cancel healthy polish.
+        assertEquals(1, Regex("""fallBack\([^\n]*PolishReason\.SERVICE_DIED\)""").findAll(polish).count())
         // Since #234 the lost-polish producer publishes the take's latched reason: SERVICE_UNAVAILABLE (refused
         // at bind, or never connected) or SERVICE_DIED (its process died before the request was sent).
         assertEquals(1, Regex("""fallBack\(rawText, takePreferences, checkNotNull\(fallback\)\)""").findAll(polish).count())

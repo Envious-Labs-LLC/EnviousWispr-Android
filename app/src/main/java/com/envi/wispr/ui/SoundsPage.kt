@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -33,6 +34,7 @@ import com.envi.wispr.audio.RecordingSoundOutput
 import com.envi.wispr.audio.RecordingSoundPairing
 import com.envi.wispr.audio.RecordingSoundVolume
 import com.envi.wispr.settings.AppPreferencesState
+import com.envi.wispr.ui.theme.brandCardBorder
 
 @Composable
 internal fun SoundsPage(preferences: AppPreferencesState, actions: SoundsActions) {
@@ -91,7 +93,13 @@ internal fun SoundsPage(preferences: AppPreferencesState, actions: SoundsActions
         )
         RecordingSoundPairing.entries.forEach { pairing ->
             val selected = preferences.recordingSoundPairing == pairing
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (selected) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                border = brandCardBorder(selected = selected),
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Row(
                         Modifier.weight(1f)

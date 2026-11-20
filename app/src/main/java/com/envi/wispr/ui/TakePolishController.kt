@@ -205,17 +205,6 @@ internal class TakePolishController(
     }
 
     /**
-     * Speech died after it answered nonblank words: polish may still answer them, and one decision picks the
-     * winner (#234). A lost claim does nothing; the owner alone decides a blank transcript's ending.
-     */
-    fun claimSpeechLossFallback(rawText: String) {
-        val claimed = claimFallback() ?: return
-        // A claimed request is still running on a live engine: stop it, outside the lock.
-        if (claimed != NO_REQUEST) cancelClaimed(claimed)
-        fallBack(rawText, preferences(), PolishReason.SERVICE_DIED)
-    }
-
-    /**
      * Polishes nonblank speech on the owner's scope. The state check, the loss check and the ledger open are
      * one step under [lock] (#75, #234), so a cancel either precedes them (no request is sent) or finds the
      * open id and closes it, and a polish disconnect either latched its loss before this (the fallback is
@@ -397,22 +386,6 @@ internal class TakePolishController(
         }
     }
 
-    /**
-     * A fallback that is not an answer to the open request (a speech drop) wins only from an undecided take or
-     * by claiming the open request, in ONE operation under [lock] (#234). Returns null when another path
-     * already decided, else the request id it claimed (to cancel on the engine), or [NO_REQUEST].
-     */
-    private fun claimFallback(): Long? = synchronized(lock) {
-        when (val seen = decision) {
-            Decision.Undecided -> NO_REQUEST
-            is Decision.Open -> seen.requestId.takeIf { ledger.claim(it) }
-            Decision.Claimed -> null
-        }?.also {
-            decision = Decision.Claimed
-            recordWait()
-        }
-    }
-
     /** Called only by a winning claim under the existing decision lock. */
     private fun recordWait() {
         localWaitMs = localOpenedAtMs?.let { (nowMs() - it).coerceAtLeast(0L) }
@@ -491,9 +464,6 @@ internal class TakePolishController(
     }
 
     companion object {
-        /** [claimFallback]'s answer when no request was open; ledger ids are never 0. */
-        private const val NO_REQUEST = 0L
-
         /** The preparation steps a defect names (#252); `SentrySchema` declares exactly these. */
         const val STEP_RESTORE_RAW = "restore_raw"
         const val STEP_CLEANUP = "cleanup"

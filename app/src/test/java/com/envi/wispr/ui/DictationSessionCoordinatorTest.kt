@@ -672,18 +672,19 @@ class DictationSessionCoordinatorTest {
     }
 
     @Test
-    fun asrDiedWithRawTextFallsBack() {
+    fun asrDiedAfterRawTextLeavesHealthyPolishRunning() {
         val coordinator = rig.coordinator()
         startAndGoLive(coordinator)
         stopAndTranscribe(coordinator, "raw words here")
+        val polish = rig.polish.awaitRequest()
         rig.pipeline.disconnect("speech")
+        rig.onMain { polish.onOutcome(rig.polish.outcome("Raw words here.")) }
 
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
         rig.host.awaitStopped()
         val row = theOnlyRow()
-        assertEquals("Deterministic fallback", row.polishEngine)
-        assertEquals("SERVICE_DIED", row.polishReason)
-        assertEquals(1, rig.insertion.pastes.size)
+        assertEquals("POLISHED", row.polishReason)
+        assertEquals(listOf("Raw words here."), rig.insertion.pastes.map { it.second })
     }
 
     @Test

@@ -4031,13 +4031,76 @@ def _report_runner_results(results, assumption_policy):
     return lines
 
 
+REAL_BOUNDARY_MODELS = {
+    "parakeet": (
+        "Parakeet Ultra",
+        "parakeet-ultra",
+        "3b80a92332b5d34c364a35a880ef049c7fede9f2",
+        {
+            "encoder-model.int8.onnx": (649537325, "8a2b47169cf3f1b114010e12c0221bc6f07203289477a65a44847b9e3f1e01ed"),
+            "decoder_joint-model.int8.onnx": (18203490, "667ffde2242a560923cba6bc7f69ef03d736f8a36ca9588f2e6f9fa818cf2fc1"),
+            "vocab.txt": (93939, "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"),
+        },
+    ),
+    "s1": (
+        "S1-mini",
+        "s1-mini",
+        "34add00a48a2e5d24e5a4ee5405a99620a3a240c",
+        {
+            "s1-mini-q4_k_m.gguf": (484219808, "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634"),
+        },
+    ),
+}
+
+
+def _expected_receipt_sha256(expected_revision, expected_files):
+    import hashlib
+    expected_receipt = expected_revision + "\n" + "\n".join(
+        f"{name}={size}:{sha}" for name, (size, sha) in expected_files.items()
+    )
+    return hashlib.sha256(expected_receipt.encode("utf-8")).hexdigest()
+
+
+def _check_model_preflight(label, model_id, expected_revision, expected_files, receipt_probe, sizes_probe):
+    """Validate one verified model directory from separate exit-status/output probes (#225).
+
+    The receipt is compared by raw-byte SHA-256 (`sha256sum` on device) so adb CRLF translation
+    cannot mask byte differences. Directory entries reject blank lines and any non-safe filename.
+    """
+    code, out = receipt_probe
+    if code != 0 or not out.strip():
+        return f"NOT RUN: {label} ({model_id}) is not verified (missing no_backup/models/{model_id}/.verified-receipt)"
+    actual_sha = out.strip().split()[0].lower()
+    expected_sha = _expected_receipt_sha256(expected_revision, expected_files)
+    if actual_sha != expected_sha:
+        return f"NOT RUN: {label} ({model_id}) receipt digest {actual_sha!r} does not match pinned manifest"
+    s_code, s_out = sizes_probe
+    if s_code != 0:
+        return f"NOT RUN: {label} ({model_id}) model files could not be read under no_backup/models/{model_id}"
+    observed = {}
+    for line in s_out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2 or not parts[0] or not parts[1].isdigit() or parts[0] in observed:
+            return f"NOT RUN: {label} ({model_id}) unexpected directory entry {line!r}"
+        observed[parts[0]] = int(parts[1])
+    expected_names = set(expected_files.keys()) | {".verified-receipt"}
+    if set(observed.keys()) != expected_names:
+        return (f"NOT RUN: {label} ({model_id}) directory entries {sorted(observed.keys())} "
+                f"do not match expected {sorted(expected_names)}")
+    for name, (expected_size, _) in expected_files.items():
+        if observed.get(name) != expected_size:
+            return (f"NOT RUN: {label} ({model_id}) member {name} is missing or wrong size "
+                    f"(got {observed.get(name)}, expected {expected_size})")
+    return None
+
+
 def _real_boundary_preflight(probes):
     """The real-boundary row's prerequisites, from read-only probes; a list of NOT RUN lines, empty when ready.
 
     `probes` maps a probe name to `(exit status, output)`, the status kept apart from the output:
     `target` (`pm path com.envi.wispr`), `test` (`pm path com.envi.wispr.test`), `runner`
-    (`pm list instrumentation`), `fixture` (`run-as com.envi.wispr sh -c 'test -f ... && stat -c %s ...'`)
-    and `runas` (`run-as com.envi.wispr true`). Models and the saved name are judged by the row itself.
+    (`pm list instrumentation`), `runas` (`run-as com.envi.wispr true`), `fixture`, and model receipt/size
+    probes (`parakeet_receipt`, `parakeet_sizes`, `s1_receipt`, `s1_sizes`) (#215, #225).
     """
     missing = []
     code, out = probes["target"]
@@ -4059,12 +4122,24 @@ def _real_boundary_preflight(probes):
     if code != 0 or not size.isdigit() or int(size) <= 0 or int(size) % 2 != 0:
         missing.append(f"NOT RUN: no usable fixture at {PACKAGE}/cache/{UAT_FIXTURE} (a regular, non-empty, "
                        "even-length 16 kHz s16le file); stage it with stage_uat_fixture(sentence)")
+    for key, (label, model_id, expected_rev, expected_files) in REAL_BOUNDARY_MODELS.items():
+        r_key, s_key = f"{key}_receipt", f"{key}_sizes"
+        err = _check_model_preflight(
+            label,
+            model_id,
+            expected_rev,
+            expected_files,
+            probes.get(r_key, (1, "")),
+            probes.get(s_key, (1, "")),
+        )
+        if err:
+            missing.append(err)
     return missing
 
 
 def _real_boundary_probes():
     """Run the read-only probes `_real_boundary_preflight` judges. Nothing here writes."""
-    return {
+    probes = {
         "target": _adb(f"pm path {PACKAGE}", check=False),
         "test": _adb(f"pm path {TEST_PACKAGE}", check=False),
         "runner": _adb("pm list instrumentation", check=False),
@@ -4072,6 +4147,25 @@ def _real_boundary_probes():
         "fixture": _adb(f"run-as {PACKAGE} sh -c {shlex.quote(f'test -f cache/{UAT_FIXTURE} && stat -c %s cache/{UAT_FIXTURE}')}",
                         check=False),
     }
+    for key, (_, model_id, _, _) in REAL_BOUNDARY_MODELS.items():
+        base = f"no_backup/models/{model_id}"
+        probes[f"{key}_receipt"] = _adb(
+            f"run-as {PACKAGE} sh -c {shlex.quote(f'test ! -L {base} && test -f {base}/.verified-receipt && test ! -L {base}/.verified-receipt && sha256sum {base}/.verified-receipt')}",
+            check=False,
+        )
+        size_cmd = (
+            f"test -d {base} && test ! -L {base} && cd {base} && "
+            "for f in * .*; do "
+            "case \"$f\" in .|..) continue;; esac; "
+            "test -e \"$f\" || test -L \"$f\" || continue; "
+            "case \"$f\" in *[!a-zA-Z0-9._-]*) exit 1;; esac; "
+            "test -f \"$f\" && test ! -L \"$f\" || exit 1; "
+            "s=$(stat -c %s \"$f\") || exit 1; "
+            "printf '%s\\t%s\\n' \"$f\" \"$s\"; "
+            "done"
+        )
+        probes[f"{key}_sizes"] = _adb(f"run-as {PACKAGE} sh -c {shlex.quote(size_cmd)}", check=False)
+    return probes
 
 
 def run_real_boundary(timeout=240):

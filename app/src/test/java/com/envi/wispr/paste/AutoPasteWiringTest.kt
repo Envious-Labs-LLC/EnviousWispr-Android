@@ -414,7 +414,7 @@ class AutoPasteWiringTest {
             ),
             Triple(
                 "the Permissions page rendering its calm card",
-                "calmAutoPasteNotice(readiness, autoPaste)?.let { notice ->",
+                "calmAutoPasteNotice(readiness, autoPaste, providerSettings)?.let { notice ->",
                 source,
             ),
             Triple(
@@ -539,6 +539,16 @@ class AutoPasteWiringTest {
             "Recording started and recording stopped are the two cues controlled by recording vibration",
             2,
             Regex("recordingVibrate\\(HapticCue\\.SESSION_TRANSITION\\)").findAll(SessionSources.all).count(),
+        )
+    }
+
+    @Test
+    fun historyRecoveryDeclinesAutomaticSiblingRefocus() {
+        val runner = read("paste/AccessibilityInsertionRunner.kt")
+        val refocusBody = slice(runner, "override fun refocusOriginal(): RefocusResult {", "\n        }\n")
+        assertTrue(
+            "History recovery must wait for user focus instead of yanking focus off another field",
+            refocusBody.contains("if (pending.recoveryTranscriptId != null) return RefocusResult.DECLINED"),
         )
     }
 

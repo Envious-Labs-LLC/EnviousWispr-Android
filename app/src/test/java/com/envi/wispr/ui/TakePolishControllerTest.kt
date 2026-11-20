@@ -366,10 +366,10 @@ class TakePolishControllerTest {
     }
 
     /**
-     * Row i2 (the owner). A speech drop's failed cancel of the claimed request is quiet too. MUTATION: cancel
-     * through `sendCancel` in `claimSpeechLossFallback`.
+     * Row i2 (the owner, #365). A speech disconnect after speech answered nonblank words does NOT cancel a
+     * healthy polish request; polish finishes and delivers its answer cleanly.
      */
-    @Test fun theSpeechDropsFailedCancelIsQuiet() {
+    @Test fun aPostAnswerSpeechDropDoesNotCancelHealthyPolish() {
         val rig = DictationSessionRig()
         try {
             rig.polish.throwOnCancel = true
@@ -379,11 +379,13 @@ class TakePolishControllerTest {
             rig.surface.awaitShown()
             rig.command(coordinator, DictationSessionService.ACTION_STOP)
             rig.speech.awaitRequest().onResult("hello there")
-            rig.polish.awaitRequest()
+            val polish = rig.polish.awaitRequest()
             rig.pipeline.disconnect("speech")
+            assertTrue("healthy polish was not cancelled", rig.polish.cancelThreads.isEmpty())
+            rig.onMain { polish.onOutcome(rig.polish.outcome("Hello there.")) }
             assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
             rig.host.awaitStopped()
-            assertTrue("the claimed request was cancelled", rig.polish.cancelThreads.contains(rig.mainThread.name))
+            assertEquals(listOf("Hello there."), rig.insertion.pastes.map { it.second })
             assertTrue("no failure warning: ${rig.log.lines}", rig.log.lines.none { it.contains("Unable to cancel polish request") })
         } finally {
             rig.close()
@@ -456,8 +458,9 @@ class TakePolishControllerTest {
 
     /** Row 1a: the fallback's first restore throws; the raw words land. MUTATION: remove the restore step's catch. */
     @Test fun aFailedFirstRestoreHandsBackTheRawWords() {
-        val c = newController(restore = restoreThrowingOn(1), cleanup = markedCleanup)
-        c.claimSpeechLossFallback("hello world")
+        val c = newController(restore = restoreThrowingOn(2), cleanup = markedCleanup)
+        c.disconnected()
+        c.prepare("hello world", preferences)
         val text = awaitHandedBack() as PreparedText.Fallback
         assertEquals("hello world", text.text)
         assertEquals(PolishReason.SERVICE_DIED, text.reason)
@@ -467,15 +470,17 @@ class TakePolishControllerTest {
     /** Row 1b: the cleanup throws; the restored words land. MUTATION: remove the cleanup step's catch. */
     @Test fun aFailedCleanupHandsBackTheRestoredWords() {
         val c = newController(restore = { text, _ -> "restored $text" }, cleanup = { _, _, _ -> throw IllegalStateException("detector broke") })
-        c.claimSpeechLossFallback("hello world")
+        c.disconnected()
+        c.prepare("hello world", preferences)
         assertEquals("the restored words, not the raw ones", "restored hello world", awaitHandedBack().text)
         assertEquals(listOf(TakePolishController.STEP_CLEANUP), preparationSteps())
     }
 
     /** Row 1c: the final restore throws; the cleaned words land. MUTATION: remove the final restore's catch. */
     @Test fun aFailedFinalRestoreHandsBackTheCleanedWords() {
-        val c = newController(restore = restoreThrowingOn(2), cleanup = markedCleanup)
-        c.claimSpeechLossFallback("hello world")
+        val c = newController(restore = restoreThrowingOn(3), cleanup = markedCleanup)
+        c.disconnected()
+        c.prepare("hello world", preferences)
         assertEquals("cleaned hello world", awaitHandedBack().text)
         assertEquals(listOf(TakePolishController.STEP_RESTORE_CLEANED), preparationSteps())
     }
@@ -505,10 +510,19 @@ class TakePolishControllerTest {
      * defect. MUTATION: call the sink directly in `report`.
      */
     @Test fun aThrowingDefectSinkNeverStopsTheWords() {
-        val c = newController(restore = restoreThrowingOn(1), defectSink = { _, _ -> throw IllegalStateException("sink broke") })
-        c.claimSpeechLossFallback("hello world")
+        val reported = CopyOnWriteArrayList<AppDefect>()
+        val c = newController(
+            restore = restoreThrowingOn(2),
+            defectSink = { defect, _ ->
+                reported += defect
+                throw IllegalStateException("sink broke")
+            },
+        )
+        c.disconnected()
+        c.prepare("hello world", preferences)
         assertEquals("hello world", awaitHandedBack().text)
         assertEquals(1, prepared.size)
+        assertTrue("preparation defect reached the sink: $reported", reported.contains(AppDefect.PolishPreparationFailed))
     }
 
     /** Row 4b: a polish death whose defect report throws still hands the fallback back. MUTATION: as row 4. */
@@ -537,7 +551,8 @@ class TakePolishControllerTest {
             text
         })
         try {
-            c.claimSpeechLossFallback("hello world")
+            c.disconnected()
+            c.prepare("hello world", preferences)
             assertTrue("the preparation started", preparing.await(10, TimeUnit.SECONDS))
             val mainFree = CountDownLatch(1)
             countingMain.execute { mainFree.countDown() }
@@ -607,7 +622,8 @@ class TakePolishControllerTest {
      */
     @Test fun aTakeThatCanNoLongerPublishGetsNoText() {
         publishable.set(false)
-        controller.claimSpeechLossFallback("hello world")
+        controller.disconnected()
+        controller.prepare("hello world", preferences)
         log.awaitLine("Prepared polish text dropped")
         val c2 = newController()
         c2.prepare("hello world", preferences)

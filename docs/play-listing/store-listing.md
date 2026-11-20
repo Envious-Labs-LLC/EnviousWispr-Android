@@ -4,7 +4,7 @@ Exact text read from Console October12,2026 for the first public submission. Oct
 full description's WHAT YOU NEED paragraph changed (founder-approved, #449) and was sent for review with
 production build 283. November 3, 2026: short description, opening and a COMPLETELY FREE section moved
 up to second place (founder-approved; he accepted the review risk of "free" in the short description), sent for review in Console the same day; live only after Google approves.
-Pending next Console update (#496): HOW IT WORKS updated in this draft to drop "or notification" (only the floating bubble and Quick Settings tile start a dictation); apply to Console before publishing the next listing edit. Status and upgrade work:
+Pending next Console update (#496, 2026-11-19): short description updated to "Free, offline voice to text with AI polish. Finished text lands where you type.", ON YOUR DEVICE, ON YOUR TERMS updated to state that speech recognition and local AI polish run offline on your phone once the required models are downloaded, and HOW IT WORKS updated to drop "or notification" (only the floating bubble and Quick Settings tile start a dictation); apply to Console before publishing the next listing edit. Status and upgrade work:
 [maintenance](../maintenance.md). Updating this file does not edit the submitted listing. Reconcile
 changes with the application, privacy policy and Data Safety before the next Console update.
 
@@ -17,7 +17,7 @@ EnviousWispr: Voice to Text
 ## Short description
 
 ```text
-Free, private voice to text. Speak and finished text lands where you type.
+Free, offline voice to text with AI polish. Finished text lands where you type.
 ```
 
 ## Full description
@@ -35,7 +35,7 @@ CLEANER WRITING
 Remove filler words, tidy punctuation and choose a tone and format for your writing. Add names, product terms and aliases to your dictionary to help EnviousWispr recognize your words. Completed dictations are saved in History on your phone so you can copy them again.
 
 ON YOUR DEVICE, ON YOUR TERMS
-Speech recognition and local AI polish run on your phone. Audio is never uploaded. You can connect your own OpenAI, Anthropic or Google Gemini key for cloud polish; selected text and your custom words then go directly to that provider. The provider's charges and terms apply.
+Speech recognition and local AI polish run offline on your phone once the required models are downloaded. Audio is never uploaded. You can connect your own OpenAI, Anthropic or Google Gemini key for cloud polish; selected text and your custom words then go directly to that provider. The provider's charges and terms apply.
 
 EnviousWispr sends limited usage and crash reports to PostHog and Sentry to help find and fix problems. Automatic reports exclude audio, dictated words, names you enter, file contents and API keys. They use a random installation ID, and PostHog may derive an approximate city or region from the connection. If you send feedback, your chosen message, optional reply email and any diagnostics you choose to include are sent to Envious Labs through Sentry.
 

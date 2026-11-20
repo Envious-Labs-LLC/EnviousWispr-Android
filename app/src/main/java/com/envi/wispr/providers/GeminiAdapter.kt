@@ -29,7 +29,7 @@ internal object GeminiAdapter : ProviderAdapter {
     override fun polishPlan(request: ProviderPolishRequest, endpointOverride: String?): RequestPlan = RequestPlan(
         url = modelUrl(request.model, endpointOverride),
         headers = authHeaders(request.apiKey.orEmpty()),
-        body = "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]${generationConfig(request.model, null)}}",
+        body = "{\"systemInstruction\":{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.systemInstruction(request.prompt, request.customVocabulary))}}]},\"contents\":[{\"parts\":[{\"text\":${jsonString(ProviderPolishPrompt.userMessage(request.prompt))}}]}]${generationConfig(request.model, null)}}",
         responseFormat = ProviderReplyFormat.GEMINI,
     )
 

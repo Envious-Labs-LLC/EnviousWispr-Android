@@ -4,17 +4,23 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.envi.wispr.vocabulary.ContactNameShaper
+import com.envi.wispr.vocabulary.ContactsImportPlan
+import com.envi.wispr.vocabulary.ContactsReadResult
+import com.envi.wispr.vocabulary.ContactsReader
 import com.envi.wispr.vocabulary.CustomTerm
 import com.envi.wispr.vocabulary.CustomTermRecord
 import com.envi.wispr.vocabulary.CustomTermRepository
 import com.envi.wispr.vocabulary.VocabularyTransfer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The Dictionary tab's state (#218). */
 internal data class DictionaryUiState(
@@ -117,6 +123,34 @@ internal class DictionaryViewModel(
                 if (result.updated > 0) append("; updated ${result.updated}")
                 if (result.skipped > 0) append("; ${result.skipped} duplicates skipped")
                 if (result.rejected > 0) append("; ${result.rejected} invalid skipped")
+            }
+        }
+    }
+
+    suspend fun previewContactsImport(): ContactsImportPlan = withContext(Dispatchers.IO) {
+        when (val read = ContactsReader.readCandidates(appContext)) {
+            ContactsReadResult.PermissionDenied ->
+                throw SecurityException("Contacts permission is required to read names.")
+            is ContactsReadResult.Candidates -> {
+                val existing = customTermRepository.list().map(CustomTermRecord::term)
+                ContactNameShaper.planImport(read.names, existing)
+            }
+        }
+    }
+
+    fun applyContactsImport(plan: ContactsImportPlan) {
+        updateCustomTerms {
+            val result = withContext(Dispatchers.IO) {
+                customTermRepository.applyImport(plan.preview)
+            }
+            if (result.added == 0) {
+                "No new words were added from Contacts"
+            } else {
+                val noun = if (result.added == 1) "word" else "words"
+                buildString {
+                    append("Added ${result.added} $noun from Contacts")
+                    if (result.skipped > 0) append("; ${result.skipped} already in list")
+                }
             }
         }
     }

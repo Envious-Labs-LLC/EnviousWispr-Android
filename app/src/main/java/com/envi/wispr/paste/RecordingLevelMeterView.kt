@@ -36,7 +36,10 @@ import kotlin.math.roundToInt
  * rail must not look like a warning when someone speaks up.
  *
  * Decorative to a screen reader. Everything it conveys is already announced by the timer and by the
- * recorder's own label, so it is hidden rather than read out several times a second.
+ * recorder's own label, so it is hidden rather than read out several times a second. Like macOS
+ * `OverlayMotion`, audio-reactive bar smoothing stays active under Reduce Motion because it carries the
+ * live microphone signal and removes frame-rate jitter, whereas decorative ambient loops (`BrandMarkView`)
+ * stop when system animators are off.
  */
 internal class RecordingLevelMeterView(context: Context) : View(context) {
 

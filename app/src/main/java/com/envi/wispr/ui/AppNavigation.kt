@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -36,6 +38,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.BuildConfig
 
@@ -151,6 +154,7 @@ internal fun AppScaffold(
     onStartDictation: () -> Unit,
     onFeedback: () -> Unit,
     topBarBadge: (@Composable () -> Unit)? = null,
+    hasUnreadWhatsNew: Boolean = false,
     content: @Composable (Modifier) -> Unit,
 ) {
     Scaffold(
@@ -163,8 +167,19 @@ internal fun AppScaffold(
                     if (page == null) {
                         IconButton(
                             onClick = onOpenDrawer,
-                            modifier = Modifier.semantics { contentDescription = "Open settings menu" },
-                        ) { MenuGlyph() }
+                            modifier = Modifier.semantics {
+                                contentDescription = "Open settings menu"
+                                if (hasUnreadWhatsNew) stateDescription = "New release notes"
+                            },
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (hasUnreadWhatsNew) {
+                                        Badge(containerColor = MaterialTheme.colorScheme.primary)
+                                    }
+                                },
+                            ) { MenuGlyph() }
+                        }
                     } else {
                         IconButton(
                             onClick = onBack,
@@ -235,6 +250,7 @@ internal fun AppScaffold(
 internal fun SettingsDrawerSheet(
     current: SettingsPage?,
     developerUnlocked: Boolean,
+    hasUnreadWhatsNew: Boolean = false,
     onVersionTap: () -> Unit,
     onPick: (SettingsPage) -> Unit,
 ) {
@@ -271,11 +287,19 @@ internal fun SettingsDrawerSheet(
                     modifier = Modifier.padding(start = 28.dp, top = 14.dp, bottom = 6.dp),
                 )
                 pages.forEach { page ->
+                    val unread = page == SettingsPage.WhatsNew && hasUnreadWhatsNew
                     NavigationDrawerItem(
                         label = { Text(page.title) },
                         selected = page == current,
                         onClick = { onPick(page) },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                        badge = if (unread) {
+                            { Badge(containerColor = MaterialTheme.colorScheme.primary) }
+                        } else null,
+                        modifier = Modifier
+                            .padding(NavigationDrawerItemDefaults.ItemPadding)
+                            .semantics {
+                                if (unread) stateDescription = "New release notes"
+                            },
                     )
                 }
             }

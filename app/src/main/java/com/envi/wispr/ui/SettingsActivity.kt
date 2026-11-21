@@ -138,6 +138,7 @@ class SettingsActivity : ComponentActivity() {
                             },
                             onRefreshReadiness = ::refreshReadiness,
                             onShowModels = modelWorkViewModel::show,
+                            onMarkWhatsNewSeen = shellViewModel::markWhatsNewSeen,
                         ),
                         permissions = PermissionActions(
                             onRequestMicrophone = {

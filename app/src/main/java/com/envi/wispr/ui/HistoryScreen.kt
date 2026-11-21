@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -453,8 +455,10 @@ private fun ActionSeparator() {
  */
 @Composable
 private fun Chevron(expanded: Boolean) {
+    val reduced = onboardingReducedMotion()
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
+        animationSpec = if (reduced) snap() else spring(),
         label = "chevron",
     )
     val color = MaterialTheme.colorScheme.onSurfaceVariant

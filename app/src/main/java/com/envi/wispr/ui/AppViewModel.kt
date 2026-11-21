@@ -161,6 +161,10 @@ internal class EnviousWisprViewModel(
         viewModelScope.launch { appPreferences.setCasualModeEnabled(enabled) }
     }
 
+    fun markWhatsNewSeen() {
+        viewModelScope.launch { appPreferences.markWhatsNewSeen() }
+    }
+
     fun setSpokenPunctuationEnabled(enabled: Boolean) =
         changeSetting(AppLaunchFacts.SPOKEN_PUNCTUATION, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.spokenPunctuationEnabled) }) { appPreferences.setSpokenPunctuationEnabled(enabled) }
 

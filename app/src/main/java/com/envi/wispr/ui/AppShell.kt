@@ -8,6 +8,8 @@ import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -141,6 +143,7 @@ internal fun EnviousWisprApp(
             SettingsDrawerSheet(
                 current = settingsPage,
                 developerUnlocked = developerState.unlocked,
+                hasUnreadWhatsNew = preferences.hasUnreadWhatsNew,
                 onVersionTap = {
                     if (!developerState.unlocked && versionTaps.tap()) {
                         developerSwitches.unlock()
@@ -154,6 +157,7 @@ internal fun EnviousWisprApp(
             )
         },
     ) {
+        val reducedMotion = onboardingReducedMotion()
         AppScaffold(
             destination = destination,
             page = settingsPage?.let { PageChrome(it.title) },
@@ -177,10 +181,14 @@ internal fun EnviousWisprApp(
             topBarBadge = if (destination == AppDestination.Polish && !providerSettings.loading) {
                 { PolishStatusBadge(polishStatusChip(providerSettings, activePolishState)) }
             } else null,
+            hasUnreadWhatsNew = preferences.hasUnreadWhatsNew,
         ) { contentModifier ->
             AnimatedContent(
                 targetState = settingsPage?.let(Screen::Page) ?: Screen.Tab(destination),
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                transitionSpec = {
+                    if (reducedMotion) EnterTransition.None togetherWith ExitTransition.None
+                    else fadeIn() togetherWith fadeOut()
+                },
                 label = "destination",
                 modifier = contentModifier,
             ) { current ->
@@ -267,7 +275,7 @@ internal fun EnviousWisprApp(
                         )
                     }
                     is Screen.Page -> when (current.page) {
-                        SettingsPage.WhatsNew -> WhatsNewPage()
+                        SettingsPage.WhatsNew -> WhatsNewPage(onSeen = actions.shell.onMarkWhatsNewSeen)
                         SettingsPage.Appearance -> AppearancePage(
                             preferences = preferences,
                             bubbleVisibility = state.bubbleVisibility,

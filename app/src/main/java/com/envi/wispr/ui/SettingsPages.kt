@@ -71,10 +71,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun WhatsNewPage() {
+internal fun WhatsNewPage(onSeen: () -> Unit = {}) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val installNote = androidx.compose.runtime.remember { PlayStoreLink.installNote(InstallSource.of(context)) }
     var playUnavailable by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { onSeen() }
     ScreenContainer(subtitle = SettingsPage.WhatsNew.subtitle) {
         Text(
             "You are running version ${BuildConfig.VERSION_NAME}.",

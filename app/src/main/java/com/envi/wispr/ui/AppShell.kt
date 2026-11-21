@@ -97,6 +97,11 @@ internal fun EnviousWisprApp(
     var expandedTranscriptId by rememberSaveable { mutableStateOf<Long?>(null) }
     var feedbackOpen by rememberSaveable { mutableStateOf(false) }
     if (feedbackOpen) FeedbackScreen(onDismiss = { feedbackOpen = false })
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val settingsSearchIndex = remember(preferences.onboardingComplete) {
+        SettingsSearchCatalog.index(preferences.onboardingComplete)
+    }
     ModelUpdatePrompt()
     // The hidden Developer page (#378 D1): the switches' owner says whether it is unlocked; seven taps on the
     // drawer's version line within three seconds unlock it. A saved Developer route resolves to nothing while
@@ -138,7 +143,7 @@ internal fun EnviousWisprApp(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = settingsPage == null,
+        gesturesEnabled = settingsPage == null && !searchOpen,
         drawerContent = {
             SettingsDrawerSheet(
                 current = settingsPage,
@@ -152,6 +157,10 @@ internal fun EnviousWisprApp(
                 },
                 onPick = { page ->
                     settingsPageName = page.name
+                    scope.launch { drawerState.close() }
+                },
+                onOpenSearch = {
+                    searchOpen = true
                     scope.launch { drawerState.close() }
                 },
             )
@@ -182,6 +191,7 @@ internal fun EnviousWisprApp(
                 { PolishStatusBadge(polishStatusChip(providerSettings, activePolishState)) }
             } else null,
             hasUnreadWhatsNew = preferences.hasUnreadWhatsNew,
+            onOpenSearch = { searchOpen = true },
         ) { contentModifier ->
             AnimatedContent(
                 targetState = settingsPage?.let(Screen::Page) ?: Screen.Tab(destination),
@@ -332,5 +342,38 @@ internal fun EnviousWisprApp(
                 }
             }
         }
+    }
+    if (searchOpen) {
+        SettingsSearchDialog(
+            index = settingsSearchIndex,
+            query = searchQuery,
+            developerUnlocked = developerState.unlocked,
+            onQueryChange = { searchQuery = it },
+            onSelect = { picked ->
+                searchOpen = false
+                searchQuery = ""
+                val target = picked.entry.target
+                when (target) {
+                    is SettingsSearchTarget.Tab -> {
+                        settingsPageName = null
+                        destinationName = target.destination.name
+                        if (target.destination == AppDestination.History) actions.history.onOpen()
+                    }
+                    is SettingsSearchTarget.Page -> {
+                        settingsPageName = target.page.name
+                    }
+                }
+                target.sectionHint?.let { hint ->
+                    scope.launch {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarHostState.showSnackbar("Look for $hint")
+                    }
+                }
+            },
+            onDismiss = {
+                searchOpen = false
+                searchQuery = ""
+            },
+        )
     }
 }

@@ -1,14 +1,19 @@
 package com.envi.wispr.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -23,11 +28,13 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
@@ -39,6 +46,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.envi.wispr.BuildConfig
 
@@ -155,6 +163,7 @@ internal fun AppScaffold(
     onFeedback: () -> Unit,
     topBarBadge: (@Composable () -> Unit)? = null,
     hasUnreadWhatsNew: Boolean = false,
+    onOpenSearch: (() -> Unit)? = null,
     content: @Composable (Modifier) -> Unit,
 ) {
     Scaffold(
@@ -162,7 +171,13 @@ internal fun AppScaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(page?.title ?: destination.label) },
+                title = {
+                    Text(
+                        page?.title ?: destination.label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     if (page == null) {
                         IconButton(
@@ -188,6 +203,14 @@ internal fun AppScaffold(
                     }
                 },
                 actions = {
+                    if (page != null && onOpenSearch != null) {
+                        IconButton(
+                            onClick = onOpenSearch,
+                            modifier = Modifier.semantics { contentDescription = "Search settings"; role = Role.Button },
+                        ) {
+                            SettingsSearchGlyph()
+                        }
+                    }
                     IconButton(onClick = onFeedback,
                         modifier = Modifier.semantics { contentDescription = "Send feedback"; role = Role.Button }) {
                         FeedbackBugGlyph()
@@ -253,6 +276,7 @@ internal fun SettingsDrawerSheet(
     hasUnreadWhatsNew: Boolean = false,
     onVersionTap: () -> Unit,
     onPick: (SettingsPage) -> Unit,
+    onOpenSearch: (() -> Unit)? = null,
 ) {
     ModalDrawerSheet {
         Column(
@@ -263,7 +287,7 @@ internal fun SettingsDrawerSheet(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Column(
-                modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 24.dp, bottom = 16.dp),
+                modifier = Modifier.padding(start = 28.dp, end = 28.dp, top = 20.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
@@ -276,6 +300,37 @@ internal fun SettingsDrawerSheet(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (onOpenSearch != null) {
+                Surface(
+                    onClick = onOpenSearch,
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Search settings"
+                        },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        SettingsSearchGlyph()
+                        Text(
+                            "Search settings",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
             SettingsPageGroup.entries.forEach { group ->
                 val pages = SettingsPage.entries.filter { it.group == group && it.visible(developerUnlocked) }
@@ -434,6 +489,25 @@ private fun BackGlyph() {
             color,
             Offset(size.width * 0.44f, size.height * 0.72f),
             Offset(size.width * 0.22f, size.height * 0.50f),
+            stroke,
+            StrokeCap.Round,
+        )
+    }
+}
+
+/** The magnifying glass used in the settings drawer trigger, settings sub-page bar, and search field. */
+@Composable
+internal fun SettingsSearchGlyph() {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(20.dp)) {
+        val stroke = 2.dp.toPx()
+        val radius = size.minDimension * 0.30f
+        val center = Offset(size.width * 0.42f, size.height * 0.42f)
+        drawCircle(color, radius, center, style = Stroke(width = stroke))
+        drawLine(
+            color,
+            Offset(center.x + radius * 0.72f, center.y + radius * 0.72f),
+            Offset(size.width * 0.86f, size.height * 0.86f),
             stroke,
             StrokeCap.Round,
         )

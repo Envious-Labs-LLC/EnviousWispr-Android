@@ -157,6 +157,10 @@ internal class EnviousWisprViewModel(
         viewModelScope.launch { appPreferences.setEnglishSpelling(spelling) }
     }
 
+    fun setCasualModeEnabled(enabled: Boolean) {
+        viewModelScope.launch { appPreferences.setCasualModeEnabled(enabled) }
+    }
+
     fun setSpokenPunctuationEnabled(enabled: Boolean) =
         changeSetting(AppLaunchFacts.SPOKEN_PUNCTUATION, AppLaunchFacts.onOff(enabled), { AppLaunchFacts.onOff(it.spokenPunctuationEnabled) }) { appPreferences.setSpokenPunctuationEnabled(enabled) }
 

@@ -14,7 +14,7 @@ class RecoveryContextInventoryTest {
             instanceFields(CustomTerm::class.java),
         )
         assertEquals(
-            setOf("removeFillers", "spokenEmoji", "spokenPunctuation", "englishSpelling", "spellingProtectedWords"),
+            setOf("removeFillers", "spokenEmoji", "spokenPunctuation", "englishSpelling", "spellingProtectedWords", "casualMode"),
             instanceFields(CleanupOptions::class.java),
         )
     }

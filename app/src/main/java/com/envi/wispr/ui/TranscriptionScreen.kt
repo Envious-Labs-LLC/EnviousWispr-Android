@@ -56,6 +56,7 @@ internal fun TranscriptionScreen(
     onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     onSilencePauseSecondsChanged: (Float) -> Unit,
     onSpeechModelUnloadChanged: (com.envi.wispr.settings.SpeechModelUnload) -> Unit = {},
+    onCasualModeChanged: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -161,6 +162,14 @@ internal fun TranscriptionScreen(
                 onCheckedChange = { updateWithHaptic(it, onSpokenPunctuationChanged) },
             )
             HorizontalDivider(Modifier.padding(horizontal = 18.dp))
+            SettingsToggleRow(
+                title = "Casual mode",
+                subtitle = "Leave off the full stop at the end of each dictation. Keeps ?, !, dotted abbreviations like a.m., and periods you dictate with Spoken punctuation.",
+                checked = preferences.casualModeEnabled,
+                icon = { CasualGlyph() },
+                onCheckedChange = { updateWithHaptic(it, onCasualModeChanged) },
+            )
+            HorizontalDivider(Modifier.padding(horizontal = 18.dp))
             Text("English spelling", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(horizontal = 18.dp)) {
                 com.envi.wispr.cleanup.EnglishSpelling.entries.forEach { spelling ->
@@ -177,7 +186,7 @@ internal fun TranscriptionScreen(
 
         }
         Text(
-            "These rules run on this phone, before AI Polish. Turn off anything you prefer to dictate literally. A change here applies to your next dictation, never to one already in progress.",
+            "These rules run on this phone. Cleanup runs before AI Polish, and Casual mode removes a final full stop afterwards. Turn off anything you prefer to dictate literally. A change here applies to your next dictation, never to one already in progress.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

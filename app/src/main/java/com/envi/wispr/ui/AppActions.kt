@@ -111,6 +111,7 @@ internal class TranscriptionActions(
     val onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     val onSilencePauseSecondsChanged: (Float) -> Unit,
     val onSpeechModelUnloadChanged: (com.envi.wispr.settings.SpeechModelUnload) -> Unit = {},
+    val onCasualModeChanged: (Boolean) -> Unit = {},
 )
 
 internal class PolishActions(

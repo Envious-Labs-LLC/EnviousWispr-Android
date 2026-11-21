@@ -431,6 +431,34 @@ internal fun PunctuationGlyph(
     }
 }
 
+/** Chat line glyph for Casual mode (text without a trailing full stop). */
+@Composable
+internal fun CasualGlyph(
+    modifier: Modifier = Modifier.size(22.dp),
+    color: Color = MaterialTheme.colorScheme.primary,
+) {
+    Canvas(modifier) {
+        val stroke = 2.2.dp.toPx()
+        val bubble = Path().apply {
+            moveTo(size.width * 0.22f, size.height * 0.24f)
+            lineTo(size.width * 0.78f, size.height * 0.24f)
+            quadraticTo(size.width * 0.86f, size.height * 0.24f, size.width * 0.86f, size.height * 0.34f)
+            lineTo(size.width * 0.86f, size.height * 0.64f)
+            quadraticTo(size.width * 0.86f, size.height * 0.74f, size.width * 0.78f, size.height * 0.74f)
+            lineTo(size.width * 0.44f, size.height * 0.74f)
+            lineTo(size.width * 0.24f, size.height * 0.88f)
+            lineTo(size.width * 0.28f, size.height * 0.74f)
+            lineTo(size.width * 0.22f, size.height * 0.74f)
+            quadraticTo(size.width * 0.14f, size.height * 0.74f, size.width * 0.14f, size.height * 0.64f)
+            lineTo(size.width * 0.14f, size.height * 0.34f)
+            quadraticTo(size.width * 0.14f, size.height * 0.24f, size.width * 0.22f, size.height * 0.24f)
+            close()
+        }
+        drawPath(bubble, color, style = Stroke(stroke, join = StrokeJoin.Round))
+        drawLine(color, Offset(size.width * 0.32f, size.height * 0.49f), Offset(size.width * 0.68f, size.height * 0.49f), stroke, StrokeCap.Round)
+    }
+}
+
 /** Small leading glyph rendered inside fact chips (#52). */
 @Composable
 internal fun FactChipGlyph(fact: String, modifier: Modifier = Modifier.size(14.dp)) {

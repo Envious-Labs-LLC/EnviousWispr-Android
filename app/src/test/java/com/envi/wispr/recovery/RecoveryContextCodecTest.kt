@@ -55,6 +55,23 @@ class RecoveryContextCodecTest {
         assertArrayEquals(encoded, RecoveryContextCodec.encode(context(terms, reversedSet)))
     }
 
+    @Test fun roundTripsCasualModeInVersionTwoWithoutBreakingVersionOneLiterals() {
+        val casualOptions = CleanupOptions(
+            removeFillers = true,
+            spokenEmoji = false,
+            spokenPunctuation = true,
+            englishSpelling = EnglishSpelling.AMERICAN,
+            casualMode = true,
+        )
+        val encoded = RecoveryContextCodec.encode(context(options = casualOptions))
+        assertEquals(2, ByteBuffer.wrap(encoded, 8, 2).short.toInt())
+        val decoded = RecoveryContextCodec.decode(encoded, take)
+        assertEquals(casualOptions, decoded.cleanup)
+        assertArrayEquals(encoded, RecoveryContextCodec.encode(decoded))
+        // Version 2 must not encode casualMode=false; offset 61 holds the casualMode boolean in a bare take.
+        malformed { RecoveryContextCodec.decode(encoded.copyOf().also { it[61] = 0 }, take) }
+    }
+
     @Test fun freezesOwnedCollectionsRatherThanFollowingLaterSettingsChanges() {
         val aliases = mutableListOf("git hub")
         val terms = mutableListOf(CustomTerm("GitHub", aliases))

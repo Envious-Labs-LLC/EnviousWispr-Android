@@ -33,6 +33,46 @@ internal object DemoScript {
         return DemoMoment(DemoScene.YOURS, DemoScene.YOURS.seconds)
     }
 
+    /**
+     * Settled timestamps covering every caption and visual state under Reduce Motion, including all three
+     * educational beats of `DemoScene.BUBBLE` (appears beside text boxes, drags left/right, three looks).
+     */
+    val staticSteps: List<Float> = listOf(
+        3.999f,   // APPS: text box + bubble in place
+        5.9f,     // BUBBLE beat 1: "It appears whenever a text box is active."
+        7.5f,     // BUBBLE beat 2: "Drag it to the side you like."
+        10.999f,  // BUBBLE beat 3: "Pick yours in Settings, Appearance."
+        15.999f,  // TAP: formatted email landed
+        20.999f,  // HOLD: formatted email landed
+        24.0f,    // YOURS: standalone bubble ready
+    )
+
+    fun staticStepIndex(elapsed: Float): Int {
+        val moment = at(elapsed)
+        return when (moment.scene) {
+            DemoScene.APPS -> 0
+            DemoScene.BUBBLE -> when {
+                moment.t < 2.3f -> 1
+                moment.t < 4.6f -> 2
+                else -> 3
+            }
+            DemoScene.TAP -> 4
+            DemoScene.HOLD -> 5
+            DemoScene.YOURS -> 6
+        }
+    }
+
+    fun staticStepFor(elapsed: Float): Float = staticSteps[staticStepIndex(elapsed)]
+
+    /** Elapsed timestamp at the settled final frame of [scene] for static Reduce Motion stepping. */
+    fun settledElapsed(scene: DemoScene): Float = when (scene) {
+        DemoScene.APPS -> staticSteps[0]
+        DemoScene.BUBBLE -> staticSteps[3]
+        DemoScene.TAP -> staticSteps[4]
+        DemoScene.HOLD -> staticSteps[5]
+        DemoScene.YOURS -> staticSteps[6]
+    }
+
     /** 0 before [from], 1 after [to], smooth in between. */
     fun between(t: Float, from: Float, to: Float): Float {
         val v = ((t - from) / (to - from)).coerceIn(0f, 1f)

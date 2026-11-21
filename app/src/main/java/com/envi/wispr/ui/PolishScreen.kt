@@ -170,7 +170,11 @@ internal fun PolishScreen(
         }
         if (writeError != null && errorKind == WriteKind.MODE) ErrorLine(writeError!!)
 
-        Column(Modifier.fillMaxWidth().animateContentSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        val reducedMotion = onboardingReducedMotion()
+        Column(
+            Modifier.fillMaxWidth().let { if (reducedMotion) it else it.animateContentSize() },
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             when (rungOne) {
                 RungOne.OFF -> QuietCard("No language model runs. Deterministic cleanup still removes obvious filler and spacing issues.")
                 RungOne.THIS_PHONE -> {

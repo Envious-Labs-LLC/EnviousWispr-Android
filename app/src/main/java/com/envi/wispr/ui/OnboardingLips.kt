@@ -1,5 +1,9 @@
 package com.envi.wispr.ui
 
+import android.content.Context
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -9,7 +13,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,10 +36,34 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sin
 
+internal val LocalReducedMotionOverride = compositionLocalOf<Boolean?> { null }
+
+internal fun isAnimatorScaleZero(scale: Float): Boolean = scale == 0f
+
+internal fun isReducedMotionEnabled(context: Context): Boolean =
+    isAnimatorScaleZero(
+        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f),
+    )
+
+/** Observes the system "Remove animations" setting live so mounted surfaces start or stop in both directions. */
 @Composable
 internal fun onboardingReducedMotion(): Boolean {
+    LocalReducedMotionOverride.current?.let { return it }
     val context = LocalContext.current
-    return remember { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    var reduced by remember(context) { mutableStateOf(isReducedMotionEnabled(context)) }
+    DisposableEffect(context) {
+        val resolver = context.contentResolver
+        val uri = Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                reduced = isReducedMotionEnabled(context)
+            }
+        }
+        runCatching { resolver.registerContentObserver(uri, false, observer) }
+        reduced = isReducedMotionEnabled(context)
+        onDispose { runCatching { resolver.unregisterContentObserver(observer) } }
+    }
+    return reduced
 }
 
 /** The approved brand geometry, animated only while this screen is visible. */
@@ -45,9 +75,14 @@ internal fun OnboardingLips(modifier: Modifier = Modifier, energetic: Boolean = 
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     LaunchedEffect(owner, reduced, energetic) {
-        if (!reduced) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        if (reduced) {
             phase.snapTo(0f)
-            phase.animateTo(6.2832f, infiniteRepeatable(tween(if (energetic) 1800 else 3600, easing = LinearEasing), RepeatMode.Restart))
+            bounce.snapTo(1f)
+        } else {
+            owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                phase.snapTo(0f)
+                phase.animateTo(6.2832f, infiniteRepeatable(tween(if (energetic) 1800 else 3600, easing = LinearEasing), RepeatMode.Restart))
+            }
         }
     }
     val upperY = floatArrayOf(84.2f,65.75f,43.36f,63.04f,81.43f,63.04f,43.36f,65.75f,84.2f)

@@ -22,6 +22,26 @@ internal object ReleaseNotes {
     /** Google Play's per-language character ceiling for a release's "What's new" text. */
     const val MAX_PLAY_RELEASE_NOTES_CHARS = 500
 
+    /** The version whose notes sit at the top of the What's New page. */
+    val currentContentVersion: String
+        get() = entries.first().version
+
+    /**
+     * Unread once an upgraded install has not opened [currentVersion]. Brand-new installs before
+     * onboarding completes/dismisses are never badged; upgrades from builds before tracking existed
+     * (no stored version yet, onboarding already done/dismissed) show the badge until viewed.
+     */
+    fun hasUnread(
+        lastSeenVersion: String?,
+        onboardingComplete: Boolean,
+        onboardingDismissed: Boolean,
+        currentVersion: String = currentContentVersion,
+    ): Boolean = when {
+        lastSeenVersion == currentVersion -> false
+        lastSeenVersion != null -> true
+        else -> onboardingComplete || onboardingDismissed
+    }
+
     fun playStoreText(note: ReleaseNote = entries.first()): String =
         note.lines.joinToString("\n") { "• $it" }
 

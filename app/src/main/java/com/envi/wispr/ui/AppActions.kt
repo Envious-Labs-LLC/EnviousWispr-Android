@@ -44,6 +44,7 @@ internal class ShellActions(
     val onRefreshReadiness: () -> Unit,
     /** The tab whose model card shows, or null for none (#255); `ModelWorkViewModel.show`. */
     val onShowModels: (AppDestination?) -> Unit,
+    val onMarkWhatsNewSeen: () -> Unit = {},
 )
 
 /** Launching a system permission or settings screen; read by onboarding, the Microphone page and the Permissions page. */

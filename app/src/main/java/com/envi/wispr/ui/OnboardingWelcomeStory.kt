@@ -47,9 +47,13 @@ internal fun OnboardingWelcomeStory(surface: Color, foreground: Color, muted: Co
     val owner = LocalLifecycleOwner.current
     val reduced = onboardingReducedMotion()
     var index by remember { mutableIntStateOf(0) }
-    var paused by remember { mutableStateOf(reduced) }
+    var manualPause by remember { mutableStateOf<Boolean?>(null) }
+    val paused = manualPause ?: reduced
     var host by remember { mutableStateOf<WelcomeVideoHost?>(null) }
     var foregrounded by remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    LaunchedEffect(reduced) {
+        if (reduced && manualPause == false) manualPause = null
+    }
     val bitmap by produceState<Bitmap?>(null, index) {
         value = withContext(Dispatchers.IO) { runCatching { context.assets.open("onboarding/${welcomeScenes[index].poster}").use(BitmapFactory::decodeStream) }.getOrNull() }
     }
@@ -62,7 +66,7 @@ internal fun OnboardingWelcomeStory(surface: Color, foreground: Color, muted: Co
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
             bitmap?.let { Image(it.asImageBitmap(), welcomeScenes[index].title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
             AndroidView(factory = { WelcomeVideoHost(it, !reduced) { scene -> index = scene }.also { host = it } },
-                update = { it.setPlaying(foregrounded && !paused) }, modifier = Modifier.fillMaxSize())
+                update = { it.animate = !reduced; it.setPlaying(foregrounded && !paused) }, modifier = Modifier.fillMaxSize())
         }
         Text(welcomeScenes[index].title, color = foreground, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp), fontSize = 16.sp)
         Text(welcomeScenes[index].copy, color = muted, textAlign = TextAlign.Center, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
@@ -72,13 +76,13 @@ internal fun OnboardingWelcomeStory(surface: Color, foreground: Color, muted: Co
                     Text(if (index == scene) "●" else "○", color = accent)
                 }
             }
-            TextButton(onClick = { paused = !paused }) { Text(if (paused) "Play" else "Pause", color = accent, fontSize = 12.sp) }
+            TextButton(onClick = { manualPause = !paused }) { Text(if (paused) "Play" else "Pause", color = accent, fontSize = 12.sp) }
         }
     }
 }
 
 /** Two textures retain the outgoing frame until the next clip has actually rendered. */
-private class WelcomeVideoHost(context: Context, private val animate: Boolean, private val onScene: (Int) -> Unit) : FrameLayout(context) {
+private class WelcomeVideoHost(context: Context, var animate: Boolean, private val onScene: (Int) -> Unit) : FrameLayout(context) {
     private data class Clip(val view: TextureView, var player: MediaPlayer? = null, var surface: Surface? = null, var prepared: Boolean = false)
     private var current: Clip? = null
     private var outgoing: Clip? = null

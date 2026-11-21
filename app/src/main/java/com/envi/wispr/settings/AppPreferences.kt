@@ -44,6 +44,7 @@ internal data class AppPreferencesState(
     val answeredUpdatePrompts: Set<String> = emptySet(),
     val onboardingComplete: Boolean = false,
     val onboardingDismissed: Boolean = false,
+    val lastSeenWhatsNewVersion: String? = null,
     // OFF by default, so what a user sees out of the box is EnviousWispr rather than their wallpaper.
     // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
     // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
@@ -77,7 +78,14 @@ internal data class AppPreferencesState(
     val keepEarbudsReady: Boolean = true,
     /** "Unload model after" for the speech model (#37). Read live by `SpeechModelKeepAlive`; same default in `mapState`. */
     val speechModelUnload: SpeechModelUnload = SpeechModelUnload.DEFAULT,
-)
+) {
+    val hasUnreadWhatsNew: Boolean
+        get() = com.envi.wispr.about.ReleaseNotes.hasUnread(
+            lastSeenVersion = lastSeenWhatsNewVersion,
+            onboardingComplete = onboardingComplete,
+            onboardingDismissed = onboardingDismissed,
+        )
+}
 
 /** The Developer page's stored values (#378); a null switch was never set. */
 internal data class DeveloperStored(val unlocked: Boolean, val detailedLog: Boolean?, val keepRecordings: Boolean?)
@@ -135,6 +143,7 @@ internal class AppPreferences internal constructor(
         answeredUpdatePrompts = preferences[Keys.ANSWERED_UPDATE_PROMPTS] ?: emptySet(),
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
+        lastSeenWhatsNewVersion = preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION],
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
         themeMode = ThemeMode.fromStorage(preferences[Keys.THEME_MODE]),
         speechProcessing = if (strictProcessing) ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) else
@@ -196,20 +205,43 @@ internal class AppPreferences internal constructor(
 
     suspend fun dismissOnboarding() {
         dataStore.edit { preferences ->
+            val priorSetup =
+                preferences[Keys.ONBOARDING_COMPLETE] == true || preferences[Keys.ONBOARDING_DISMISSED] == true
             preferences[Keys.ONBOARDING_DISMISSED] = true
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] == null && !priorSetup) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = com.envi.wispr.about.ReleaseNotes.currentContentVersion
+            }
         }
     }
 
     suspend fun resumeOnboarding() {
         dataStore.edit { preferences ->
+            val priorSetup =
+                preferences[Keys.ONBOARDING_DISMISSED] == true || preferences[Keys.ONBOARDING_COMPLETE] == true
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] == null && priorSetup) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = LEGACY_UNSEEN_VERSION
+            }
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }
     }
 
     suspend fun completeOnboarding() {
         dataStore.edit { preferences ->
+            val priorSetup =
+                preferences[Keys.ONBOARDING_COMPLETE] == true || preferences[Keys.ONBOARDING_DISMISSED] == true
             preferences[Keys.ONBOARDING_COMPLETE] = true
             preferences[Keys.ONBOARDING_DISMISSED] = false
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] == null && !priorSetup) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = com.envi.wispr.about.ReleaseNotes.currentContentVersion
+            }
+        }
+    }
+
+    suspend fun markWhatsNewSeen(version: String = com.envi.wispr.about.ReleaseNotes.currentContentVersion) {
+        dataStore.edit { preferences ->
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] != version) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = version
+            }
         }
     }
 
@@ -370,6 +402,7 @@ internal class AppPreferences internal constructor(
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")
+        val LAST_SEEN_WHATS_NEW_VERSION = stringPreferencesKey("last_seen_whats_new_version")
         val SPEECH_PROCESSING = stringPreferencesKey("speech_processing")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val THEME_MODE = stringPreferencesKey("theme_mode")
@@ -391,5 +424,9 @@ internal class AppPreferences internal constructor(
         val DEVELOPER_UNLOCKED = booleanPreferencesKey("developer_unlocked")
         val DETAILED_LOG = booleanPreferencesKey("developer_detailed_log")
         val KEEP_RECORDINGS = booleanPreferencesKey("developer_keep_recordings")
+    }
+
+    private companion object {
+        const val LEGACY_UNSEEN_VERSION = ""
     }
 }

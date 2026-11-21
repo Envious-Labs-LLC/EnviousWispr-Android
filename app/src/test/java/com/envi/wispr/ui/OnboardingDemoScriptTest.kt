@@ -70,4 +70,28 @@ class OnboardingDemoScriptTest {
         assertTrue(!transcriptionScreen.contains("model = \"Parakeet\""))
         assertTrue(!listing.contains("Start from the floating bubble, Quick Settings tile or notification."))
     }
+
+    @Test fun settledElapsedLandsOnEachScenesFinalFrameForReduceMotion() {
+        DemoScene.entries.forEach { scene ->
+            val moment = DemoScript.at(DemoScript.settledElapsed(scene))
+            assertEquals(scene, moment.scene)
+        }
+        val captions = DemoScript.staticSteps.map { elapsed ->
+            val moment = DemoScript.at(elapsed)
+            if (moment.scene == DemoScene.BUBBLE) DemoScript.bubbleCaption(moment.t).second else moment.scene.caption
+        }
+        assertTrue(captions.any { it.contains("whenever a text box is active") })
+        assertTrue(captions.any { it.contains("Drag it to the side you like") })
+        assertTrue(captions.any { it.contains("Settings, Appearance") })
+        // Switching Reduce Motion on mid-beat stays on the caption currently on screen instead of skipping ahead.
+        assertEquals(1, DemoScript.staticStepIndex(6.0f))
+        assertEquals(2, DemoScript.staticStepIndex(7.0f))
+        assertEquals(3, DemoScript.staticStepIndex(9.0f))
+        assertTrue(DemoScript.at(DemoScript.settledElapsed(DemoScene.TAP)).t >= DemoScript.TAP_LANDS)
+        assertTrue(DemoScript.at(DemoScript.settledElapsed(DemoScene.HOLD)).t >= DemoScript.HOLD_LANDS)
+        assertEquals(2, DemoScript.bubbleLookIndex(DemoScript.at(DemoScript.settledElapsed(DemoScene.BUBBLE)).t))
+        assertTrue(isAnimatorScaleZero(0f))
+        org.junit.Assert.assertFalse(isAnimatorScaleZero(1f))
+        org.junit.Assert.assertFalse(isAnimatorScaleZero(0.5f))
+    }
 }

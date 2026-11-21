@@ -9,6 +9,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -20,6 +22,7 @@ import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptRepository
 import com.envi.wispr.history.ui.HistoryViewModel
 import com.envi.wispr.ui.theme.EnviousWisprTheme
+import com.envi.wispr.ui.theme.applySystemBarTheme
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelManifest
 import com.envi.wispr.providers.ModelListCache
@@ -118,7 +121,15 @@ class SettingsActivity : ComponentActivity() {
             val bubbleVisibility by bubbleVisibilityViewModel.state.collectAsStateWithLifecycle()
             val storageRefreshTick by modelWorkViewModel.storageRefreshTick.collectAsStateWithLifecycle()
 
-            EnviousWisprTheme(dynamicColor = shell.preferences.dynamicColorEnabled) {
+            if (!shell.loaded) return@setContent
+            val isDark = shell.preferences.themeMode.resolveDarkTheme(isSystemInDarkTheme())
+            LaunchedEffect(isDark) {
+                applySystemBarTheme(isDark)
+            }
+            EnviousWisprTheme(
+                dynamicColor = shell.preferences.dynamicColorEnabled,
+                themeMode = shell.preferences.themeMode,
+            ) {
                 val actions = remember(shellViewModel, historyViewModel, dictionaryViewModel, polishViewModel, readinessViewModel, modelWorkViewModel, bubbleVisibilityViewModel) {
                     AppActions(
                         shell = ShellActions(
@@ -202,6 +213,7 @@ class SettingsActivity : ComponentActivity() {
                             onRecordingVibrationChanged = shellViewModel::setRecordingVibrationEnabled,
                         ),
                         appearance = AppearanceActions(
+                            onThemeModeChanged = shellViewModel::setThemeMode,
                             onDynamicColorChanged = shellViewModel::setDynamicColorEnabled,
                             onBubbleLookChanged = shellViewModel::setBubbleLook,
                             onBubbleShowOnPasswordsChanged = bubbleVisibilityViewModel::setShowOnPasswords,

@@ -140,6 +140,7 @@ internal class ClipboardActions(
 )
 
 internal class AppearanceActions(
+    val onThemeModeChanged: (com.envi.wispr.settings.ThemeMode) -> Unit,
     val onDynamicColorChanged: (Boolean) -> Unit,
     val onBubbleLookChanged: (BubbleLook) -> Unit,
     val onBubbleShowOnPasswordsChanged: (Boolean) -> Unit,

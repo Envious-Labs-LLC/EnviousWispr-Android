@@ -19,12 +19,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.settings.AppPreferencesState
 import com.envi.wispr.ui.theme.EnviousWisprTheme
 import com.envi.wispr.ui.theme.brandButtonColors
 import com.envi.wispr.vocabulary.CustomTerm
@@ -178,7 +181,14 @@ class QuickAddWordActivity : ComponentActivity() {
         }
 
         setContent {
-            EnviousWisprTheme {
+            val preferences by produceState<AppPreferencesState?>(initialValue = null, applicationContext) {
+                AppPreferences(applicationContext).state.collect { value = it }
+            }
+            val loadedPrefs = preferences ?: return@setContent
+            EnviousWisprTheme(
+                dynamicColor = loadedPrefs.dynamicColorEnabled,
+                themeMode = loadedPrefs.themeMode,
+            ) {
                 val uiState by viewModel.state.collectAsState()
 
                 LaunchedEffect(uiState.savedSpelling) {

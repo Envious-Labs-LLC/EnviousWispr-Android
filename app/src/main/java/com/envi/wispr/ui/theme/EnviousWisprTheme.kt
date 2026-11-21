@@ -1,5 +1,8 @@
 package com.envi.wispr.ui.theme
 
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ButtonColors
@@ -26,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.envi.wispr.R
+import com.envi.wispr.settings.ThemeMode
 
 /**
  * Plus Jakarta Sans, the brand face.
@@ -258,6 +262,22 @@ private val LocalBrandFill = staticCompositionLocalOf<BrandFill> {
 private val LocalBrandGreen = staticCompositionLocalOf<BrandGreen> {
     error("LocalBrandGreen must be provided by EnviousWisprTheme")
 }
+/** Null outside [EnviousWisprTheme] so standalone Compose tests keep following system dark mode. */
+internal val LocalDarkTheme = staticCompositionLocalOf<Boolean?> { null }
+
+/** Syncs status and navigation bar icon contrast to an app activity's resolved dark background. */
+internal fun ComponentActivity.applySystemBarTheme(isDark: Boolean) {
+    enableEdgeToEdge(
+        statusBarStyle = SystemBarStyle.auto(
+            android.graphics.Color.TRANSPARENT,
+            android.graphics.Color.TRANSPARENT,
+        ) { isDark },
+        navigationBarStyle = SystemBarStyle.auto(
+            android.graphics.Color.TRANSPARENT,
+            android.graphics.Color.TRANSPARENT,
+        ) { isDark },
+    )
+}
 
 /** Colours for a primary action button, so a filled brand surface never renders as a pale lavender. */
 @Composable
@@ -304,7 +324,8 @@ internal fun brandCardBorder(selected: Boolean = false): BorderStroke = BorderSt
 @Composable
 internal fun EnviousWisprTheme(
     dynamicColor: Boolean = false,
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    themeMode: ThemeMode = ThemeMode.DEFAULT,
+    darkTheme: Boolean = themeMode.resolveDarkTheme(isSystemInDarkTheme()),
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -329,6 +350,7 @@ internal fun EnviousWisprTheme(
     CompositionLocalProvider(
         LocalBrandFill provides brandFill,
         LocalBrandGreen provides brandGreen,
+        LocalDarkTheme provides darkTheme,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

@@ -4,6 +4,7 @@ import android.content.Context
 import com.envi.wispr.processing.ProcessingPreference
 import com.envi.wispr.audio.RecordingSoundPairing
 import com.envi.wispr.audio.RecordingSoundVolume
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -47,6 +48,8 @@ internal data class AppPreferencesState(
     // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
     // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
     val dynamicColorEnabled: Boolean = false,
+    /** System, Light, or Dark override for the app UI (`PAR-097`). Same default in `mapState`. */
+    val themeMode: ThemeMode = ThemeMode.DEFAULT,
     val speechProcessing: ProcessingPreference = ProcessingPreference.DEFAULT,
     val speechProcessingReadError: Boolean = false,
     /** How the floating button and its recorder pills look. Same default here and in `mapState`. */
@@ -102,8 +105,10 @@ internal fun AppPreferencesState.clipboardInsertionPolicy(): ClipboardInsertionP
     smartInsertion = smartInsertionEnabled,
 )
 
-internal class AppPreferences(context: Context) {
-    private val dataStore = context.applicationContext.enviousWisprDataStore
+internal class AppPreferences internal constructor(
+    private val dataStore: DataStore<Preferences>,
+) {
+    constructor(context: Context) : this(context.applicationContext.enviousWisprDataStore)
 
     val authoritativeState: Flow<AppPreferencesState> = dataStore.data
         .map { mapState(it) }
@@ -129,6 +134,7 @@ internal class AppPreferences(context: Context) {
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
+        themeMode = ThemeMode.fromStorage(preferences[Keys.THEME_MODE]),
         speechProcessing = if (strictProcessing) ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) else
             runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.getOrDefault(ProcessingPreference.DEFAULT),
         speechProcessingReadError = runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.isFailure,
@@ -211,6 +217,12 @@ internal class AppPreferences(context: Context) {
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[Keys.DYNAMIC_COLOR] = enabled
+        }
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) {
+        dataStore.edit { preferences ->
+            preferences[Keys.THEME_MODE] = mode.storageKey
         }
     }
 
@@ -351,6 +363,7 @@ internal class AppPreferences(context: Context) {
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")
         val SPEECH_PROCESSING = stringPreferencesKey("speech_processing")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
         val BUBBLE_LOOK = stringPreferencesKey("bubble_look")
         val SPEECH_MODEL_UNLOAD = stringPreferencesKey("speech_model_unload")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")

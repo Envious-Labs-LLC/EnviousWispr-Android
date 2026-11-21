@@ -6,10 +6,13 @@ import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +36,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -58,6 +62,7 @@ import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.polish.EgOneMnnRuntime
 import com.envi.wispr.polish.LocalPolishModel
 import com.envi.wispr.polish.MNN_VERSION
+import com.envi.wispr.settings.ThemeMode
 import com.envi.wispr.providers.PolishMode
 import com.envi.wispr.providers.ui.ProviderSettingsUiState
 import com.envi.wispr.settings.AppPreferencesState
@@ -137,6 +142,17 @@ internal fun AppearancePage(
             onShowIn = actions.onBubbleShowIn,
             onLoadPickable = actions.onLoadBubblePickableApps,
         )
+        SettingsGroup("Theme") {
+            ThemeModePicker(
+                selected = preferences.themeMode,
+                onSelect = actions.onThemeModeChanged,
+            )
+        }
+        Text(
+            "Choose System to follow this phone, or choose Light or Dark.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         SettingsGroup("Colours") {
             SettingsToggleRow(
                 title = "Use Galaxy colours",
@@ -147,12 +163,98 @@ internal fun AppearancePage(
             )
         }
         Text(
-            "EnviousWispr uses its own purple. Turn this on and the app takes your wallpaper's " +
-                "colours instead. Either way it follows the light or dark setting you chose for " +
-                "the phone; choosing light or dark just for this app is not available yet.",
+            "EnviousWispr uses its own purple. Turn this on and the app takes your wallpaper's colours instead.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun ThemeModePicker(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) {
+    val view = LocalView.current
+    val density = LocalDensity.current
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        val slotWidth = (maxWidth - 20.dp) / ThemeMode.entries.size
+        val estimatedSystemLabelWidth = 56.dp * density.fontScale
+        val stack = density.fontScale >= 1.35f || slotWidth < estimatedSystemLabelWidth + 24.dp
+        if (stack) {
+            Column(
+                modifier = Modifier.fillMaxWidth().selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ThemeMode.entries.forEach { mode ->
+                    ThemeModeOption(
+                        mode = mode,
+                        selected = mode == selected,
+                        singleLine = false,
+                        onClick = {
+                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            onSelect(mode)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().selectableGroup(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ThemeMode.entries.forEach { mode ->
+                    ThemeModeOption(
+                        mode = mode,
+                        selected = mode == selected,
+                        singleLine = true,
+                        onClick = {
+                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            onSelect(mode)
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeModeOption(
+    mode: ThemeMode,
+    selected: Boolean,
+    singleLine: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    Surface(
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onClick,
+            ),
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+        border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = mode.title,
+                style = MaterialTheme.typography.labelLarge,
+                color = fg,
+                maxLines = if (singleLine) 1 else 2,
+                overflow = if (singleLine) TextOverflow.Ellipsis else TextOverflow.Clip,
+            )
+        }
     }
 }
 

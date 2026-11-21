@@ -17,13 +17,38 @@ import java.util.concurrent.atomic.AtomicBoolean
  * cancelled answer is never delivered and a delivered one is never cancelled halfway. A lane that is closed,
  * or whose worker refuses, still answers: the RAW text, from a short-lived daemon thread, never inline.
  */
-internal class PolishFallbackLane(
+internal class PolishFallbackLane private constructor(
     private val worker: ExecutorService,
-    /** The deterministic text; its warnings go to the request's take log when there is one (#378). */
-    private val prepare: (String, CleanupOptions, TakeLog?) -> String,
+    private val prepareOutcome: (String, CleanupOptions, TakeLog?) -> PolishFallback.Outcome,
     /** Starts the refusal's deliverer; a daemon thread in production, a held thread in a test. */
-    private val startRefusal: (Runnable) -> Unit = { runnable -> Thread(runnable, "PolishFallbackRefusal").apply { isDaemon = true }.start() },
+    private val startRefusal: (Runnable) -> Unit,
+    @Suppress("UNUSED_PARAMETER") marker: Unit,
 ) {
+    constructor(
+        worker: ExecutorService,
+        /** The deterministic text; its warnings go to the request's take log when there is one (#378). */
+        prepare: (String, CleanupOptions, TakeLog?) -> String,
+        /** Starts the refusal's deliverer; a daemon thread in production, a held thread in a test. */
+        startRefusal: (Runnable) -> Unit = { runnable -> Thread(runnable, "PolishFallbackRefusal").apply { isDaemon = true }.start() },
+    ) : this(
+        worker = worker,
+        prepareOutcome = { raw, options, log -> PolishFallback.Outcome(prepare(raw, options, log)) },
+        startRefusal = startRefusal,
+        marker = Unit,
+    )
+
+    companion object {
+        fun withProvenance(
+            worker: ExecutorService,
+            prepareOutcome: (String, CleanupOptions, TakeLog?) -> PolishFallback.Outcome,
+        ): PolishFallbackLane = PolishFallbackLane(
+            worker = worker,
+            prepareOutcome = prepareOutcome,
+            startRefusal = { runnable -> Thread(runnable, "PolishFallbackRefusal").apply { isDaemon = true }.start() },
+            marker = Unit,
+        )
+    }
+
     /** One answer. [settled] is won ONCE, by its deliverer or by [cancel], so a cancelled answer is never delivered. */
     private class Token(val requestId: Long) {
         val settled = AtomicBoolean(false)
@@ -41,7 +66,17 @@ internal class PolishFallbackLane(
         val admitted = synchronized(lock) {
             !closed && try {
                 // A cleanup that throws answers the raw words: an answer with less cleanup beats none.
-                worker.execute { deliver(token, sink) { PolishOutcome(requestId, runCatching { prepare(raw, options, log) }.getOrDefault(raw), PolishEngineLabels.DETERMINISTIC, reason, 0, 0) } }
+                worker.execute {
+                    deliver(token, sink) {
+                        val prepared = runCatching { prepareOutcome(raw, options, log) }
+                            .getOrElse { PolishFallback.Outcome(raw) }
+                        PolishOutcome(
+                            requestId, prepared.text, PolishEngineLabels.DETERMINISTIC, reason, 0, 0,
+                            processing = null, diagnostics = null,
+                            spokenFinalFullStop = prepared.spokenFinalFullStop, languageCode = prepared.languageCode,
+                        )
+                    }
+                }
                 true
             } catch (refused: RejectedExecutionException) {
                 false

@@ -182,6 +182,7 @@ class SettingsActivity : ComponentActivity() {
                             onAutoStopOnSilenceChanged = shellViewModel::setAutoStopOnSilenceEnabled,
                             onSilencePauseSecondsChanged = shellViewModel::setSilencePauseSeconds,
                             onSpeechModelUnloadChanged = shellViewModel::setSpeechModelUnload,
+                            onCasualModeChanged = shellViewModel::setCasualModeEnabled,
                         ),
                         polish = PolishActions(
                             onSetMode = polishViewModel::setPolishMode,

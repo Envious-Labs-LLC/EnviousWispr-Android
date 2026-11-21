@@ -17,13 +17,18 @@ internal data class PolishOutcome(
     val latencyMs: Long,
     val processing: ProcessingUsage?,
     val diagnostics: LocalPolishDiagnostics? = null,
+    val spokenFinalFullStop: Boolean = false,
+    val languageCode: String? = null,
 ) : Parcelable {
+    /** Retained JVM signature for clients compiled before cleanup provenance. */
+    constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long, processing: ProcessingUsage?, diagnostics: LocalPolishDiagnostics?) :
+        this(requestId, text, engine, reason, statusCode, latencyMs, processing, diagnostics, false, null)
     /** Retained JVM signature for clients compiled before timing diagnostics. */
     constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long, processing: ProcessingUsage?) :
-        this(requestId, text, engine, reason, statusCode, latencyMs, processing, null)
+        this(requestId, text, engine, reason, statusCode, latencyMs, processing, null, false, null)
     /** Retained JVM signature for separately installed older test clients. */
     constructor(requestId: Long, text: String, engine: String, reason: PolishReason, statusCode: Int, latencyMs: Long) :
-        this(requestId, text, engine, reason, statusCode, latencyMs, null)
+        this(requestId, text, engine, reason, statusCode, latencyMs, null, null, false, null)
     override fun describeContents(): Int = 0
 
     override fun writeToParcel(dest: Parcel, flags: Int) {
@@ -37,6 +42,8 @@ internal data class PolishOutcome(
         processing?.writeToParcel(dest, flags)
         dest.writeInt(if (diagnostics == null) 0 else 1)
         diagnostics?.writeToParcel(dest, flags)
+        dest.writeInt(if (spokenFinalFullStop) 1 else 0)
+        dest.writeString(languageCode)
     }
 
     /** Content-free on purpose: the text never reaches a log line through this. */
@@ -63,6 +70,8 @@ internal data class PolishOutcome(
                     1 -> LocalPolishDiagnostics.CREATOR.createFromParcel(source)
                     else -> throw IllegalArgumentException("Unknown polish diagnostics tag")
                 },
+                spokenFinalFullStop = source.readInt() == 1,
+                languageCode = source.readString(),
             )
 
             override fun newArray(size: Int): Array<PolishOutcome?> = arrayOfNulls(size)

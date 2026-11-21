@@ -24,6 +24,8 @@ internal data class PolishPipelineResult(
     val outcome: PipelineOutcome,
     /** Which guard refused the model's output (counts only, never text), for the log; null otherwise. */
     val refusal: String? = null,
+    val spokenFinalFullStop: Boolean = false,
+    val languageCode: String? = null,
 )
 
 /** Pure ordering boundary for cleanup, optional S1, safety validation, and spelling restoration. */
@@ -38,32 +40,87 @@ internal object PolishPipeline {
     ): PolishPipelineResult {
         val cleanup = DeterministicCleanup.apply(rawText, options, language, trace)
         val cleaned = cleanup.text
-        val fallback = cleaned
+        val languageCode = (language as? CleanupLanguage.Known)?.code
+        val spokenFinal = cleanup.spokenFinalFullStop
+        fun withCasualEnding(text: String): String =
+            CasualEnding.applyWithProvenance(text, options.casualMode, languageCode, spokenFinal)
+        val fallback = withCasualEnding(cleaned)
         if (cleanup.recovered) {
-            return PolishPipelineResult(fallback, usedModel = false, recovered = true, outcome = PipelineOutcome.CLEANUP_RECOVERED)
+            return PolishPipelineResult(
+                fallback,
+                usedModel = false,
+                recovered = true,
+                outcome = PipelineOutcome.CLEANUP_RECOVERED,
+                spokenFinalFullStop = spokenFinal,
+                languageCode = languageCode,
+            )
         }
         if (cleaned.isBlank()) {
-            return PolishPipelineResult(cleaned, usedModel = false, recovered = false, outcome = PipelineOutcome.EMPTY_AFTER_CLEANUP)
+            return PolishPipelineResult(
+                cleaned,
+                usedModel = false,
+                recovered = false,
+                outcome = PipelineOutcome.EMPTY_AFTER_CLEANUP,
+                spokenFinalFullStop = spokenFinal,
+                languageCode = languageCode,
+            )
         }
         if (model == null) {
-            return PolishPipelineResult(fallback, usedModel = false, recovered = false, outcome = PipelineOutcome.NO_MODEL)
+            return PolishPipelineResult(
+                fallback,
+                usedModel = false,
+                recovered = false,
+                outcome = PipelineOutcome.NO_MODEL,
+                spokenFinalFullStop = spokenFinal,
+                languageCode = languageCode,
+            )
         }
         if (tooShortForPolish(cleaned)) {
-            return PolishPipelineResult(fallback, usedModel = false, recovered = false, outcome = PipelineOutcome.TOO_SHORT)
+            return PolishPipelineResult(
+                fallback,
+                usedModel = false,
+                recovered = false,
+                outcome = PipelineOutcome.TOO_SHORT,
+                spokenFinalFullStop = spokenFinal,
+                languageCode = languageCode,
+            )
         }
         val candidate = runCatching { model.invoke(cleaned)?.substringAfterLast("</think>")?.trim() }.getOrNull()
         if (candidate.isNullOrBlank()) {
-            return PolishPipelineResult(fallback, usedModel = false, recovered = true, outcome = PipelineOutcome.MODEL_DECLINED)
+            return PolishPipelineResult(
+                fallback,
+                usedModel = false,
+                recovered = true,
+                outcome = PipelineOutcome.MODEL_DECLINED,
+                spokenFinalFullStop = spokenFinal,
+                languageCode = languageCode,
+            )
         }
         val refusal = TextSafety.refusal(cleaned, candidate)
         if (refusal != null) {
-            return PolishPipelineResult(fallback, usedModel = false, recovered = true, outcome = PipelineOutcome.MODEL_REJECTED, refusal = refusal)
+            return PolishPipelineResult(
+                fallback,
+                usedModel = false,
+                recovered = true,
+                outcome = PipelineOutcome.MODEL_REJECTED,
+                refusal = refusal,
+                spokenFinalFullStop = spokenFinal,
+                languageCode = languageCode,
+            )
         }
         val spelled = try {
             BritishSpelling.convert(candidate, options.englishSpelling, language, options.spellingProtectedWords)
         } catch (_: Exception) { candidate }
-        val final = if (restoreLocalEmoji) try { EmojiRestorer.restore(cleaned, spelled) } catch (_: Exception) { spelled } else spelled
-        return PolishPipelineResult(final, usedModel = true, recovered = false, outcome = PipelineOutcome.MODEL_ACCEPTED)
+        val restoredEmoji = if (restoreLocalEmoji) try { EmojiRestorer.restore(cleaned, spelled) } catch (_: Exception) { spelled } else spelled
+        val final = withCasualEnding(restoredEmoji)
+        return PolishPipelineResult(
+            final,
+            usedModel = true,
+            recovered = false,
+            outcome = PipelineOutcome.MODEL_ACCEPTED,
+            spokenFinalFullStop = spokenFinal,
+            languageCode = languageCode,
+        )
     }
 
     /**

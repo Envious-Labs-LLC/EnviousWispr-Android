@@ -25,8 +25,33 @@ import com.envi.wispr.cleanup.PolishPipeline
  * one can succeed while the other times out or hits a recoverable vendor error on the same words.
  */
 internal object PolishFallback {
+    /** Deterministic fallback text along with the language and spoken-period facts discovered during cleanup. */
+    data class Outcome(
+        val text: String,
+        val spokenFinalFullStop: Boolean = false,
+        val languageCode: String? = null,
+    )
+
+    fun deterministicOutcome(rawText: String, options: CleanupOptions, detector: LanguageDetector): Outcome {
+        val result = PolishPipeline.run(rawText, options, CleanupLanguagePolicy.resolve(detector.detect(rawText)))
+        return Outcome(result.text, result.spokenFinalFullStop, result.languageCode)
+    }
+
     fun deterministic(rawText: String, options: CleanupOptions, detector: LanguageDetector): String =
-        PolishPipeline.run(rawText, options, CleanupLanguagePolicy.resolve(detector.detect(rawText))).text
+        deterministicOutcome(rawText, options, detector).text
+
+    fun deterministicOutcomeOrWords(
+        rawText: String,
+        options: CleanupOptions,
+        detector: LanguageDetector,
+        warn: (String) -> Unit,
+        cleanOutcome: (String, CleanupOptions, LanguageDetector) -> Outcome = ::deterministicOutcome,
+    ): Outcome = try {
+        cleanOutcome(rawText, options, detector)
+    } catch (error: Exception) {
+        warn("Deterministic fallback failed: ${error.javaClass.simpleName}; answering the words as handed")
+        Outcome(com.envi.wispr.cleanup.CasualEnding.applyFailOpen(rawText, rawText, options, detector))
+    }
 
     /**
      * The engine's text for every failure exit (#326): [deterministic], or the words as handed when detection or
@@ -41,10 +66,7 @@ internal object PolishFallback {
         detector: LanguageDetector,
         warn: (String) -> Unit,
         clean: (String, CleanupOptions, LanguageDetector) -> String = ::deterministic,
-    ): String = try {
-        clean(rawText, options, detector)
-    } catch (error: Exception) {
-        warn("Deterministic fallback failed: ${error.javaClass.simpleName}; answering the words as handed")
-        rawText
-    }
+    ): String = deterministicOutcomeOrWords(rawText, options, detector, warn) { text, opts, det ->
+        Outcome(clean(text, opts, det))
+    }.text
 }

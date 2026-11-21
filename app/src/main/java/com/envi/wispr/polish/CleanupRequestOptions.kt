@@ -14,6 +14,7 @@ internal class CleanupRequestOptions(val options: CleanupOptions) : Parcelable {
         dest.writeInt(if (options.spokenPunctuation) 1 else 0)
         dest.writeString(options.englishSpelling.name)
         dest.writeStringList(options.spellingProtectedWords.sorted())
+        dest.writeInt(if (options.casualMode) 1 else 0)
     }
     companion object {
         @JvmField val CREATOR: Parcelable.Creator<CleanupRequestOptions> = object : Parcelable.Creator<CleanupRequestOptions> {
@@ -23,6 +24,7 @@ internal class CleanupRequestOptions(val options: CleanupOptions) : Parcelable {
                 spokenPunctuation = source.readInt() == 1,
                 englishSpelling = EnglishSpelling.fromStored(source.readString()),
                 spellingProtectedWords = source.createStringArrayList().orEmpty().toSet(),
+                casualMode = source.readInt() == 1,
             ))
             override fun newArray(size: Int): Array<CleanupRequestOptions?> = arrayOfNulls(size)
         }

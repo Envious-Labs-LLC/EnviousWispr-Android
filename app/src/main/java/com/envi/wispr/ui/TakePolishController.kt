@@ -1,8 +1,10 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.cleanup.CasualEnding
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
 import com.envi.wispr.cleanup.deterministicText
+import com.envi.wispr.cleanup.finalizeCasualFallback
 import com.envi.wispr.cleanup.restoreVocabularySafely
 import com.envi.wispr.polish.PolishContext
 import com.envi.wispr.polish.PolishEngineLabels
@@ -91,7 +93,7 @@ internal class TakePolishController(
     /** The vocabulary restorer (#252: a JVM row makes it throw). */
     private val restore: (String, StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
     /** The deterministic cleanup with its language detection (#252: a JVM row makes it throw). */
-    private val cleanup: (String, CleanupOptions, LanguageDetector) -> String = PolishFallback::deterministic,
+    private val cleanup: (String, CleanupOptions, LanguageDetector) -> PolishFallback.Outcome = PolishFallback::deterministicOutcome,
     private val nowMs: () -> Long = android.os.SystemClock::elapsedRealtime,
 ) {
     /**
@@ -266,7 +268,7 @@ internal class TakePolishController(
                 checkNotNull(service).polishRequestWithCleanupForTake(
                     requestId,
                     preparedRaw,
-                    takePreferences.cleanup,
+                    takePreferences.cleanup.copy(casualMode = false),
                     takePreferences.policy,
                     takeId,
                     listener(requestId, rawText, takePreferences),
@@ -348,8 +350,14 @@ internal class TakePolishController(
             // If only the vocabulary restore fails, the engine's own answer lands with its original reason and
             // status (#252); the notice follows that reason, none for POLISHED. Restored off main (#253).
             handBack {
+                val restored = restoreVocabulary(outcome.text, takePreferences, STEP_RESTORE_ANSWER) ?: outcome.text
                 PreparedText.Polished(
-                    restoreVocabulary(outcome.text, takePreferences, STEP_RESTORE_ANSWER) ?: outcome.text,
+                    CasualEnding.applyWithProvenance(
+                        restored,
+                        takePreferences.cleanup.casualMode,
+                        outcome.languageCode,
+                        outcome.spokenFinalFullStop,
+                    ),
                     outcome.engine,
                     outcome.latencyMs,
                     outcome.reason,
@@ -426,15 +434,25 @@ internal class TakePolishController(
     private fun preparedFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason): PreparedText.Fallback =
         PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy), localWaitMs)
 
-    private fun deterministic(rawText: String, takePreferences: SessionPreferences): String = deterministicText(
-        rawText,
-        restoreRaw = { restoreVocabulary(it, takePreferences, STEP_RESTORE_RAW) },
-        clean = { prepared ->
-            guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup, languageDetector) }
-                ?.also { cleaned -> log.words(STEP_CLEANUP) { cleaned } }
-        },
-        restoreCleaned = { restoreVocabulary(it, takePreferences, STEP_RESTORE_CLEANED) },
-    )
+    private fun deterministic(rawText: String, takePreferences: SessionPreferences): String {
+        var outcome: PolishFallback.Outcome? = null
+        return deterministicText(
+            rawText,
+            restoreRaw = { restoreVocabulary(it, takePreferences, STEP_RESTORE_RAW) },
+            clean = { prepared ->
+                guarded(STEP_CLEANUP) { cleanup(prepared, takePreferences.cleanup.copy(casualMode = false), languageDetector) }
+                    ?.also {
+                        outcome = it
+                        log.words(STEP_CLEANUP) { it.text }
+                    }
+                    ?.text
+            },
+            restoreCleaned = { restoreVocabulary(it, takePreferences, STEP_RESTORE_CLEANED) },
+            finalizeCasual = { final, cleanupInput ->
+                finalizeCasualFallback(final, cleanupInput, outcome, takePreferences.cleanup, languageDetector)
+            },
+        )
+    }
 
     /** The vocabulary restore, or null when it threw ([step] names it in the one preparation defect). */
     private fun restoreVocabulary(text: String, takePreferences: SessionPreferences, step: String): String? = guarded(step) {

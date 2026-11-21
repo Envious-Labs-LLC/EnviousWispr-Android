@@ -17,6 +17,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -341,6 +342,25 @@ class AppShellNavigationTest {
 
         composeRule.onNode(tab("Transcription")).assertIsSelected()
         composeRule.onNode(tab("History")).assertIsNotSelected()
+    }
+
+    @Test
+    fun drawerSearchJumpsToAppearanceAndShowsSectionCue() {
+        composeRule.onNodeWithContentDescription("Open settings menu").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Search settings").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNode(hasSetTextAction() and hasText("Search settings")).performTextReplacement("dark mode")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Matches \u201Cdark mode\u201D").assertIsDisplayed()
+        composeRule.onNodeWithText("Theme").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("How EnviousWispr looks on this phone.").assertIsDisplayed()
+        composeRule.onNodeWithText("Look for Theme").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Back").performClick()
+        composeRule.waitForIdle()
     }
 
     /** A bottom-bar item by its label: the node with role Tab, which `NavigationBarItem` merges its label into. */

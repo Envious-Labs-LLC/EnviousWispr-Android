@@ -123,6 +123,12 @@ internal fun judgePracticeTake(
 /** One finalized practice verdict recorded by [PracticeTakeTracker]. */
 internal data class PracticeVerdict(val lesson: PracticeLesson, val outcome: PracticeOutcome)
 
+/** Atomic snapshot published by [PracticeTakeTracker] so UI outcome and completion unlock never split across frames. */
+internal data class PracticeTrackerState(
+    val terminalResults: Map<String, String> = emptyMap(),
+    val verdicts: Map<String, PracticeVerdict> = emptyMap(),
+)
+
 /**
  * Application-owned tracker for identified onboarding practice takes (#560).
  *
@@ -143,14 +149,10 @@ internal class PracticeTakeTracker(
     private val tracked = LinkedHashMap<String, Registration>()
     private val terminals = LinkedHashMap<String, String>()
     private val reported = LinkedHashMap<String, PracticeVerdict>()
-    private val terminalFlow = MutableStateFlow<Map<String, String>>(emptyMap())
-    private val verdictFlow = MutableStateFlow<Map<String, PracticeVerdict>>(emptyMap())
+    private val stateFlow = MutableStateFlow(PracticeTrackerState())
 
-    /** Terminal delivery results by `takeId` (bounded), observed by `OnboardingViewModel`. */
-    val terminalResults: StateFlow<Map<String, String>> = terminalFlow.asStateFlow()
-
-    /** Final reported practice verdicts by `takeId` (bounded), observed by `OnboardingViewModel`. */
-    val verdicts: StateFlow<Map<String, PracticeVerdict>> = verdictFlow.asStateFlow()
+    /** Atomic terminal delivery results and reported practice verdicts (bounded), observed by `OnboardingViewModel`. */
+    val state: StateFlow<PracticeTrackerState> = stateFlow.asStateFlow()
 
     fun track(takeId: String, lesson: PracticeLesson, held: Boolean?) {
         if (takeId.isBlank()) return
@@ -160,7 +162,7 @@ internal class PracticeTakeTracker(
             val updated = if (existing == null) Registration(lesson, held) else existing.copy(held = existing.held ?: held)
             putBounded(tracked, takeId, updated)
             val result = terminals[takeId] ?: return
-            reportLocked(takeId, updated, result)
+            reportLocked(takeId, updated, result).also { publishLocked() }
         }
         runCatching { capture(event) }
     }
@@ -170,20 +172,22 @@ internal class PracticeTakeTracker(
         val event = synchronized(lock) {
             if (takeId in terminals) return
             putBounded(terminals, takeId, result)
-            terminalFlow.value = terminals.toMap()
-            if (takeId in reported) return
-            val registration = tracked[takeId] ?: return
-            reportLocked(takeId, registration, result)
+            val pending = if (takeId in reported) null else tracked[takeId]?.let { reportLocked(takeId, it, result) }
+            publishLocked()
+            pending
         }
-        runCatching { capture(event) }
+        if (event != null) runCatching { capture(event) }
     }
 
     private fun reportLocked(takeId: String, registration: Registration, result: String): AnalyticsEvent.OnboardingPractice {
         val outcome = practiceOutcomeForResult(result, registration.lesson, registration.held)
         putBounded(reported, takeId, PracticeVerdict(registration.lesson, outcome))
         tracked.remove(takeId)
-        verdictFlow.value = reported.toMap()
         return AnalyticsEvent.OnboardingPractice(registration.lesson.name.lowercase(), outcome.name.lowercase())
+    }
+
+    private fun publishLocked() {
+        stateFlow.value = PracticeTrackerState(terminals.toMap(), reported.toMap())
     }
 
     private fun <V> putBounded(map: LinkedHashMap<String, V>, key: String, value: V) {
@@ -225,29 +229,31 @@ internal class PracticeTakeFollower(
 
     fun follow(ours: Boolean, transcriptId: Long?, held: Boolean?, lesson: PracticeLesson, takeId: String? = null) {
         val current = visible
-        visible = if (ours) {
+        if (ours) {
             val replaced = current != null && !current.take.ended &&
                 takeId != null && current.take.takeId != null && current.take.takeId != takeId
             if (current == null || current.take.ended || replaced) {
+                // Assign visible and sessionTakeIds BEFORE tracker.track() so any synchronous collector reaction sees them.
+                val next = Followed(PracticeTake(held = held, transcriptId = transcriptId, takeId = takeId), lesson)
+                visible = next
                 if (takeId != null) {
-                    tracker.track(takeId, lesson, held)
                     rememberSessionTake(takeId)
+                    tracker.track(takeId, lesson, held)
                 }
-                Followed(PracticeTake(held = held, transcriptId = transcriptId, takeId = takeId), lesson)
             } else {
                 val merged = current.take.copy(
                     held = current.take.held ?: held,
                     transcriptId = current.take.transcriptId ?: transcriptId,
                     takeId = current.take.takeId ?: takeId,
                 )
+                visible = Followed(merged, current.lesson)
                 merged.takeId?.let { id ->
-                    tracker.track(id, current.lesson, merged.held)
                     rememberSessionTake(id)
+                    tracker.track(id, current.lesson, merged.held)
                 }
-                Followed(merged, current.lesson)
             }
         } else {
-            current?.let { if (it.take.ended) it else Followed(it.take.copy(ended = true), it.lesson) }
+            visible = current?.let { if (it.take.ended) it else Followed(it.take.copy(ended = true), it.lesson) }
         }
     }
 
@@ -271,13 +277,12 @@ internal class PracticeTakeFollower(
 
     fun judge(
         rows: List<TranscriptEntity>,
-        terminalResults: Map<String, String> = tracker.terminalResults.value,
-        verdicts: Map<String, PracticeVerdict> = tracker.verdicts.value,
+        trackerState: PracticeTrackerState = tracker.state.value,
     ): PracticeScreenJudgement? {
         var landedTap = false
         var landedHold = false
         for (id in sessionTakeIds) {
-            val verdict = verdicts[id] ?: continue
+            val verdict = trackerState.verdicts[id] ?: continue
             when (verdict.outcome) {
                 PracticeOutcome.LANDED -> if (verdict.lesson == PracticeLesson.HOLD) landedHold = true else landedTap = true
                 PracticeOutcome.LANDED_BY_TAP -> landedTap = true
@@ -285,7 +290,13 @@ internal class PracticeTakeFollower(
             }
         }
         val current = visible ?: return if (landedTap || landedHold) PracticeScreenJudgement(null, landedTap, landedHold) else null
-        val shown = judgePracticeTake(current.take, current.lesson, rows, terminalResults)
+        // Check practice-only verdicts BEFORE terminalResults so external dictations evicting terminals never regress an ended take to WORKING.
+        val shown = if (!current.take.ended) {
+            null
+        } else {
+            current.take.takeId?.let { trackerState.verdicts[it]?.outcome }
+                ?: judgePracticeTake(current.take, current.lesson, rows, trackerState.terminalResults)
+        }
         if (current.take.takeId == null) {
             when (shown) {
                 PracticeOutcome.LANDED -> if (current.lesson == PracticeLesson.HOLD) landedHold = true else landedTap = true

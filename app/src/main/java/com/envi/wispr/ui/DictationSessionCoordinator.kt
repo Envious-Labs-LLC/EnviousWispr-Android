@@ -111,6 +111,7 @@ internal class DictationSessionCoordinator(
     /** The main process's model-swap gate (#108); a test passes its own. */
     private val swapGate: com.envi.wispr.models.ModelSwapGate = com.envi.wispr.models.ModelSwapGate.main,
     private val recordingProtection: RecordingProtectionOwner? = null,
+    private val rescueWaitBoundMs: Long = RescuedWords.RESCUE_WRITE_BOUND_MS,
 ) : PipelineController.Listener {
     companion object {
         /**
@@ -217,6 +218,7 @@ internal class DictationSessionCoordinator(
     private val finalizer = SessionFinalizer(
         host, insertion, log, historyWrites, historySaves, rescuedWords,
         onTerminal = { takeId, result -> runCatching { host.onTakeDeliveryTerminal(takeId, result) } },
+        rescueWaitBoundMs = rescueWaitBoundMs,
     )
 
     /** What the start's lane may read of this owner: two answers, never the state (#216). */

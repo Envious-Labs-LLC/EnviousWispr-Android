@@ -313,6 +313,8 @@ internal class SessionFinalizer(
     private val rescuedWords: RescuedWords,
     /** Non-blocking, limb-safe terminal delivery observer for non-SCHEDULED fallbacks (#560, #563). */
     private val onTerminal: (takeId: String, result: String) -> Unit = { _, _ -> },
+    /** Bounded rescue-write wait before handoff; injectable so teardown tests never race wall clock. */
+    private val rescueWaitBoundMs: Long = RescuedWords.RESCUE_WRITE_BOUND_MS,
 ) {
     /**
      * The finalize-or-insert write, ENQUEUED inside the owner's reservation (#115): destroy takes the same
@@ -378,7 +380,7 @@ internal class SessionFinalizer(
      */
     suspend fun awaitRescue(history: TakeHistory) {
         val write = history.rescue ?: return
-        withTimeoutOrNull(RescuedWords.RESCUE_WRITE_BOUND_MS) { write.await() }
+        withTimeoutOrNull(rescueWaitBoundMs) { write.await() }
     }
 
     /**

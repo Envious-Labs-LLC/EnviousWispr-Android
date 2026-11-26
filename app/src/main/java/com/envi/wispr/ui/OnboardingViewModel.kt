@@ -79,8 +79,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     private val practiceLazy = lazy { PracticeTakeFollower(practiceTracker) }
     private val practice by practiceLazy
     private var rows: List<TranscriptEntity> = emptyList()
-    private var terminalResults: Map<String, String> = emptyMap()
-    private var verdicts: Map<String, PracticeVerdict> = emptyMap()
+    private var trackerState: PracticeTrackerState = PracticeTrackerState()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
     /** The phone's own launcher icons for the demo's first scene; empty until [loadDemoIcons] has run. */
@@ -186,12 +185,10 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
-        terminalResults = practiceTracker.terminalResults.value
-        verdicts = practiceTracker.verdicts.value
+        trackerState = practiceTracker.state.value
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
-            launch { practiceTracker.terminalResults.collect { latest -> terminalResults = latest; judge() } }
-            launch { practiceTracker.verdicts.collect { latest -> verdicts = latest; judge() } }
+            launch { practiceTracker.state.collect { latest -> trackerState = latest; judge() } }
             launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
         }
     }
@@ -260,7 +257,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
 
     /** Re-judge the visible take off its terminal delivery outcome (falling back to History). */
     private fun judge() {
-        val judgement = practice.judge(rows, terminalResults, verdicts) ?: return
+        val judgement = practice.judge(rows, trackerState) ?: return
         if (judgement.landedHold) {
             holdComplete = true
             saved["practice_hold_complete"] = true

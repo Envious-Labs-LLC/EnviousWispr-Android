@@ -16,6 +16,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -203,6 +204,71 @@ class OnboardingTelemetryTest {
         tracker.onTerminal("take-7", InsertionResults.COPY_ONLY)
         assertEquals(PracticeScreenJudgement(PracticeOutcome.NOTHING_LANDED, landedHold = true), practice.judge(emptyList()))
         assertEquals(listOf("hold" to "landed", "tap" to "nothing_landed"), reports)
+    }
+
+    /** #560: external dictations evicting `terminals` (cap 64) never regress an ended no-row practice take to WORKING. */
+    @Test fun evictingSharedTerminalCacheNeverRegressesAnEndedPracticeTakeToWorking() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        // Case 1: no-row landed take (History save failed), user left while WORKING, 65 external takes evict terminals.
+        practice.startTake(takeId = "take-practice-landed", transcriptId = null, held = false, lesson = PracticeLesson.TAP)
+        practice.ownerHides()
+        assertFalse(practice.leave())
+        tracker.onTerminal("take-practice-landed", InsertionResults.COMMITTED)
+        repeat(PracticeTakeTracker.MAX_ENTRIES + 1) { index ->
+            tracker.onTerminal("external-$index", InsertionResults.COMMITTED)
+        }
+        assertFalse("precondition: practice takeId was evicted from shared terminals", "take-practice-landed" in tracker.state.value.terminalResults)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.LANDED, landedTap = true), practice.judge(emptyList()))
+
+        // Case 2: wordless no-row take whose terminal result was also evicted from terminals.
+        practice.startTake(takeId = "take-practice-empty", transcriptId = null, held = false, lesson = PracticeLesson.TAP)
+        practice.ownerHides()
+        tracker.onTerminal("take-practice-empty", TakeDeliveryObserver.RESULT_NOT_DELIVERED)
+        repeat(PracticeTakeTracker.MAX_ENTRIES + 1) { index ->
+            tracker.onTerminal("external-2-$index", InsertionResults.COMMITTED)
+        }
+        assertFalse("take-practice-empty" in tracker.state.value.terminalResults)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.NOTHING_LANDED, landedTap = true), practice.judge(emptyList()))
+        assertEquals(listOf("tap" to "landed", "tap" to "nothing_landed"), reports)
+    }
+
+    /** #560: synchronous collector sees terminalResults + verdicts atomically, and follow() sets visible/session before track(). */
+    @Test fun synchronousStateCollectorSeesAtomicOutcomeAndFollowOrder() = runBlocking {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        val observed = mutableListOf<Triple<String?, PracticeScreenJudgement?, PracticeTrackerState>>()
+        val collector = launch(Dispatchers.Unconfined) {
+            tracker.state.collect { state ->
+                observed += Triple(practice.take?.takeId, practice.judge(emptyList(), state), state)
+            }
+        }
+        try {
+            // Order A: normal flow — onTerminal updates terminalResults AND verdicts in one atomic StateFlow emission.
+            practice.startTake(takeId = "take-atomic", transcriptId = null, held = false, lesson = PracticeLesson.TAP)
+            practice.ownerHides()
+            observed.clear()
+            tracker.onTerminal("take-atomic", InsertionResults.COMMITTED)
+            assertEquals("one atomic state emission on onTerminal", 1, observed.size)
+            val (visibleId, judgement, state) = observed.single()
+            assertEquals("take-atomic", visibleId)
+            assertEquals(InsertionResults.COMMITTED, state.terminalResults["take-atomic"])
+            assertEquals(PracticeVerdict(PracticeLesson.TAP, PracticeOutcome.LANDED), state.verdicts["take-atomic"])
+            assertEquals(PracticeScreenJudgement(PracticeOutcome.LANDED, landedTap = true), judgement)
+
+            // Order B: early terminal BEFORE follow() — synchronous collector triggered inside track() already sees visible + sessionTakeIds.
+            tracker.onTerminal("take-early", InsertionResults.COMMITTED)
+            observed.clear()
+            practice.startTake(takeId = "take-early", transcriptId = null, held = true, lesson = PracticeLesson.HOLD)
+            assertEquals("one atomic state emission when early-terminal take registers", 1, observed.size)
+            val (earlyVisibleId, earlyJudgement, earlyState) = observed.single()
+            assertEquals("visible must be set before tracker.track() emits", "take-early", earlyVisibleId)
+            assertEquals(PracticeVerdict(PracticeLesson.HOLD, PracticeOutcome.LANDED), earlyState.verdicts["take-early"])
+            assertEquals("sessionTakeIds must already contain take-early", PracticeScreenJudgement(null, landedTap = true, landedHold = true), earlyJudgement)
+            assertEquals(listOf("tap" to "landed", "hold" to "landed"), reports)
+        } finally {
+            collector.cancel()
+        }
     }
 
     // ---- #563: onboarding.stage_reached, onboarding.completed, and external settlement ----

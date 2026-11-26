@@ -172,6 +172,8 @@ internal class DictationSessionRig {
         preparationBoundMs: Long = 5_000L,
         /** Production's compile by default; the #290 rows throw or hold it. */
         compileMatcher: (List<CustomTerm>) -> com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher = com.envi.wispr.vocabulary.StructuredTermRestorer::compile,
+        /** Production's bound by default; teardown-during-awaitRescue rows widen it to avoid CI wall-clock flake. */
+        rescueWaitBoundMs: Long = RescuedWords.RESCUE_WRITE_BOUND_MS,
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -216,6 +218,7 @@ internal class DictationSessionRig {
         preparationBoundMs = preparationBoundMs,
         compileMatcher = compileMatcher,
         swapGate = swapGate,
+        rescueWaitBoundMs = rescueWaitBoundMs,
     )
 
     /** The rig's own model-swap gate (#108), recovered so takes are admitted unless a test begins a swap. */

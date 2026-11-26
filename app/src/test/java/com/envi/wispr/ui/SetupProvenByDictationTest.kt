@@ -18,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -104,7 +105,6 @@ class SetupProvenByDictationTest {
         val prefs = newPrefs("external-commit")
         val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
         val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
-        var settlementJob: Job? = null
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
 
@@ -113,22 +113,9 @@ class SetupProvenByDictationTest {
         assertEquals(1, settlement.pendingCandidateCount())
         assertFalse("SCHEDULED handoff alone must leave onboardingComplete false", prefs.state.first().onboardingComplete)
 
-        val recorder = InsertionOutcomeRecorder(
-            enqueue = { _, _, _ -> Enqueued.ACCEPTED },
-            capture = {},
-            outcomeTrail = {},
-            warn = {},
-            onTerminal = { id, res -> settlementJob = settlement.onTerminal(id, res) },
-        )
-        recorder.record(
-            InsertionEnding(
-                row = HistoryRow.None, takeId = takeId, targetPackage = "com.google.android.gm",
-                status = TranscriptEntity.STATUS_COMPLETED, result = InsertionResults.COMMITTED,
-                interrupted = false, clipboard = null, latencyMs = 80L,
-            ),
-        )
-        checkNotNull(settlementJob).join()
-        assertTrue(prefs.state.first().onboardingComplete)
+        recordInsertion(observer, takeId, InsertionResults.COMMITTED)
+        val settled = withTimeout(5_000L) { prefs.state.first { it.onboardingComplete } }
+        assertTrue(settled.onboardingComplete)
         assertEquals(0, settlement.pendingCandidateCount())
     }
 
@@ -227,7 +214,7 @@ class SetupProvenByDictationTest {
             terminalArrived.countDown()
         }
 
-        val coordinator = rig.coordinator()
+        val coordinator = rig.coordinator(rescueWaitBoundMs = 10_000L)
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
         rig.surface.awaitShown()

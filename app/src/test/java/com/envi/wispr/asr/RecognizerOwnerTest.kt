@@ -382,7 +382,71 @@ class RecognizerOwnerTest {
         val seen = mutableListOf<String?>()
 
         fun load() = owner.load(5) { opened++; opens.removeFirst().invoke() }
-        fun take() = owner.use(6, request(owner)) { rec -> seen += rec?.name; return@use {} }
+        fun take(request: AsrRequest = request(owner), allowed: () -> Boolean = { true }) =
+            owner.use(6, request, allowed) { rec -> seen += rec?.name; return@use {} }
+    }
+
+    // MUTATION: drop `mayOpen()` from the attempt turns these red (the cancelled take opens, or eats the live retry).
+    @Test fun aTakeCancelledWhileQueuedNeitherOpensNorUsesUpTheNextTakesRetry() {
+        val rig = LazyLoadRig({ null }, { Recognizer("recovered") })
+        rig.load()
+        rig.worker.runAll()
+        val cancelled = request(rig.owner)
+        rig.take(cancelled)
+        cancelled.cancel()
+        rig.take()
+        rig.worker.runAll()
+        assertEquals(2, rig.opened)
+        assertEquals("only the live take ran, and it read the recovered model", listOf<String?>("recovered"), rig.seen)
+    }
+
+    @Test fun cancelledOrRevokedTakesAloneNeverOpenAModel() {
+        val rig = LazyLoadRig({ null }, { error("A cancelled or revoked take must not open a model") })
+        rig.load()
+        rig.worker.runAll()
+        val cancelled = request(rig.owner)
+        rig.take(cancelled)
+        cancelled.cancel()
+        rig.take(allowed = { false }) // A recovery revoked by a foreground take (AsrService.Enrollment.allowed).
+        rig.worker.runAll()
+        assertEquals(1, rig.opened)
+    }
+
+    /**
+     * test-honesty: a single-threaded queue cannot tell single-flight from check-then-act, so two real caller threads
+     * submit while a failing open is in flight on a real worker. Both share its answer; neither opens again.
+     */
+    @Test fun twoCallerThreadsArrivingDuringAnOpenShareItAndNeverOpenAgain() {
+        val worker = worker()
+        val owner = owner(worker)
+        val opening = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val opens = AtomicInteger(0)
+        owner.load(UNBOUNDED) {
+            opens.incrementAndGet()
+            opening.countDown()
+            release.awaitOnWorker("the open's release")
+            null
+        }
+        opening.awaitOrFail("the first open")
+        val start = CountDownLatch(1)
+        val answered = CountDownLatch(2)
+        val seen: MutableList<String?> = Collections.synchronizedList(mutableListOf())
+        val callers = List(2) {
+            Thread {
+                start.awaitOnWorker("the callers' start")
+                owner.use(UNBOUNDED, request(owner)) { rec -> seen += rec?.name; return@use { answered.countDown() } }
+            }
+        }
+        callers.forEach(Thread::start)
+        start.countDown()
+        callers.forEach { it.join(5_000); assertFalse("a caller never returned", it.isAlive) }
+        release.countDown()
+        answered.awaitOrFail("both answers")
+        assertEquals("one open for both callers", 1, opens.get())
+        assertEquals(listOf<String?>(null, null), seen.toList())
+        close(owner)
+        worker.awaitTerminatedOrFail()
     }
 
     // MUTATION: drop the retry line in `use` turns this red (the take reads null, one open).

@@ -71,16 +71,21 @@ internal class RecognizerOwner<R : Any>(
      * attempt FINISHED after this one was asked for. That attempt already answered this demand, so a burst of takes
      * queued behind a failed open costs one open, never one each, and a missing model is retried once per later take,
      * never in a loop. Admission refusal after close and the in-worker [life] checks keep a load out of a closed owner.
+     * [mayOpen] is read on the worker immediately before the open, so a request cancelled while queued never parks the
+     * worker on a model open; a skipped attempt is not counted, so it cannot use up a live request's retry.
      */
-    private fun attempt(loader: Loader<R>) {
+    private fun attempt(loader: Loader<R>, mayOpen: () -> Boolean = { true }) {
         val asked = loadsFinished
         generation.enqueue {
             if (life != Life.Open || recognizer != null || loadsFinished != asked) return@enqueue
+            var opened = false
             try {
                 watchdog.guard(loader.boundMs, "the model load") {
-                    if (life == Life.Open) {
+                    if (life == Life.Open && mayOpen()) {
+                        opened = true
                         recognizer = loader.open()
-                        ready = recognizer != null
+                        // Under the close lock: once close() has cleared readiness, a late open cannot set it again.
+                        synchronized(lock) { ready = life == Life.Open && recognizer != null }
                     }
                 }
             } catch (failure: AsrCleanupFailure) {
@@ -88,14 +93,15 @@ internal class RecognizerOwner<R : Any>(
             } catch (_: Exception) {
                 // A throwing open is a failed attempt like a null one: nothing was handed over, so nothing to free.
             } finally {
-                loadsFinished++
+                if (opened) loadsFinished++
             }
         }
     }
 
-    fun use(boundMs: Long, request: AsrRequest, work: (R?) -> () -> Unit) {
+    /** [allowed] is the caller's own admission (a revoked recovery), read with the request's before any model open. */
+    fun use(boundMs: Long, request: AsrRequest, allowed: () -> Boolean = { true }, work: (R?) -> () -> Unit) {
         // Queued AHEAD of the work on the same FIFO worker, so the work reads the model this attempt opened.
-        if (!ready) loader?.let(::attempt)
+        if (!ready) loader?.let { attempt(it) { request.canStartModelLoad() && allowed() } }
         val admitted = generation.enqueue {
             if (!request.claim(boundMs)) return@enqueue
             try {

@@ -296,7 +296,7 @@ class AsrService : Service() {
     private fun transcribeRecovery(replay: RecoveryReplayRef, callback: IAsrCallback?, failure: FailureReporter) {
         val takeId = replay.record.identity.takeId.toString()
         val entry = Entry(takeId, callback, WorkKind.RECOVERY).also { it.register() }
-        owner.use(transcriptionBoundMs(RecordingLimits.MAX_AUDIO_BYTES), entry.request) work@{ rec ->
+        owner.use(transcriptionBoundMs(RecordingLimits.MAX_AUDIO_BYTES), entry.request, allowed = { entry.enrollment.allowed }) work@{ rec ->
             entry.active()
             entry.request.check()
             if (!entry.enrollment.allowed) throw AsrCancelled()

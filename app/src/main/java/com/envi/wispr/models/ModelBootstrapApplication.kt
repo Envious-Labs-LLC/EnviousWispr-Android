@@ -116,15 +116,16 @@ class ModelBootstrapApplication : Application() {
     }
 
     private val takeDeliveryObserver by lazy {
+        val deliveryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         com.envi.wispr.ui.TakeDeliveryObserver(
-            practice = com.envi.wispr.ui.PracticeTakeTracker(Telemetry::capture),
+            practice = com.envi.wispr.ui.PracticeTakeTracker(Telemetry::capture, deliveryScope),
             settlement = com.envi.wispr.ui.OnboardingSettlement(
                 preferences = com.envi.wispr.settings.AppPreferences(this),
                 // The guided flow's own two models, as readiness reads them (a revision mid-update still counts).
                 setupModelsReady = {
                     ModelManifest.ONBOARDING.all { ModelStorage.usable(this, it) != null }
                 },
-                scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+                scope = deliveryScope,
             ),
         )
     }

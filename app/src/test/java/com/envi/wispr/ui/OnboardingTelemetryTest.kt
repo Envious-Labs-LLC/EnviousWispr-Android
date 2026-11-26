@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
@@ -64,12 +65,17 @@ class OnboardingTelemetryTest {
         takeId = takeId,
     )
 
+    private val immediateScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
     private fun newTracker(): Pair<PracticeTakeTracker, MutableList<Pair<String, String>>> {
         val reports = mutableListOf<Pair<String, String>>()
-        val tracker = PracticeTakeTracker { event ->
-            val practice = event as AnalyticsEvent.OnboardingPractice
-            synchronized(reports) { reports += practice.lesson to practice.outcome }
-        }
+        val tracker = PracticeTakeTracker(
+            capture = { event ->
+                val practice = event as AnalyticsEvent.OnboardingPractice
+                synchronized(reports) { reports += practice.lesson to practice.outcome }
+            },
+            scope = immediateScope,
+        )
         return tracker to reports
     }
 

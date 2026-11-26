@@ -142,6 +142,8 @@ internal data class PracticeTrackerState(
  */
 internal class PracticeTakeTracker(
     private val capture: (AnalyticsEvent) -> Unit,
+    /** Application IO scope so telemetry capture never blocks the accessibility or session caller thread. */
+    private val scope: CoroutineScope,
 ) {
     private data class Registration(val lesson: PracticeLesson, val held: Boolean?)
 
@@ -164,7 +166,7 @@ internal class PracticeTakeTracker(
             val result = terminals[takeId] ?: return
             reportLocked(takeId, updated, result).also { publishLocked() }
         }
-        runCatching { capture(event) }
+        emitAsync(event)
     }
 
     fun onTerminal(takeId: String, result: String) {
@@ -176,7 +178,15 @@ internal class PracticeTakeTracker(
             publishLocked()
             pending
         }
-        if (event != null) runCatching { capture(event) }
+        if (event != null) emitAsync(event)
+    }
+
+    private fun emitAsync(event: AnalyticsEvent.OnboardingPractice) {
+        runCatching {
+            scope.launch {
+                runCatching { capture(event) }
+            }
+        }
     }
 
     private fun reportLocked(takeId: String, registration: Registration, result: String): AnalyticsEvent.OnboardingPractice {

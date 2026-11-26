@@ -15,6 +15,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -53,6 +54,7 @@ class SetupProvenByDictationTest {
     private val rig = DictationSessionRig()
     private val storeJob = Job()
     private val storeScope = CoroutineScope(storeJob + Dispatchers.IO)
+    private val immediateScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     @After fun tearDown() {
         rig.holdRescueWrite?.complete(Unit)
@@ -104,7 +106,7 @@ class SetupProvenByDictationTest {
     @Test fun externalTakeSettlesOnlyAfterCommittedNeverOnScheduledAlone() = runBlocking {
         val prefs = newPrefs("external-commit")
         val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
-        val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
+        val observer = TakeDeliveryObserver(PracticeTakeTracker({}, immediateScope), settlement)
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
 
@@ -122,7 +124,7 @@ class SetupProvenByDictationTest {
     @Test fun externalTakeFallingBackToCopyOnlyNeverSettlesAndEvictsCandidate() = runBlocking {
         val prefs = newPrefs("external-copy")
         val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
-        val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
+        val observer = TakeDeliveryObserver(PracticeTakeTracker({}, immediateScope), settlement)
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
 
@@ -142,7 +144,7 @@ class SetupProvenByDictationTest {
     @Test fun nonScheduledFallbackEmitsTerminalOutcomeAndEvictsSettlementCandidate() = runBlocking {
         val prefs = newPrefs("non-scheduled")
         val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
-        val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
+        val observer = TakeDeliveryObserver(PracticeTakeTracker({}, immediateScope), settlement)
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
         rig.insertion.handoff = InsertionHandoff.SERVICE_NOT_RUNNING
@@ -156,10 +158,13 @@ class SetupProvenByDictationTest {
     /** #560: History save fails (`dao.failInserts = true`), insertion commits -> practice lands, never NOTHING_LANDED. */
     @Test fun failedHistorySaveWithCommittedPracticeInsertionStillReportsLandedOnce() {
         val reports = mutableListOf<Pair<String, String>>()
-        val tracker = PracticeTakeTracker { event ->
-            val practice = event as AnalyticsEvent.OnboardingPractice
-            reports += practice.lesson to practice.outcome
-        }
+        val tracker = PracticeTakeTracker(
+            capture = { event ->
+                val practice = event as AnalyticsEvent.OnboardingPractice
+                reports += practice.lesson to practice.outcome
+            },
+            scope = immediateScope,
+        )
         val practice = PracticeTakeFollower(tracker)
         val observer = TakeDeliveryObserver(tracker, OnboardingSettlement(newPrefs("practice-nosave"), { true }, storeScope))
         rig.host.onTerminalDelivery = observer::onTerminal
@@ -198,10 +203,13 @@ class SetupProvenByDictationTest {
     /** #560: destroy() during awaitRescue() after commit(COMPLETED) never calls deliver(); finally settles Practice to NOTHING_LANDED. */
     @Test fun destroyDuringAwaitRescueAfterCommitPublishesNotDeliveredTerminal() {
         val reports = mutableListOf<Pair<String, String>>()
-        val tracker = PracticeTakeTracker { event ->
-            val practice = event as AnalyticsEvent.OnboardingPractice
-            synchronized(reports) { reports += practice.lesson to practice.outcome }
-        }
+        val tracker = PracticeTakeTracker(
+            capture = { event ->
+                val practice = event as AnalyticsEvent.OnboardingPractice
+                synchronized(reports) { reports += practice.lesson to practice.outcome }
+            },
+            scope = immediateScope,
+        )
         val practice = PracticeTakeFollower(tracker)
         val terminalArrived = CountDownLatch(1)
         val entered = CountDownLatch(1)
@@ -235,5 +243,63 @@ class SetupProvenByDictationTest {
         assertEquals(listOf(takeId to TakeDeliveryObserver.RESULT_NOT_DELIVERED), rig.host.terminalDeliveries.toList())
         assertEquals(listOf("tap" to "nothing_landed"), reports)
         assertEquals(PracticeScreenJudgement(PracticeOutcome.NOTHING_LANDED), practice.judge(emptyList()))
+    }
+
+    /** #560: InsertionOutcomeRecorder returns and queues History immediately even while PracticeTakeTracker's capture blocks. */
+    @Test fun insertionOutcomeRecorderReturnsImmediatelyWhilePracticeCaptureBlocks() = runBlocking {
+        val bgJob = SupervisorJob()
+        val bgScope = CoroutineScope(bgJob + Dispatchers.IO)
+        val captureEntered = CountDownLatch(1)
+        val releaseCapture = CountDownLatch(1)
+        val captureDone = CountDownLatch(1)
+        val captured = mutableListOf<AnalyticsEvent.OnboardingPractice>()
+        try {
+            val tracker = PracticeTakeTracker(
+                capture = { event ->
+                    captureEntered.countDown()
+                    check(releaseCapture.await(5, TimeUnit.SECONDS)) { "test never released blocked capture" }
+                    synchronized(captured) { captured += event as AnalyticsEvent.OnboardingPractice }
+                    captureDone.countDown()
+                },
+                scope = bgScope,
+            )
+            tracker.track("take-nonblocking", PracticeLesson.TAP, held = false)
+            val observer = TakeDeliveryObserver(tracker, OnboardingSettlement(newPrefs("nonblocking"), { true }, storeScope))
+            val enqueued = mutableListOf<String>()
+            val recorder = InsertionOutcomeRecorder(
+                enqueue = { label, _, _ -> enqueued += label; Enqueued.ACCEPTED },
+                capture = {},
+                outcomeTrail = {},
+                warn = {},
+                onTerminal = observer::onTerminal,
+            )
+
+            // record() must enqueue History and return immediately while capture() stays blocked on bgScope.
+            recorder.record(
+                InsertionEnding(
+                    row = HistoryRow.None,
+                    takeId = "take-nonblocking",
+                    targetPackage = "com.envi.wispr",
+                    status = TranscriptEntity.STATUS_COMPLETED,
+                    result = InsertionResults.COMMITTED,
+                    interrupted = false,
+                    clipboard = null,
+                    latencyMs = 90L,
+                ),
+            )
+            assertEquals("History outcome enqueue must not wait for practice telemetry capture", listOf("insertion outcome"), enqueued)
+            assertEquals(PracticeVerdict(PracticeLesson.TAP, PracticeOutcome.LANDED), tracker.state.value.verdicts["take-nonblocking"])
+            assertTrue("capture must be running on background scope while record() already returned", captureEntered.await(5, TimeUnit.SECONDS))
+            assertTrue("capture is still blocked before release", synchronized(captured) { captured.isEmpty() })
+
+            releaseCapture.countDown()
+            assertTrue("capture must complete after latch release", captureDone.await(5, TimeUnit.SECONDS))
+            val event = synchronized(captured) { captured.single() }
+            assertEquals("tap", event.lesson)
+            assertEquals("landed", event.outcome)
+        } finally {
+            releaseCapture.countDown()
+            bgJob.cancelAndJoin()
+        }
     }
 }

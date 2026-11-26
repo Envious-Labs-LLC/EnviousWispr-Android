@@ -381,7 +381,10 @@ class RecognizerOwnerTest {
         /** What each take's work read: the model's name, or null for the `MODEL_NOT_LOADED` branch. */
         val seen = mutableListOf<String?>()
 
-        fun load() = owner.load(5) { opened++; opens.removeFirst().invoke() }
+        fun load() = owner.load(5) {
+            opened++
+            (opens.pollFirst() ?: throw AssertionError("Unexpected model open #$opened")).invoke()
+        }
         fun take(request: AsrRequest = request(owner), allowed: () -> Boolean = { true }) =
             owner.use(6, request, allowed) { rec -> seen += rec?.name; return@use {} }
     }
@@ -401,7 +404,7 @@ class RecognizerOwnerTest {
     }
 
     @Test fun cancelledOrRevokedTakesAloneNeverOpenAModel() {
-        val rig = LazyLoadRig({ null }, { error("A cancelled or revoked take must not open a model") })
+        val rig = LazyLoadRig({ null }, { throw AssertionError("A cancelled or revoked take must not open a model") })
         rig.load()
         rig.worker.runAll()
         val cancelled = request(rig.owner)
@@ -500,7 +503,7 @@ class RecognizerOwnerTest {
     }
 
     @Test fun aTakeQueuedBehindTheFirstOpenSharesItsAnswerInsteadOfOpeningAgain() {
-        val rig = LazyLoadRig({ null }, { error("A take queued behind an unfinished open must not open again") })
+        val rig = LazyLoadRig({ null }, { throw AssertionError("A take queued behind an unfinished open must not open again") })
         rig.load()
         rig.take()
         rig.worker.runAll()
@@ -510,7 +513,7 @@ class RecognizerOwnerTest {
 
     // MUTATION: drop `recognizer != null` from the attempt turns this red (a second heavy model over the first).
     @Test fun aPresentModelIsNeverOpenedAgain() {
-        val rig = LazyLoadRig({ Recognizer("parakeet") }, { error("A present model must not be opened again") })
+        val rig = LazyLoadRig({ Recognizer("parakeet") }, { throw AssertionError("A present model must not be opened again") })
         rig.load()
         rig.worker.runAll()
         rig.take()
@@ -521,7 +524,7 @@ class RecognizerOwnerTest {
     }
 
     @Test fun noRetryOpensAfterCloseAndATakeAfterCloseNeverRuns() {
-        val rig = LazyLoadRig({ null }, { error("A closed owner must not open a model") })
+        val rig = LazyLoadRig({ null }, { throw AssertionError("A closed owner must not open a model") })
         rig.load()
         rig.worker.runAll()
         rig.take() // Its retry and work are queued, then the owner closes before the worker reaches them.

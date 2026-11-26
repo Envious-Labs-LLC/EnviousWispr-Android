@@ -26,6 +26,11 @@ internal class RecognizerOwner<R : Any>(
     @Volatile private var ready = false
     /** Native worker only. No global model singleton and no owner-owned executor shutdown. */
     private var recognizer: R? = null
+    private class Loader<T>(val boundMs: Long, val open: () -> T?)
+    /** The open the service handed [load]; a [use] that finds no model retries through it (#562). */
+    @Volatile private var loader: Loader<R>? = null
+    /** Finished load attempts. Written by the worker alone; read at demand time to coalesce attempts. */
+    @Volatile private var loadsFinished = 0L
 
     val isReady: Boolean get() = life == Life.Open && ready && !watchdog.wedged
     val generationIdentity: Long get() = generation.identity
@@ -50,23 +55,53 @@ internal class RecognizerOwner<R : Any>(
         return entry
     }
 
+    /**
+     * Opens the model on the worker and remembers how, so a [use] that finds no model asks again (#562). Before, one
+     * failed open (no verified model yet, a throw, a null) left every take on `MODEL_NOT_LOADED` for the life of the
+     * process, and the keep-alive (#37) can hold that process for good.
+     */
     fun load(boundMs: Long, open: () -> R?) {
+        val loader = Loader(boundMs, open)
+        this.loader = loader
+        attempt(loader)
+    }
+
+    /**
+     * Single-flight on the one worker: an attempt opens nothing while a model is present, and nothing when another
+     * attempt FINISHED after this one was asked for. That attempt already answered this demand, so a burst of takes
+     * queued behind a failed open costs one open, never one each, and a missing model is retried once per later take,
+     * never in a loop. Admission refusal after close and the in-worker [life] checks keep a load out of a closed owner.
+     * [mayOpen] is read on the worker immediately before the open, so a request cancelled while queued never parks the
+     * worker on a model open; a skipped attempt is not counted, so it cannot use up a live request's retry.
+     */
+    private fun attempt(loader: Loader<R>, mayOpen: () -> Boolean = { true }) {
+        val asked = loadsFinished
         generation.enqueue {
-            if (life != Life.Open) return@enqueue
+            if (life != Life.Open || recognizer != null || loadsFinished != asked) return@enqueue
+            var opened = false
             try {
-                watchdog.guard(boundMs, "the model load") {
-                    if (life == Life.Open) {
-                        recognizer = open()
-                        ready = recognizer != null
+                watchdog.guard(loader.boundMs, "the model load") {
+                    if (life == Life.Open && mayOpen()) {
+                        opened = true
+                        recognizer = loader.open()
+                        // Under the close lock: once close() has cleared readiness, a late open cannot set it again.
+                        synchronized(lock) { ready = life == Life.Open && recognizer != null }
                     }
                 }
             } catch (failure: AsrCleanupFailure) {
                 watchdog.poison("Speech model construction")
+            } catch (_: Exception) {
+                // A throwing open is a failed attempt like a null one: nothing was handed over, so nothing to free.
+            } finally {
+                if (opened) loadsFinished++
             }
         }
     }
 
-    fun use(boundMs: Long, request: AsrRequest, work: (R?) -> () -> Unit) {
+    /** [allowed] is the caller's own admission (a revoked recovery), read with the request's before any model open. */
+    fun use(boundMs: Long, request: AsrRequest, allowed: () -> Boolean = { true }, work: (R?) -> () -> Unit) {
+        // Queued AHEAD of the work on the same FIFO worker, so the work reads the model this attempt opened.
+        if (!ready) loader?.let { attempt(it) { request.canStartModelLoad() && allowed() } }
         val admitted = generation.enqueue {
             if (!request.claim(boundMs)) return@enqueue
             try {

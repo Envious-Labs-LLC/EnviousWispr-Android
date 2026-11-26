@@ -14,7 +14,10 @@ internal enum class AsrFailureReason(val code: Int) {
     /** A code this build does not recognise. Never emitted by the service. */
     UNKNOWN(0),
 
-    /** The recogniser was not initialised when the request arrived: a readiness state, not a defect. */
+    /**
+     * No recogniser could be opened for this request, after the owner asked for it again (#562): a readiness state
+     * (typically no verified model on the phone), not a defect.
+     */
     MODEL_NOT_LOADED(1),
 
     /** The audio file named by the request does not exist. */

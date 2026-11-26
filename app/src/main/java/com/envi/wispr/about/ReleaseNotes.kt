@@ -52,8 +52,8 @@ internal object ReleaseNotes {
             lines = listOf(
                 "Choose System, Light, or Dark theme in Appearance, search Settings by keyword, and see a badge for unread What's New notes.",
                 "Added Casual mode for relaxed capitalization and punctuation, plus wider Reduce Motion support.",
-                "Fixed an issue where one slow local AI Polish timeout could disable local polishing until manually reset.",
-                "Fixed a startup freeze during field detection and added automatic speech model reload recovery.",
+                "A local AI Polish timeout no longer disables local polishing.",
+                "Improved responsiveness when detecting text fields. The app now retries if the speech model fails to load at startup.",
             ),
         ),
         ReleaseNote(

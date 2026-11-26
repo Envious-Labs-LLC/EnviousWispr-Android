@@ -194,6 +194,9 @@ internal class PolishSettingsViewModel(
                                 val runtimeFailed = usage.runtimeFailed && observation.reason != com.envi.wispr.polish.PolishReason.LOCAL_TIMEOUT
                                 val failures = if (runtimeFailed) ProcessingEnvironment.implementedBackends(activeRuntime, usageModel) else usage.failedBackends
                                 failures.forEach { backend ->
+                                    // A timeout's load failure is shown only where the repository kept it: a newer check of that route wins.
+                                    if (observation.reason == com.envi.wispr.polish.PolishReason.LOCAL_TIMEOUT &&
+                                        (usage.loadStamp == null || qualification.contextId != usage.contextId || qualification.evidenceStamps[backend] != usage.loadStamp)) return@forEach
                                     if (!checks.containsKey(backend) || checks[backend] != null) checks = checks + (backend to if (runtimeFailed) ProcessingCheckStatus.RUNTIME_FAILED else ProcessingCheckStatus.LOAD_FAILED)
                                 }
                             }

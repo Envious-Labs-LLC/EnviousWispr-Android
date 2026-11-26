@@ -87,11 +87,17 @@ class LocalTimeoutQualificationTest {
         repository().setS1Processing(custom)
         val saved = ProcessingQualification.of(current, setOf(gpu, cpu)).encode()
         prefs.values["s1_processing_qualification"] = saved
-        // A take admitted under the previous model revision answers after the qualification moved to the current one.
+        // A take admitted under the previous model revision answers after the qualification moved to the current one:
+        // once with nothing proved, once carrying a stamped graphics load failure from its processor fallback.
         val older = S1LoadConfiguration(context, geniex, custom, ProcessingQualification.of(context, setOf(gpu, cpu)), artifactStamp = "installed")
         repository().recordProcessing(observation(1, PolishReason.LOCAL_TIMEOUT, timedOut(older, S1LoadedConfiguration(), ready = false)))
-
         assertEquals("a take that proved nothing replaced the current evidence", saved, prefs.values["s1_processing_qualification"])
+
+        val fallback = S1LoadedConfiguration().also { it.ensure(older, failures = { setOf(gpu) }, failureStamp = { stamp(100) }) { cpu } }
+        val lateLoadFailure = timedOut(older, fallback)
+        assertEquals("the older take's load failure was not staged", setOf(gpu), lateLoadFailure.failedBackends)
+        repository().recordProcessing(observation(2, PolishReason.LOCAL_TIMEOUT, lateLoadFailure))
+        assertEquals("an older identity's late load failure replaced the current evidence", saved, prefs.values["s1_processing_qualification"])
     }
 
     @Test fun aRealRuntimeFailureStillTakesEveryStandardRouteOutOfACustomPriority() {

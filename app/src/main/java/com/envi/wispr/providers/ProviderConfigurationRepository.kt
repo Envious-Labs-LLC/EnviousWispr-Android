@@ -265,9 +265,11 @@ internal class ProviderConfigurationRepository internal constructor(
         observation.local?.let { usage ->
             val model = LocalPolishModel.fromWire(usage.modelId)
             val key = qualificationKeyFor(model)
-            var evidence = runCatching {
-                ProcessingQualification.decode(storedProcessingString(values, key))
-            }.getOrNull()?.takeIf { it.contextId == usage.contextId }
+            val saved = runCatching { ProcessingQualification.decode(storedProcessingString(values, key)) }.getOrNull()
+            // A timeout proves nothing about a NEW identity, and one arriving late for an older identity (a model or
+            // platform change in between) must not replace the current identity's evidence with its own (#559).
+            if (observation.reason == PolishReason.LOCAL_TIMEOUT && saved != null && saved.contextId.isNotEmpty() && saved.contextId != usage.contextId) return@let
+            var evidence = saved?.takeIf { it.contextId == usage.contextId }
                 ?: ProcessingQualification.of(usage.contextId, emptySet())
             // A take that proves nothing (a timeout, a not-ready take, a late answer for an older model or platform) writes
             // nothing: rewriting the unchanged value would replace another identity's saved evidence with an empty one (#559).

@@ -490,7 +490,10 @@ class OnboardingTelemetryTest {
             )
             assertNull(cancellingSettlement.registerCandidate("take-cancel"))
             val cancelledJob = checkNotNull(cancellingSettlement.onTerminal("take-cancel", InsertionResults.COMMITTED))
-            withTimeout(15_000L) { cancellingSettlement.awaitPending() }
+            withTimeout(15_000L) {
+                cancelledJob.join()
+                cancellingSettlement.awaitPending()
+            }
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             assertTrue("CancellationException must cancel the settlement Job rather than being swallowed", cancelledJob.isCancelled)
             assertEquals(emptyList<Throwable>(), synchronized(cancelErrors) { cancelErrors.toList() })

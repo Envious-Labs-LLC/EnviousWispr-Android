@@ -443,8 +443,7 @@ internal class OnboardingSettlement(
     }
 
     private fun settleAsync(): Job {
-        lateinit var job: Job
-        job = scope.launch(start = CoroutineStart.LAZY) {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 if (preferences.authoritativeState.first().onboardingComplete) return@launch
                 if (setupModelsReady()) preferences.completeOnboarding()
@@ -452,8 +451,6 @@ internal class OnboardingSettlement(
                 throw cancelled
             } catch (error: Throwable) {
                 runCatching { onError(error) }
-            } finally {
-                synchronized(lock) { activeSettlements.remove(job) }
             }
         }
         synchronized(lock) { activeSettlements.add(job) }

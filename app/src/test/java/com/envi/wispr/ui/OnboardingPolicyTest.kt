@@ -4,8 +4,11 @@ import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
+import com.envi.wispr.paste.DictationTargetPin
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Product Outcome: setup cannot skip missing requirements, and practice is judged by what really landed. */
@@ -115,8 +118,14 @@ class OnboardingPolicyTest {
         assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(ended, PracticeLesson.TAP, emptyList()))
     }
 
+    /** #560: `saved_unrouted` is the row the owner writes before the route, while the words may still commit. */
     @Test fun anInsertionStillRunningKeepsTheScreenWorking() {
-        listOf(TranscriptEntity.STATUS_DRAFT, TranscriptEntity.STATUS_PROCESSING, TranscriptEntity.STATUS_READY_FOR_INSERTION).forEach { status ->
+        listOf(
+            TranscriptEntity.STATUS_DRAFT,
+            TranscriptEntity.STATUS_PROCESSING,
+            TranscriptEntity.STATUS_SAVED_UNROUTED,
+            TranscriptEntity.STATUS_READY_FOR_INSERTION,
+        ).forEach { status ->
             assertEquals(status, PracticeOutcome.WORKING, judgePracticeTake(ended, PracticeLesson.TAP, listOf(row(status, "pending"))))
         }
     }
@@ -138,5 +147,65 @@ class OnboardingPolicyTest {
         assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended.copy(held = true), PracticeLesson.HOLD, landed))
         // The tap lesson does not care how the take was started.
         assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended.copy(held = true), PracticeLesson.TAP, landed))
+    }
+
+    /** #560: a take identified by takeId resolves off its terminal delivery result, even without a History row. */
+    @Test fun anIdentifiedTakeResolvesFromTerminalDeliveryEvenWithoutAHistoryRow() {
+        val identified = PracticeTake(held = false, transcriptId = null, ended = true, takeId = "take-1")
+        val other = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 9L).copy(takeId = "take-other")
+        // Before any terminal result or matching final row arrives: WORKING, never NOTHING_LANDED.
+        assertEquals(PracticeOutcome.WORKING, judgePracticeTake(identified, PracticeLesson.TAP, emptyList()))
+        assertEquals(PracticeOutcome.WORKING, judgePracticeTake(identified, PracticeLesson.TAP, listOf(other)))
+        // Terminal COMMITTED/PASTED lands even when History save failed (rows is empty or still draft).
+        val staleDraft = row(TranscriptEntity.STATUS_DRAFT, "pending", id = 99L).copy(takeId = "take-1")
+        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(identified, PracticeLesson.TAP, emptyList(), mapOf("take-1" to InsertionResults.COMMITTED)))
+        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(staleDraft), mapOf("take-1" to InsertionResults.PASTED)))
+        assertEquals(PracticeOutcome.LANDED_BY_TAP, judgePracticeTake(identified, PracticeLesson.HOLD, emptyList(), mapOf("take-1" to InsertionResults.COMMITTED)))
+        // Non-landed terminal result or wordless/teardown sentinel yields NOTHING_LANDED even with a stale draft.
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, emptyList(), mapOf("take-1" to TakeDeliveryObserver.RESULT_NOT_DELIVERED)))
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(staleDraft), mapOf("take-1" to InsertionResults.COPY_ONLY)))
+    }
+
+    /**
+     * #560 fell through a default: a status the practice table did not list was read as final. Every status
+     * History declares must have an explicit reading, open or final, so the next one fails here rather than
+     * on the founder's dashboard. The constants are read off the class, never typed out.
+     */
+    @Test fun everyHistoryStatusHasAnExplicitPracticeReading() {
+        val statuses = TranscriptEntity::class.java.declaredFields
+            .filter { java.lang.reflect.Modifier.isStatic(it.modifiers) && it.name.startsWith("STATUS_") }
+            .associate { it.name to it.apply { isAccessible = true }.get(null) as String }
+        assertTrue("found no STATUS_ constants, so this guard would pass about nothing", statuses.size >= 10)
+        val unread = statuses.filterValues { practiceRowStillOpen(it) == null }
+        assertEquals("statuses with no practice reading", emptyMap<String, String>(), unread)
+        assertEquals(true, practiceRowStillOpen("saved_unrouted"))
+        assertEquals(false, practiceRowStillOpen("completed"))
+    }
+
+    // ---- #563: the step the downloads move setup to is stored, and a setup finished elsewhere is complete ----
+
+    @Test fun theDownloadsFinishingStoresThePermissionsStep() {
+        assertEquals(2, onboardingStepToRecord(OnboardingStage.DOWNLOADS.ordinal, onboardingStage(1, ready, AutoPasteAvailability.LIVE)))
+        // Once stored, nothing more to store; and a download still running stores nothing.
+        assertNull(onboardingStepToRecord(OnboardingStage.PERMISSIONS.ordinal, onboardingStage(2, ready, AutoPasteAvailability.LIVE)))
+        assertNull(onboardingStepToRecord(1, onboardingStage(1, ready.copy(speechModelReady = false), AutoPasteAvailability.LIVE)))
+        assertNull(onboardingStepToRecord(0, onboardingStage(0, ready, AutoPasteAvailability.LIVE)))
+    }
+
+    /** The cold-start connect window shows Permissions for a restored practice step; the step must survive it. */
+    @Test fun aStageShownBehindTheStoredStepIsNeverStored() {
+        val shown = onboardingStage(OnboardingStage.PRACTICE.ordinal, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING)
+        assertEquals(OnboardingStage.PERMISSIONS, shown)
+        assertNull(onboardingStepToRecord(OnboardingStage.PRACTICE.ordinal, shown))
+    }
+
+    /** #563: only a pinned take into a non-practice field is eligible to settle setup once insertion lands. */
+    @Test fun onlyAPinnedNonPracticeFieldIsAnExternalSettlementTarget() {
+        // Most third-party editors carry no view id; a pinned take into one still qualifies.
+        assertTrue(isExternalSettlementTarget(DictationTargetPin.PINNED, null))
+        assertTrue(isExternalSettlementTarget(DictationTargetPin.PINNED, "com.whatsapp:id/entry"))
+        assertFalse(isExternalSettlementTarget(DictationTargetPin.PINNED, OnboardingViewModel.PRACTICE_FIELD_ID))
+        assertFalse(isExternalSettlementTarget(DictationTargetPin.NO_TARGET, null))
+        assertFalse(isExternalSettlementTarget(DictationTargetPin.INSERTION_BUSY, "com.whatsapp:id/entry"))
     }
 }

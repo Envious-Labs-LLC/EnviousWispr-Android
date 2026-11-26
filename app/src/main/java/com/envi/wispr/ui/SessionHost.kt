@@ -55,6 +55,18 @@ internal interface SessionHost {
     fun speechModelUsed(takeId: String)
     fun speechModelTakeEnded(takeId: String)
 
+    /**
+     * #563: marks [takeId] as an eligible external take BEFORE `finalizer.deliver()`, so `OnboardingSettlement`
+     * can complete setup once its insertion actually lands (`COMMITTED` or `PASTED`). Non-blocking.
+     */
+    fun registerSettlementCandidate(takeId: String)
+
+    /**
+     * #560, #563: forwards a take's terminal delivery outcome (wordless ending, non-SCHEDULED fallback, or
+     * pre-handoff teardown) to the application-owned `TakeDeliveryObserver`. Non-blocking and limb-safe.
+     */
+    fun onTakeDeliveryTerminal(takeId: String, result: String)
+
     /** `stopSelf()`. Separate from [removeForegroundAndDismiss] because the owner resets state between them. */
     fun stopSelfNow()
 

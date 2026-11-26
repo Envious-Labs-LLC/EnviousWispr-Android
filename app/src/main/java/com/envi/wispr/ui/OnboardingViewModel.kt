@@ -16,6 +16,7 @@ import androidx.work.WorkManager
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
@@ -72,10 +73,13 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         private set
     var downloadMessage by mutableStateOf("")
         private set
-    private var take: PracticeTake? = null
-    /** The current take's verdict was reported once; reset when a new take starts (issue #176). */
-    private var takeReported = false
+    /** Application-owned tracker for identified practice takes so leaving mid-take never drops telemetry (#560). */
+    private val practiceTracker by lazy { ModelBootstrapApplication.takeDelivery(context).practice }
+    /** The visible practice take for UI rendering; durable reporting lives in [practiceTracker] (#176, #560). */
+    private val practiceLazy = lazy { PracticeTakeFollower(practiceTracker) }
+    private val practice by practiceLazy
     private var rows: List<TranscriptEntity> = emptyList()
+    private var trackerState: PracticeTrackerState = PracticeTrackerState()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
     /** The phone's own launcher icons for the demo's first scene; empty until [loadDemoIcons] has run. */
@@ -106,8 +110,9 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun startSetup() {
         viewModelScope.launch {
             // Navigation is committed before worker admission. No late write can undo Back.
-            preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)
-            Telemetry.capture(AnalyticsEvent.OnboardingStageReached(OnboardingStage.DOWNLOADS.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+            preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)?.let { stage ->
+                Telemetry.capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+            }
             downloadAction {
                 ModelManifest.ONBOARDING.forEach { ModelDeliveryWorker.enqueueSetup(context, it) }
             }
@@ -180,23 +185,24 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
+        trackerState = practiceTracker.state.value
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
+            launch { practiceTracker.state.collect { latest -> trackerState = latest; judge() } }
             launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
         }
     }
 
     /**
-     * Stop following. A take the screen stopped watching mid-way is dropped, not resumed: its end was
-     * not observed, so a row seen on return could belong to a dictation made elsewhere in between
-     * (Codex review round 7). The words, if they landed, are in the box; the lesson simply asks for
-     * a take it can watch from start to end.
+     * Stop following new takes on screen. An in-flight take (not yet IDLE) is cleared from UI state on
+     * return, while all identified takes stay tracked in [practiceTracker] so their final verdict still
+     * emits `onboarding.practice` once (#560).
      */
     fun leavePractice() {
         watching?.cancel()
         watching = null
-        if (take?.ended == false) {
-            take = null
+        if (practiceLazy.isInitialized() && practice.leave()) {
+            practicePhase = RecordingOverlayState.Phase.IDLE
             practiceOutcome = null
             takeHeld = null
         }
@@ -209,7 +215,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         if (practicing) return
         lesson = PracticeLesson.HOLD
         saved["practice_hold_lesson"] = true
-        take = null
+        if (practiceLazy.isInitialized()) practice.forgetVisible()
         practiceOutcome = null
     }
 
@@ -221,55 +227,48 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     private fun followOwner(snapshot: RecordingOverlayState.Snapshot) {
         val busy = snapshot.phase != RecordingOverlayState.Phase.IDLE
         val ours = busy && snapshot.targetFieldId == PRACTICE_FIELD_ID
-        val current = take
         if (busy && !ours) {
             // Someone else's take, or ours before the owner has named its target: nothing to show yet.
-            if (current?.ended == false) return
+            val running = practice.take?.takeIf { !it.ended }
+            if (running != null) {
+                val newerTake = snapshot.takeId != null && running.takeId != null && snapshot.takeId != running.takeId
+                if (!newerTake) return
+                // IDLE was conflated before the next take started: end the previous practice take first.
+                practicePhase = RecordingOverlayState.Phase.IDLE
+                practice.follow(ours = false, transcriptId = null, held = null, lesson = lesson, takeId = null)
+                takeHeld = null
+                judge()
+                return
+            }
             practicePhase = RecordingOverlayState.Phase.IDLE
             return
         }
         practicePhase = snapshot.phase
-        take = if (ours) {
-            val transcript = snapshot.transcriptId.takeIf { it > 0L }
-            if (current == null || current.ended) {
-                takeReported = false
-                PracticeTake(held = snapshot.requestToken?.held, transcriptId = transcript)
-            } else {
-                current.copy(held = current.held ?: snapshot.requestToken?.held, transcriptId = current.transcriptId ?: transcript)
-            }
-        } else {
-            current?.let { if (it.ended) it else it.copy(ended = true) }
-        }
-        takeHeld = take?.takeIf { !it.ended }?.held
+        practice.follow(
+            ours = ours,
+            transcriptId = snapshot.transcriptId.takeIf { it > 0L },
+            held = snapshot.requestToken?.held,
+            lesson = lesson,
+            takeId = snapshot.takeId,
+        )
+        takeHeld = practice.take?.takeIf { !it.ended }?.held
         judge()
     }
 
-    /** Re-judge the current take off the row the owner named for it. */
+    /** Re-judge the visible take off its terminal delivery outcome (falling back to History). */
     private fun judge() {
-        val current = take ?: return
-        val outcome = judgePracticeTake(current, lesson, rows)
-        practiceOutcome = outcome
-        // One `onboarding.practice` per ended take, with the verdict the screen shows (plan §3.1): the
-        // take itself is an ordinary bubble dictation and reports through the owner like any other.
-        if (outcome != null && outcome != PracticeOutcome.WORKING && current.ended && !takeReported) {
-            takeReported = true
-            Telemetry.capture(AnalyticsEvent.OnboardingPractice(lesson.name.lowercase(), outcome.name.lowercase()))
+        val judgement = practice.judge(rows, trackerState) ?: return
+        if (judgement.landedHold) {
+            holdComplete = true
+            saved["practice_hold_complete"] = true
         }
-        when (outcome) {
-            PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {
-                holdComplete = true
-                saved["practice_hold_complete"] = true
-            } else {
-                practiceComplete = true
-                saved["practice_complete"] = true
-            }
-            // A tap answered the hold lesson: still a landed take, so Finish setup is earned.
-            PracticeOutcome.LANDED_BY_TAP -> {
-                practiceComplete = true
-                saved["practice_complete"] = true
-            }
-            PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED, null -> Unit
+        if (judgement.landedTap) {
+            practiceComplete = true
+            saved["practice_complete"] = true
         }
+        // Only the visible take drives the screen; earlier takes still resolving only unlock completion.
+        if (practice.take == null) return
+        practiceOutcome = judgement.shown
     }
 
     override fun onCleared() {

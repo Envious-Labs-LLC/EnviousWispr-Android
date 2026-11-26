@@ -57,6 +57,10 @@ class ModelBootstrapApplication : Application() {
         internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
             (context.applicationContext as ModelBootstrapApplication).historyRecovery
 
+        /** The process's one terminal-delivery observer (#560, #563): outlives both the Service and Practice screen. */
+        internal fun takeDelivery(context: Context): com.envi.wispr.ui.TakeDeliveryObserver =
+            (context.applicationContext as ModelBootstrapApplication).takeDeliveryObserver
+
         internal fun recordingProtection(context: Context): com.envi.wispr.ui.RecordingProtectionOwner =
             (context.applicationContext as ModelBootstrapApplication).recordingProtection
 
@@ -108,6 +112,21 @@ class ModelBootstrapApplication : Application() {
         HistoryWriteQueue(
             TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()),
             onOverload = { Telemetry.defect(AppDefect.HistoryQueueOverloaded) },
+        )
+    }
+
+    private val takeDeliveryObserver by lazy {
+        val deliveryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        com.envi.wispr.ui.TakeDeliveryObserver(
+            practice = com.envi.wispr.ui.PracticeTakeTracker(Telemetry::capture, deliveryScope),
+            settlement = com.envi.wispr.ui.OnboardingSettlement(
+                preferences = com.envi.wispr.settings.AppPreferences(this),
+                // The guided flow's own two models, as readiness reads them (a revision mid-update still counts).
+                setupModelsReady = {
+                    ModelManifest.ONBOARDING.all { ModelStorage.usable(this, it) != null }
+                },
+                scope = deliveryScope,
+            ),
         )
     }
 

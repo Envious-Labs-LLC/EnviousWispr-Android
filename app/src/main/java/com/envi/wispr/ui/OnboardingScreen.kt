@@ -46,6 +46,8 @@ internal fun OnboardingScreen(
     readiness: AppReadiness,
     autoPaste: AutoPasteAvailability,
     onStepChange: (Int) -> Unit,
+    /** Stores a step the screen moved to without a tap, from the stored one ([onboardingStepToRecord]). */
+    onAdvance: (from: Int, to: Int) -> Unit,
     onDismiss: () -> Unit,
     onRequestMicrophone: () -> Unit,
     onRequestNotifications: () -> Unit,
@@ -56,6 +58,9 @@ internal fun OnboardingScreen(
     val model: OnboardingViewModel = viewModel()
     val downloads by model.downloads.collectAsStateWithLifecycle()
     val stage = onboardingStage(step, readiness, autoPaste)
+    // The downloads finishing moves setup on without a tap; store that step like every tapped one, so it is
+    // restored and reported once (#563). `onboardingStepToRecord` never stores a stage behind the saved step.
+    LaunchedEffect(step, stage) { onboardingStepToRecord(step, stage)?.let { onAdvance(step, it) } }
     val dark = LocalDarkTheme.current ?: isSystemInDarkTheme()
     val background = if (dark) Color(0xFF251F37) else Color.White
     val surface = if (dark) Color(0xFF201B2C) else Color(0xFFF0ECF8)
@@ -214,7 +219,7 @@ internal fun OnboardingScreen(
                                 TextButton(onClick = { model.resumeDownloads(mobileData = true) }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Use mobile data", color = accent, fontSize = 12.sp) }
                             }
                             OnboardingStage.PERMISSIONS -> {
-                                val ready = readiness.microphoneGranted && autoPaste == AutoPasteAvailability.LIVE
+                                val ready = readiness.setupPermissionsReady(autoPaste)
                                 SetupButton("See how it works", fill, ready) { onStepChange(OnboardingStage.DEMO.ordinal) }
                                 if (!ready) Text("Enable Microphone and Accessibility to continue.", Modifier.padding(top = 10.dp).align(Alignment.CenterHorizontally), color = muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                                 TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Set up later", color = accent, fontSize = 12.sp) }

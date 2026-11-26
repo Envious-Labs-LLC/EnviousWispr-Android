@@ -184,6 +184,8 @@ internal class DictationSessionCoordinator(
 
     /** The bubble request this take was admitted for, or null for a take started elsewhere. */
     @Volatile private var admittedRequest: BubbleRequestToken? = null
+    /** The pinned editor's view id, read once at the start beside the pin (#563); null when nothing named one. */
+    @Volatile private var targetFieldId: String? = null
 
     /**
      * A release for this take arrived before capture was running. Consumed at the RECORDING
@@ -399,6 +401,8 @@ internal class DictationSessionCoordinator(
         // hands the committed reason to telemetry and never waits on storage or the network.
         val protection = recordingProtection?.begin(takeId, System.currentTimeMillis())
         val arbiter = TakeArbiter { reason ->
+            // #560: every non-completed ending leaves no landed words (and often no saved row), so practice can settle it.
+            if (reason != TerminalReason.COMPLETED) runCatching { surface.markTakeEndedWithoutRow(takeId) }
             runCatching { protection?.ended(reason) }
             runCatching { historyRecovery.ordinaryEnded() }
             endingSink(takeFacts, reason)
@@ -425,13 +429,14 @@ internal class DictationSessionCoordinator(
                 if (admission.getCompleted()) outcome.admissionObserved(sinceAccepted())
             }
         }
-        surface.showStarting(admittedRequest)
+        surface.showStarting(admittedRequest, takeId)
         // Kept for the whole session. Android may rebind the accessibility service while the user
         // is still speaking, so the state insertion finds minutes later cannot say whether this
         // dictation ever had a field to aim at (`InsertionJudgement.handoffToJudge`).
         val targetPin = insertion.pinTargetForDictation()
         // Name the field this take aims at, for a reader that only wants takes aimed at ITS field.
-        surface.nameTarget(if (targetPin == DictationTargetPin.PINNED) insertion.pinnedFieldId() else null)
+        targetFieldId = if (targetPin == DictationTargetPin.PINNED) insertion.pinnedFieldId() else null
+        surface.nameTarget(targetFieldId)
         // The take, published once (#216). `beginSession` is one uninterrupted main-thread call, and nothing
         // is bound and no coroutine launched before this line, so nothing reads half of one take.
         take = TakeContext(takeId, trigger, takeFacts, outcome, arbiter, targetPin, TakeHistory(historyWrites), acceptedAtMs, takeLog, protection)
@@ -1116,6 +1121,11 @@ internal class DictationSessionCoordinator(
             if (current.arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
+        // #560: if History cannot persist a row for this take (queue full, DB error, or deleted), practice must not stay WORKING forever.
+        saved.onAnswered { answer ->
+            val persisted = answer.outcome is SaveOutcome.Saved && answer.outcome.id > 0L
+            if (!persisted) runCatching { surface.markTakeEndedWithoutRow(takeId) }
+        }
         notices.sayPolishFailureIfAny(payload.polishFacts)
 
         scope.launch {
@@ -1145,7 +1155,11 @@ internal class DictationSessionCoordinator(
             }.onFailure { current.log.warn("Processing result could not be saved: ${it.javaClass.simpleName}") }
             // The words are on this phone before they are handed anywhere (#288), bounded so a slow disk never holds them.
             finalizer.awaitRescue(current.history)
-            finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
+            val delivery = finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
+            // #563: a take handed to auto-paste in another app's field proves setup works; the owner only says so.
+            if (dictationProvesSetup(current.targetPin, targetFieldId, delivery.handoff)) {
+                runCatching { host.setupProvenByDictation() }
+            }
             current.log.log(current.log.pipelineSummary())
             finishSession()
         }

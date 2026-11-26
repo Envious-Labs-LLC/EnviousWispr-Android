@@ -70,16 +70,21 @@ internal class EnviousWisprViewModel(
 
     /** A stage is reported when the stored step actually moves to it, so a repeated write reports nothing (#563). */
     fun setOnboardingStep(step: Int): Job = viewModelScope.launch {
-        if (!appPreferences.setOnboardingStep(step)) return@launch
-        OnboardingStage.entries.getOrNull(step)?.let { stage ->
-            capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
-        }
+        appPreferences.setOnboardingStep(step)?.let(::reportStage)
     }
 
-    fun dismissOnboarding() {
-        viewModelScope.launch {
-            appPreferences.dismissOnboarding()
-        }
+    /** The downloads finishing moved setup on ([onboardingStepToRecord]); stored and reported only if nothing moved it first. */
+    fun advanceOnboardingStep(from: Int, to: Int): Job = viewModelScope.launch {
+        val stages = OnboardingStage.entries
+        if (from !in stages.indices || to !in stages.indices) return@launch
+        appPreferences.advanceOnboardingStep(stages[from], stages[to])?.let(::reportStage)
+    }
+
+    private fun reportStage(stage: OnboardingStage) =
+        capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+
+    fun dismissOnboarding(): Job = viewModelScope.launch {
+        appPreferences.dismissOnboarding()
     }
 
     fun resumeOnboarding() {
@@ -94,13 +99,6 @@ internal class EnviousWisprViewModel(
             capture(AnalyticsEvent.OnboardingCompleted(Telemetry.secondsSinceProcessStart()))
         }
     }
-
-    /**
-     * A setup the user finished outside the guided flow ([onboardingSettledOutsideTheFlow], #563) is complete, so
-     * `app.launched` stops reporting an active user as never set up. No `onboarding.completed` row: that row is
-     * the guided flow's own last step, which this user left with "Set up later" and never finished.
-     */
-    fun settleOnboarding(): Job = viewModelScope.launch { appPreferences.completeOnboarding() }
 
     /**
      * One settings write plus its `settings.changed` row (issue #176): `from` is the PERSISTED value

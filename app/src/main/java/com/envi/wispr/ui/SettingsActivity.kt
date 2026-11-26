@@ -126,9 +126,6 @@ class SettingsActivity : ComponentActivity() {
             LaunchedEffect(isDark) {
                 applySystemBarTheme(isDark)
             }
-            // #563: a setup finished outside the guided flow is marked complete once; the rule is the policy's.
-            val settled = onboardingSettledOutsideTheFlow(shell.preferences, readiness.readiness, readiness.autoPaste, history.transcripts)
-            LaunchedEffect(settled) { if (settled) shellViewModel.settleOnboarding() }
             EnviousWisprTheme(
                 dynamicColor = shell.preferences.dynamicColorEnabled,
                 themeMode = shell.preferences.themeMode,
@@ -156,6 +153,7 @@ class SettingsActivity : ComponentActivity() {
                         ),
                         onboarding = OnboardingActions(
                             onStep = shellViewModel::setOnboardingStep,
+                            onAdvance = shellViewModel::advanceOnboardingStep,
                             onDismiss = shellViewModel::dismissOnboarding,
                             onResume = shellViewModel::resumeOnboarding,
                             onComplete = shellViewModel::completeOnboarding,

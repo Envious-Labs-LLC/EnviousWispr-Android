@@ -75,6 +75,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     /** The followed take and its one reported verdict (issues #176, #560). */
     private val practice = PracticeTakeFollower()
     private var rows: List<TranscriptEntity> = emptyList()
+    private var endedWithoutRow: Set<String> = emptySet()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
     /** The phone's own launcher icons for the demo's first scene; empty until [loadDemoIcons] has run. */
@@ -105,7 +106,9 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun startSetup() {
         viewModelScope.launch {
             // Navigation is committed before worker admission. No late write can undo Back.
-            if (preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)) Telemetry.capture(AnalyticsEvent.OnboardingStageReached(OnboardingStage.DOWNLOADS.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+            preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)?.let { stage ->
+                Telemetry.capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+            }
             downloadAction {
                 ModelManifest.ONBOARDING.forEach { ModelDeliveryWorker.enqueueSetup(context, it) }
             }
@@ -178,8 +181,10 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
+        endedWithoutRow = RecordingOverlayState.takesEndedWithoutRow.value
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
+            launch { RecordingOverlayState.takesEndedWithoutRow.collect { ended -> endedWithoutRow = ended; judge() } }
             launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
         }
     }
@@ -221,39 +226,58 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         val ours = busy && snapshot.targetFieldId == PRACTICE_FIELD_ID
         if (busy && !ours) {
             // Someone else's take, or ours before the owner has named its target: nothing to show yet.
-            if (practice.take?.ended == false) return
+            val running = practice.take?.takeIf { !it.ended }
+            if (running != null) {
+                val newerTake = snapshot.takeId != null && running.takeId != null && snapshot.takeId != running.takeId
+                if (!newerTake) return
+                // IDLE was conflated before the next take started: end the previous practice take first.
+                practicePhase = RecordingOverlayState.Phase.IDLE
+                practice.follow(ours = false, transcriptId = null, held = null, lesson = lesson, takeId = null)
+                takeHeld = null
+                judge()
+                return
+            }
             practicePhase = RecordingOverlayState.Phase.IDLE
             return
         }
         practicePhase = snapshot.phase
-        practice.follow(ours, transcriptId = snapshot.transcriptId.takeIf { it > 0L }, held = snapshot.requestToken?.held)
+        practice.follow(
+            ours = ours,
+            transcriptId = snapshot.transcriptId.takeIf { it > 0L },
+            held = snapshot.requestToken?.held,
+            lesson = lesson,
+            takeId = snapshot.takeId,
+        )
         takeHeld = practice.take?.takeIf { !it.ended }?.held
         judge()
     }
 
     /** Re-judge the current take off the row the owner named for it. */
     private fun judge() {
-        val judgement = practice.judge(lesson, rows) ?: return
-        val outcome = judgement.shown
-        practiceOutcome = outcome
+        val judgement = practice.judge(rows, endedWithoutRow) ?: return
         // One `onboarding.practice` per ended take, with its FINAL verdict (plan §3.1, #560): the take
         // itself is an ordinary bubble dictation and reports through the owner like any other.
-        judgement.report?.let { Telemetry.capture(AnalyticsEvent.OnboardingPractice(lesson.name.lowercase(), it.name.lowercase())) }
-        when (outcome) {
-            PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {
-                holdComplete = true
-                saved["practice_hold_complete"] = true
-            } else {
-                practiceComplete = true
-                saved["practice_complete"] = true
+        judgement.reports.forEach { report ->
+            Telemetry.capture(AnalyticsEvent.OnboardingPractice(report.lesson.name.lowercase(), report.outcome.name.lowercase()))
+            when (report.outcome) {
+                PracticeOutcome.LANDED -> if (report.lesson == PracticeLesson.HOLD) {
+                    holdComplete = true
+                    saved["practice_hold_complete"] = true
+                } else {
+                    practiceComplete = true
+                    saved["practice_complete"] = true
+                }
+                // A tap answered the hold lesson: still a landed take, so Finish setup is earned.
+                PracticeOutcome.LANDED_BY_TAP -> {
+                    practiceComplete = true
+                    saved["practice_complete"] = true
+                }
+                PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED -> Unit
             }
-            // A tap answered the hold lesson: still a landed take, so Finish setup is earned.
-            PracticeOutcome.LANDED_BY_TAP -> {
-                practiceComplete = true
-                saved["practice_complete"] = true
-            }
-            PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED, null -> Unit
         }
+        // Only the latest take drives the screen; an older one still resolving only reports.
+        if (practice.take == null) return
+        practiceOutcome = judgement.shown
     }
 
     override fun onCleared() {

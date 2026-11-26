@@ -163,6 +163,10 @@ class DictationSessionService : Service() {
             runCatching { com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeEnded(takeId) }
         }
 
+        override fun setupProvenByDictation() {
+            ModelBootstrapApplication.onboardingSettlement(this@DictationSessionService).dictationProvedSetup()
+        }
+
         override fun postToMain(runnable: Runnable) {
             mainHandler.post(runnable)
         }

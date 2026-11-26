@@ -55,6 +55,12 @@ internal interface SessionHost {
     fun speechModelUsed(takeId: String)
     fun speechModelTakeEnded(takeId: String)
 
+    /**
+     * #563: this take was handed to auto-paste in another app's field ([dictationProvesSetup]). The application's
+     * `OnboardingSettlement` decides whether setup is now complete; the host only forwards, and never waits.
+     */
+    fun setupProvenByDictation()
+
     /** `stopSelf()`. Separate from [removeForegroundAndDismiss] because the owner resets state between them. */
     fun stopSelfNow()
 

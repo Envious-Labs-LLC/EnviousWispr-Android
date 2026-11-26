@@ -371,6 +371,9 @@ internal class DictationSessionRig {
         override fun speechModelTakeStarted(takeId: String) { speechHold += "started:$takeId" }
         override fun speechModelUsed(takeId: String) { speechHold += "used:$takeId" }
         override fun speechModelTakeEnded(takeId: String) { speechHold += "ended:$takeId" }
+        /** Separate from [events] so existing event-list assertions stay unchanged (#563). */
+        val setupProven = AtomicLong(0L)
+        override fun setupProvenByDictation() { setupProven.incrementAndGet() }
 
         override fun stopSelfNow() {
             events += "stopSelf"
@@ -429,7 +432,14 @@ internal class DictationSessionRig {
         fun awaitShown() {
             check(shown.await(10, TimeUnit.SECONDS)) { "the take never went live; surface events so far: $events" }
         }
-        override fun showStarting(token: BubbleRequestToken?) { events += "starting" }
+        /** Take ids published to [showStarting], apart from [events] (#560). */
+        val startedTakeIds = CopyOnWriteArrayList<String>()
+        /** Take ids marked as ended without a saved History row, apart from [events] (#560). */
+        val endedWithoutRow = CopyOnWriteArrayList<String>()
+        override fun showStarting(token: BubbleRequestToken?, takeId: String?) {
+            events += "starting"
+            if (takeId != null) startedTakeIds += takeId
+        }
         override fun nameTarget(fieldId: String?) { events += "target:$fieldId" }
         override fun attachTranscript(id: Long) { events += "transcript:$id" }
         override fun show() {
@@ -450,6 +460,7 @@ internal class DictationSessionRig {
             timeline += "updateBands:$takeSerial"
         }
         override fun hide() { events += "hide" }
+        override fun markTakeEndedWithoutRow(takeId: String) { endedWithoutRow += takeId }
         override fun currentTakeSerial(): Long = serial.get()
     }
 
@@ -470,7 +481,9 @@ internal class DictationSessionRig {
             pins.incrementAndGet()
             return pin
         }
-        override fun pinnedFieldId(): String? = "field-1"
+        /** The pinned editor's view id the owner reads at the start; the practice box's id stages a practice take. */
+        @Volatile var fieldId: String? = "field-1"
+        override fun pinnedFieldId(): String? = fieldId
         override fun releasePinnedTarget() { releases.incrementAndGet() }
         /**
          * When set, a scheduled handoff writes its PASTED outcome through the row handle on this queue, as the paste

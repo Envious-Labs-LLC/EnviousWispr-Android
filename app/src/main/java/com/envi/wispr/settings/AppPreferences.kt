@@ -137,7 +137,7 @@ internal class AppPreferences internal constructor(
         recordingSoundPairing = RecordingSoundPairing.fromStorage(preferences[Keys.RECORDING_SOUND_PAIRING]),
         recordingSoundVolume = RecordingSoundVolume.fromStorage(preferences[Keys.RECORDING_SOUND_VOLUME]),
         recordingVibrationEnabled = preferences[Keys.RECORDING_VIBRATION] ?: true,
-        onboardingStep = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0,
+        onboardingStep = storedOnboardingStep(preferences),
         modelDownloadsOnMobileData = preferences[Keys.MODEL_DOWNLOADS_ON_MOBILE_DATA] ?: false,
         mobileDataApprovedRevisions = preferences[Keys.MOBILE_DATA_APPROVED_REVISIONS] ?: emptySet(),
         answeredUpdatePrompts = preferences[Keys.ANSWERED_UPDATE_PROMPTS] ?: emptySet(),
@@ -180,23 +180,45 @@ internal class AppPreferences internal constructor(
     suspend fun setRecordingVibrationEnabled(enabled: Boolean) { dataStore.edit { it[Keys.RECORDING_VIBRATION] = enabled } }
 
     /**
-     * @return whether the stored step changed, read and written in ONE edit, so a repeated write of the step
-     * already stored (two callers, or one effect replayed by a recreated screen) reports no new stage (#563).
+     * @return the stage now stored when the stored step changed, else null. Read and written in ONE edit, so a
+     * repeated write of the step already stored (a double tap) reports no new stage (#563).
      */
-    suspend fun setOnboardingStep(step: Int): Boolean {
-        var changed = false
+    suspend fun setOnboardingStep(step: Int): OnboardingStage? {
+        var reached: OnboardingStage? = null
         dataStore.edit { preferences ->
+            reached = null
             // The last stage, read off the enum: a literal here silently pinned setup to its old last screen
             // when the demo stage was added (emulator, 2026-09-14).
             val next = step.coerceIn(0, OnboardingStage.entries.lastIndex)
-            val stored = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0
-            changed = stored != next
+            reached = OnboardingStage.entries[next].takeIf { storedOnboardingStep(preferences) != next }
             preferences[Keys.ONBOARDING_STEP] = next
             preferences[Keys.ONBOARDING_VERSION] = 2
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }
-        return changed
+        return reached
     }
+
+    /**
+     * The one step move nobody taps (#563): the downloads finishing moves setup on. Stored only while setup still
+     * stands at [from], neither dismissed nor complete, in ONE edit, so it can never overwrite a "Set up later",
+     * a Back or a tap that landed first, and never clears a dismissal. @return the stage stored, else null.
+     */
+    suspend fun advanceOnboardingStep(from: OnboardingStage, to: OnboardingStage): OnboardingStage? {
+        var reached: OnboardingStage? = null
+        dataStore.edit { preferences ->
+            reached = null
+            if (to <= from || storedOnboardingStep(preferences) != from.ordinal) return@edit
+            if (preferences[Keys.ONBOARDING_DISMISSED] == true || preferences[Keys.ONBOARDING_COMPLETE] == true) return@edit
+            preferences[Keys.ONBOARDING_STEP] = to.ordinal
+            preferences[Keys.ONBOARDING_VERSION] = 2
+            reached = to
+        }
+        return reached
+    }
+
+    /** The step `mapState` reads: steps stored before version 2 restart setup. */
+    private fun storedOnboardingStep(preferences: Preferences): Int =
+        if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0
 
     suspend fun setModelDownloadsOnMobileData(allowed: Boolean) {
         dataStore.edit { it[Keys.MODEL_DOWNLOADS_ON_MOBILE_DATA] = allowed }

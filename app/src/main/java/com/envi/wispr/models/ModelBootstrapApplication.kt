@@ -57,6 +57,10 @@ class ModelBootstrapApplication : Application() {
         internal fun historyRecovery(context: Context): com.envi.wispr.history.HistoryRecoveryCoordinator =
             (context.applicationContext as ModelBootstrapApplication).historyRecovery
 
+        /** The process's one onboarding settlement (#563): a take's proof of setup outlives the Service that reported it. */
+        internal fun onboardingSettlement(context: Context): com.envi.wispr.ui.OnboardingSettlement =
+            (context.applicationContext as ModelBootstrapApplication).onboardingSettlement
+
         internal fun recordingProtection(context: Context): com.envi.wispr.ui.RecordingProtectionOwner =
             (context.applicationContext as ModelBootstrapApplication).recordingProtection
 
@@ -108,6 +112,17 @@ class ModelBootstrapApplication : Application() {
         HistoryWriteQueue(
             TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()),
             onOverload = { Telemetry.defect(AppDefect.HistoryQueueOverloaded) },
+        )
+    }
+
+    private val onboardingSettlement by lazy {
+        com.envi.wispr.ui.OnboardingSettlement(
+            preferences = com.envi.wispr.settings.AppPreferences(this),
+            // The guided flow's own two models, as readiness reads them (a revision mid-update still counts).
+            setupModelsReady = {
+                ModelManifest.ONBOARDING.all { ModelStorage.usable(this, it) != null }
+            },
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
         )
     }
 

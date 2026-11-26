@@ -4,7 +4,8 @@ import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
-import com.envi.wispr.settings.AppPreferencesState
+import com.envi.wispr.paste.DictationTargetPin
+import com.envi.wispr.paste.InsertionHandoff
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -149,6 +150,22 @@ class OnboardingPolicyTest {
         assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended.copy(held = true), PracticeLesson.TAP, landed))
     }
 
+    /** #560: a take identified by takeId waits for Room's row or an explicit wordless/save-failed ending. */
+    @Test fun anIdentifiedTakeWithNoRowYetStaysWorkingUntilRowOrWordlessEnding() {
+        val identified = PracticeTake(held = false, transcriptId = null, ended = true, takeId = "take-1")
+        val other = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 9L).copy(takeId = "take-other")
+        // Room has not emitted this take's row yet, and attachTranscript never arrived: WORKING, never NOTHING_LANDED.
+        assertEquals(PracticeOutcome.WORKING, judgePracticeTake(identified, PracticeLesson.TAP, emptyList()))
+        assertEquals(PracticeOutcome.WORKING, judgePracticeTake(identified, PracticeLesson.TAP, listOf(other)))
+        // Once Room emits the committed row with matching takeId, it lands even with transcriptId == null.
+        val matching = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 99L).copy(takeId = "take-1")
+        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(other, matching)))
+        // An explicit wordless/save-failed ending yields NOTHING_LANDED even if no row or a stale draft exists.
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, emptyList(), setOf("take-1")))
+        val staleDraft = row(TranscriptEntity.STATUS_DRAFT, "pending", id = 99L).copy(takeId = "take-1")
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(staleDraft), setOf("take-1")))
+    }
+
     /**
      * #560 fell through a default: a status the practice table did not list was read as final. Every status
      * History declares must have an explicit reading, open or final, so the next one fails here rather than
@@ -182,24 +199,12 @@ class OnboardingPolicyTest {
         assertNull(onboardingStepToRecord(OnboardingStage.PRACTICE.ordinal, shown))
     }
 
-    private val dismissed = AppPreferencesState(onboardingDismissed = true)
-    private val dictated = listOf(row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED))
-
-    @Test fun aDismissedSetupWithEveryFactAndADictationIsSettled() {
-        assertTrue(onboardingSettledOutsideTheFlow(dismissed, ready, AutoPasteAvailability.LIVE, dictated))
-    }
-
-    @Test fun aSetupIsNotSettledWhileAnyOfItsFactsIsMissing() {
-        // Still in the guided flow: its practice takes complete rows, and settling would close it under the user.
-        assertFalse(onboardingSettledOutsideTheFlow(AppPreferencesState(), ready, AutoPasteAvailability.LIVE, dictated))
-        // Already complete: nothing to settle.
-        assertFalse(onboardingSettledOutsideTheFlow(dismissed.copy(onboardingComplete = true), ready, AutoPasteAvailability.LIVE, dictated))
-        // No dictation completed yet, or only one still being written.
-        assertFalse(onboardingSettledOutsideTheFlow(dismissed, ready, AutoPasteAvailability.LIVE, emptyList()))
-        assertFalse(onboardingSettledOutsideTheFlow(dismissed, ready, AutoPasteAvailability.LIVE, listOf(row(TranscriptEntity.STATUS_SAVED_UNROUTED, "pending"))))
-        // A required fact missing: auto-paste not live, the microphone, a setup model.
-        assertFalse(onboardingSettledOutsideTheFlow(dismissed, ready, AutoPasteAvailability.PERMITTED_NOT_RUNNING, dictated))
-        assertFalse(onboardingSettledOutsideTheFlow(dismissed, ready.copy(microphoneGranted = false), AutoPasteAvailability.LIVE, dictated))
-        assertFalse(onboardingSettledOutsideTheFlow(dismissed, ready.copy(onboardingPolishModelReady = false), AutoPasteAvailability.LIVE, dictated))
+    /** #563: only a take handed to auto-paste in a field that is not the practice box proves setup. */
+    @Test fun onlyAHandoffToAnotherAppsFieldProvesSetup() {
+        // Most third-party editors carry no view id; a pinned take into one still counts.
+        assertTrue(dictationProvesSetup(DictationTargetPin.PINNED, null, InsertionHandoff.SCHEDULED))
+        assertFalse(dictationProvesSetup(DictationTargetPin.PINNED, OnboardingViewModel.PRACTICE_FIELD_ID, InsertionHandoff.SCHEDULED))
+        assertFalse(dictationProvesSetup(DictationTargetPin.PINNED, "field-1", InsertionHandoff.SERVICE_NOT_RUNNING))
+        assertFalse(dictationProvesSetup(DictationTargetPin.NO_TARGET, null, InsertionHandoff.NO_PINNED_TARGET))
     }
 }

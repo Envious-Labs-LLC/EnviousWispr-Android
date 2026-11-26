@@ -3,7 +3,13 @@ package com.envi.wispr.ui
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AutoPasteAvailability
-import com.envi.wispr.settings.AppPreferencesState
+import com.envi.wispr.paste.DictationTargetPin
+import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.settings.AppPreferences
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * The setup screens in order. DEMO (founder 2026-09-14) is the drawn walkthrough of the bubble that
@@ -19,13 +25,15 @@ internal enum class PracticeLesson { TAP, HOLD }
  * One take of the PRACTICE BOX the screen is following, from the moment the session owner left IDLE
  * with the box as its target. Everything here is copied off the owner's published snapshot: [held]
  * is the gesture its token named (null for a take with no bubble token), [transcriptId] is the History
- * row the owner created for it (null until it has), [ended] is the owner back at IDLE. Nothing is
+ * row the owner created for it (null until it has), [ended] is the owner back at IDLE, and [takeId]
+ * is the stable take id published at `showStarting` before any row exists (#560). Nothing is
  * inferred from time or from the order of rows (Codex reviews 2 to 9, 2026-09-14).
  */
 internal data class PracticeTake(
     val held: Boolean?,
     val transcriptId: Long? = null,
     val ended: Boolean = false,
+    val takeId: String? = null,
 )
 
 /**
@@ -76,13 +84,23 @@ internal fun practiceRowStillOpen(status: String): Boolean? = when (status) {
 
 /**
  * What the practice screen says about [take]: null while the owner is busy with it; otherwise read
- * off the row whose id the owner published. A take the owner never gave a row (cancelled before
- * capture), or whose row the owner deleted (silent, cancelled), landed nothing. The owner goes IDLE
- * before its row is final (`surface.hide()` does not wait for the route), so an open row is WORKING.
+ * off the row matching [PracticeTake.takeId] (falling back to [PracticeTake.transcriptId]). The owner
+ * goes IDLE before its row is final (`surface.hide()` does not wait for History or the route), so a
+ * row still open OR not yet emitted by Room for an identified take that has not ended without a row
+ * ([endedWithoutRow]) is WORKING. Only an explicit wordless/save-failed ending or a final non-landed
+ * row yields NOTHING_LANDED (#560).
  */
-internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows: List<TranscriptEntity>): PracticeOutcome? {
+internal fun judgePracticeTake(
+    take: PracticeTake,
+    lesson: PracticeLesson,
+    rows: List<TranscriptEntity>,
+    endedWithoutRow: Set<String> = emptySet(),
+): PracticeOutcome? {
     if (!take.ended) return null
-    val row = take.transcriptId?.let { id -> rows.firstOrNull { it.id == id } } ?: return PracticeOutcome.NOTHING_LANDED
+    if (take.takeId != null && take.takeId in endedWithoutRow) return PracticeOutcome.NOTHING_LANDED
+    val row = take.takeId?.let { id -> rows.firstOrNull { it.takeId == id } }
+        ?: take.transcriptId?.let { id -> rows.firstOrNull { it.id == id } }
+    if (row == null) return if (take.takeId != null) PracticeOutcome.WORKING else PracticeOutcome.NOTHING_LANDED
     if (practiceRowStillOpen(row.status) == true) return PracticeOutcome.WORKING
     return when {
         row.status != TranscriptEntity.STATUS_COMPLETED -> PracticeOutcome.NOTHING_LANDED
@@ -92,51 +110,91 @@ internal fun judgePracticeTake(take: PracticeTake, lesson: PracticeLesson, rows:
     }
 }
 
-/** What the screen shows for the followed take, and the verdict to report: non-null at most once per take. */
-internal data class PracticeJudgement(val shown: PracticeOutcome?, val report: PracticeOutcome?)
+/** One `onboarding.practice` row: the lesson the take answered and its final verdict. */
+internal data class PracticeReport(val lesson: PracticeLesson, val outcome: PracticeOutcome)
+
+/** What the screen shows for the latest take, and the rows to report now: each take's final verdict, once. */
+internal data class PracticeJudgement(val shown: PracticeOutcome?, val reports: List<PracticeReport>)
 
 /**
- * The one practice take the screen follows, and its one `onboarding.practice` verdict (#560). The owner's
- * two signals are independent: the snapshot going IDLE ends the take, and the History row reaching its final
- * status says where the words went, and IDLE routinely comes first. So the verdict is reported only once it
- * is final, never while it is [PracticeOutcome.WORKING], and only once per take. Pure, so every order the
- * two signals can arrive in is replayed by `OnboardingPolicyTest` without a phone.
+ * The practice takes the screen follows, and their `onboarding.practice` rows (#560). The owner's signals
+ * are independent: the snapshot going IDLE ends the take, `endedWithoutRow` marks takes with no saved row,
+ * and the History row reaching its final status says where the words went; IDLE routinely comes first. So a
+ * take is reported only once its verdict is final, never while it is [PracticeOutcome.WORKING], and only
+ * once. A take that ended and is still WORKING when the next one starts stays followed until its final
+ * verdict arrives; only the latest take drives the screen. Pure, so every order the signals can arrive in
+ * is replayed by `OnboardingTelemetryTest` without a phone.
  */
 internal class PracticeTakeFollower {
-    var take: PracticeTake? = null
-        private set
-    private var reported = false
+    private class Followed(val take: PracticeTake, val lesson: PracticeLesson)
+
+    private var latest: Followed? = null
+    private var latestReported = false
+    /** Ended takes whose verdict was still WORKING when a newer take started. */
+    private val unresolved = mutableListOf<Followed>()
+
+    val take: PracticeTake? get() = latest?.take
 
     /**
      * The owner's snapshot, reduced by the caller: [ours] is a take aimed at the practice box, false once the
-     * owner is IDLE. [transcriptId] and [held] are the snapshot's, null until it names them.
+     * owner is IDLE. [takeId], [transcriptId] and [held] are the snapshot's, null until it names them;
+     * [lesson] is the lesson on screen when the take starts.
      */
-    fun follow(ours: Boolean, transcriptId: Long?, held: Boolean?) {
-        val current = take
-        take = if (ours) {
-            if (current == null || current.ended) {
-                reported = false
-                PracticeTake(held = held, transcriptId = transcriptId)
+    fun follow(ours: Boolean, transcriptId: Long?, held: Boolean?, lesson: PracticeLesson, takeId: String? = null) {
+        val current = latest
+        latest = if (ours) {
+            val replaced = current != null && !current.take.ended &&
+                takeId != null && current.take.takeId != null && current.take.takeId != takeId
+            if (current == null || current.take.ended || replaced) {
+                if (current != null && !latestReported) {
+                    val ended = if (current.take.ended) current else Followed(current.take.copy(ended = true), current.lesson)
+                    unresolved += ended
+                }
+                latestReported = false
+                Followed(PracticeTake(held = held, transcriptId = transcriptId, takeId = takeId), lesson)
             } else {
-                current.copy(held = current.held ?: held, transcriptId = current.transcriptId ?: transcriptId)
+                val take = current.take
+                Followed(
+                    take.copy(
+                        held = take.held ?: held,
+                        transcriptId = take.transcriptId ?: transcriptId,
+                        takeId = take.takeId ?: takeId,
+                    ),
+                    current.lesson,
+                )
             }
         } else {
-            current?.let { if (it.ended) it else it.copy(ended = true) }
+            current?.let { if (it.take.ended) it else Followed(it.take.copy(ended = true), it.lesson) }
         }
     }
 
     /** Null while no take is followed. */
-    fun judge(lesson: PracticeLesson, rows: List<TranscriptEntity>): PracticeJudgement? {
-        val current = take ?: return null
-        val outcome = judgePracticeTake(current, lesson, rows)
-        val report = outcome?.takeIf { it != PracticeOutcome.WORKING && !reported }
-        if (report != null) reported = true
-        return PracticeJudgement(outcome, report)
+    fun judge(rows: List<TranscriptEntity>, endedWithoutRow: Set<String> = emptySet()): PracticeJudgement? {
+        val reports = mutableListOf<PracticeReport>()
+        unresolved.removeAll { followed ->
+            val outcome = judgePracticeTake(followed.take, followed.lesson, rows, endedWithoutRow)
+                ?.takeIf { it != PracticeOutcome.WORKING }
+                ?: return@removeAll false
+            reports += PracticeReport(followed.lesson, outcome)
+            true
+        }
+        val current = latest ?: return if (reports.isEmpty()) null else PracticeJudgement(null, reports)
+        val outcome = judgePracticeTake(current.take, current.lesson, rows, endedWithoutRow)
+        if (outcome != null && outcome != PracticeOutcome.WORKING && !latestReported) {
+            latestReported = true
+            reports += PracticeReport(current.lesson, outcome)
+        }
+        return PracticeJudgement(outcome, reports)
     }
 
-    /** The take is no longer the screen's: a take it stopped watching, or the lesson moved on. */
+    /**
+     * The latest take is no longer the screen's: one it stopped watching mid-way, or the lesson moved on. An
+     * ended take still waiting for its row stays followed, since its identity is known.
+     */
     fun forget() {
-        take = null
+        val current = latest
+        if (current != null && current.take.ended && !latestReported) unresolved += current
+        latest = null
     }
 }
 
@@ -173,23 +231,35 @@ internal fun onboardingStepToRecord(step: Int, stage: OnboardingStage): Int? {
 }
 
 /**
- * #563: setup finished in substance by a user who left the guided flow with "Set up later". Every fact the
- * flow requires is in place (its two models, the microphone, live auto-paste) and one of their dictations
- * completed, yet `onboarding_complete` stayed false for as long as they kept using the bubble. Only a
- * DISMISSED setup qualifies: the flow's screens are not showing then, whereas settling a setup the user is
- * still walking through would close it under them, and practice takes complete rows too.
+ * #563: one take proves setup works when it was pinned to an editor and handed to auto-paste, in a field that
+ * is not the practice box. That take needed the microphone, the speech model and a live auto-paste service, so
+ * a user who dictates this way is set up whether or not they ever finished, or dismissed, the guided flow.
+ * Practice takes are excluded: settling then would close setup under the user mid-lesson.
  */
-internal fun onboardingSettledOutsideTheFlow(
-    preferences: AppPreferencesState,
-    readiness: AppReadiness,
-    autoPaste: AutoPasteAvailability,
-    rows: List<TranscriptEntity>,
-): Boolean =
-    preferences.onboardingDismissed &&
-        !preferences.onboardingComplete &&
-        readiness.setupModelsReady() &&
-        readiness.setupPermissionsReady(autoPaste) &&
-        rows.any { it.status == TranscriptEntity.STATUS_COMPLETED }
+internal fun dictationProvesSetup(pin: DictationTargetPin, targetFieldId: String?, handoff: InsertionHandoff): Boolean =
+    pin == DictationTargetPin.PINNED &&
+        handoff == InsertionHandoff.SCHEDULED &&
+        targetFieldId != OnboardingViewModel.PRACTICE_FIELD_ID
+
+/**
+ * Marks setup complete after a take that [dictationProvesSetup] (#563), so `app.launched` stops reporting an
+ * active bubble user as never set up. Application-owned (`ModelBootstrapApplication`), because the session's
+ * Service stops right after the handoff and most such takes start with the app closed. The guided flow's own
+ * models must be on the phone too. No `onboarding.completed` row: that row is the guided flow's last step,
+ * which this user did not take there. The write is never awaited and never fails the take.
+ */
+internal class OnboardingSettlement(
+    private val preferences: AppPreferences,
+    private val setupModelsReady: () -> Boolean,
+    private val scope: CoroutineScope,
+) {
+    fun dictationProvedSetup(): Job = scope.launch {
+        runCatching {
+            if (preferences.authoritativeState.first().onboardingComplete) return@runCatching
+            if (setupModelsReady()) preferences.completeOnboarding()
+        }
+    }
+}
 
 /** A slow file check cannot overwrite a newer permission answer. */
 internal fun AppReadiness.withVerifiedModels(checked: AppReadiness): AppReadiness = copy(

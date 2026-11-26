@@ -26,7 +26,7 @@ android {
         buildConfigField("int", "MIN_SDK", "$minSdk")
         targetSdk = 36
         versionCode = providers.gradleProperty("playVersionCode").orNull?.toInt() ?: 3
-        versionName = "0.2.0"
+        versionName = "0.3.0"
         // Telemetry keys (issue #176). Both are public client-side identifiers, not secrets: the PostHog
         // project key and the Sentry DSN are embedded in every client that uses them. They come from
         // gradle properties (`-PtelemetryPostHogKey=... -PtelemetrySentryDsn=...`, set by the Play

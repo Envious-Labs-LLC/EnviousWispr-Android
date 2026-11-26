@@ -386,7 +386,7 @@ class RecognizerOwnerTest {
             owner.use(6, request, allowed) { rec -> seen += rec?.name; return@use {} }
     }
 
-    // MUTATION: drop `mayOpen()` from the attempt turns these red (the cancelled take opens, or eats the live retry).
+    // MUTATION: make loadsFinished++ unconditional and this test fails. Removing mayOpen() fails the next test.
     @Test fun aTakeCancelledWhileQueuedNeitherOpensNorUsesUpTheNextTakesRetry() {
         val rig = LazyLoadRig({ null }, { Recognizer("recovered") })
         rig.load()
@@ -407,7 +407,9 @@ class RecognizerOwnerTest {
         val cancelled = request(rig.owner)
         rig.take(cancelled)
         cancelled.cancel()
-        rig.take(allowed = { false }) // A recovery revoked by a foreground take (AsrService.Enrollment.allowed).
+        var allowed = true
+        rig.take(allowed = { allowed })
+        allowed = false // A recovery revoked while queued by a foreground take (AsrService.Enrollment.allowed).
         rig.worker.runAll()
         assertEquals(1, rig.opened)
     }

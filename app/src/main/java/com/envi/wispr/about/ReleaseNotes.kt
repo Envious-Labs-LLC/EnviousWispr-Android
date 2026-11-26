@@ -47,6 +47,16 @@ internal object ReleaseNotes {
 
     val entries: List<ReleaseNote> = listOf(
         ReleaseNote(
+            version = "0.3.0",
+            date = "November 2026",
+            lines = listOf(
+                "Choose System, Light, or Dark theme in Appearance, search Settings by keyword, and see a badge for unread What's New notes.",
+                "Added Casual mode for relaxed capitalization and punctuation, plus wider Reduce Motion support.",
+                "A local AI Polish timeout no longer disables local polishing.",
+                "Improved responsiveness when detecting text fields. The app now retries if the speech model fails to load at startup.",
+            ),
+        ),
+        ReleaseNote(
             version = "0.2.0",
             date = "November 2026",
             lines = listOf(

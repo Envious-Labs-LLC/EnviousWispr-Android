@@ -473,25 +473,29 @@ class OnboardingTelemetryTest {
         assertEquals(listOf("model check failed"), synchronized(errors) { errors.map { it.message } })
         assertFalse(boomPrefs.state.first().onboardingComplete)
 
-        // CancellationException inside settleAsync must be rethrown, never routed to onError.
+        // CancellationException inside settleAsync must be rethrown (cancelling the Job), never routed to onError.
         val cancelErrors = mutableListOf<Throwable>()
         val cancelJob = SupervisorJob()
         val cancelScope = CoroutineScope(cancelJob + Dispatchers.IO)
         val entered = java.util.concurrent.CountDownLatch(1)
-        val cancellingSettlement = OnboardingSettlement(
-            preferences = boomPrefs,
-            setupModelsReady = {
-                entered.countDown()
-                throw kotlinx.coroutines.CancellationException("cancelled")
-            },
-            scope = cancelScope,
-            onError = { synchronized(cancelErrors) { cancelErrors += it } },
-        )
-        assertNull(cancellingSettlement.registerCandidate("take-cancel"))
-        checkNotNull(cancellingSettlement.onTerminal("take-cancel", InsertionResults.COMMITTED))
-        withTimeout(15_000L) { cancellingSettlement.awaitPending() }
-        assertTrue(entered.await(5, TimeUnit.SECONDS))
-        assertEquals(emptyList<Throwable>(), synchronized(cancelErrors) { cancelErrors.toList() })
-        cancelJob.cancelAndJoin()
+        try {
+            val cancellingSettlement = OnboardingSettlement(
+                preferences = boomPrefs,
+                setupModelsReady = {
+                    entered.countDown()
+                    throw kotlinx.coroutines.CancellationException("cancelled")
+                },
+                scope = cancelScope,
+                onError = { synchronized(cancelErrors) { cancelErrors += it } },
+            )
+            assertNull(cancellingSettlement.registerCandidate("take-cancel"))
+            val cancelledJob = checkNotNull(cancellingSettlement.onTerminal("take-cancel", InsertionResults.COMMITTED))
+            withTimeout(15_000L) { cancellingSettlement.awaitPending() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertTrue("CancellationException must cancel the settlement Job rather than being swallowed", cancelledJob.isCancelled)
+            assertEquals(emptyList<Throwable>(), synchronized(cancelErrors) { cancelErrors.toList() })
+        } finally {
+            cancelJob.cancelAndJoin()
+        }
     }
 }

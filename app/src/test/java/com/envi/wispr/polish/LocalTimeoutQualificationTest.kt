@@ -2,6 +2,8 @@ package com.envi.wispr.polish
 
 import android.content.SharedPreferences
 import com.envi.wispr.processing.ProcessingBackend
+import com.envi.wispr.processing.ProcessingCheckResult
+import com.envi.wispr.processing.ProcessingCheckStatus
 import com.envi.wispr.processing.ProcessingEvidenceStamp
 import com.envi.wispr.processing.ProcessingObservation
 import com.envi.wispr.processing.ProcessingPreference
@@ -52,16 +54,44 @@ class LocalTimeoutQualificationTest {
         assertEquals(Result.success(gpu), nextTakeLoads(custom))
     }
 
+    /** The engine's timeout fact for [requested], from the resident instance `run` would have generated on. */
+    private fun timedOut(requested: S1LoadConfiguration, resident: S1LoadedConfiguration, ready: Boolean = true): ProcessingUsage {
+        val policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT, requested.preference, requested.qualification, LocalPolishModel.S1_MINI)
+        // `expireLocal` stamps the engine's timeout fact when the deadline wins; the take is recorded after delivery.
+        return localTimeoutUsage(resident, ready, requested, policy, sha).copy(generationStamp = stamp(200))
+    }
+
     @Test fun aLocalTimeoutLeavesACustomPriorityAbleToLoadOnTheNextTakeAndAfterARestart() {
         stageQualifiedCustomPriority()
         val requested = S1LoadConfiguration(context, geniex, custom, repository().loadS1Qualification(), artifactStamp = "installed")
-        val policy = PolishPolicy.LocalS1(S1ControlSettings.DEFAULT, custom, requested.qualification, LocalPolishModel.S1_MINI)
-        // `expireLocal` stamps the engine's timeout fact when the deadline wins; the take is recorded after delivery.
-        val timedOut = localTimeoutUsage(gpu, requested, policy, sha).copy(generationStamp = stamp(200))
-        repository().recordProcessing(observation(1, PolishReason.LOCAL_TIMEOUT, timedOut))
+        val resident = S1LoadedConfiguration().also { it.ensure(requested, failureStamp = { stamp(100) }) { gpu } }
+        repository().recordProcessing(observation(1, PolishReason.LOCAL_TIMEOUT, timedOut(requested, resident)))
 
         assertEquals("the timeout disqualified a route", setOf(gpu, cpu), repository().loadS1Qualification().backends)
         assertEquals("the next take after a timeout could not load local polish", Result.success(gpu), nextTakeLoads(custom))
+    }
+
+    @Test fun aTimeoutOnTheFallbackStillRecordsThePreferredRouteThatFailedToLoad() {
+        stageQualifiedCustomPriority()
+        val requested = S1LoadConfiguration(context, geniex, custom, repository().loadS1Qualification(), artifactStamp = "installed")
+        // The graphics route failed to load at stamp 100, the processor took over, and its generation then timed out.
+        val resident = S1LoadedConfiguration().also { it.ensure(requested, failures = { setOf(gpu) }, failureStamp = { stamp(100) }) { cpu } }
+        repository().recordProcessing(observation(1, PolishReason.LOCAL_TIMEOUT, timedOut(requested, resident)))
+
+        assertEquals("the load failure was lost or the timeout struck the fallback", setOf(cpu), repository().loadS1Qualification().backends)
+        assertEquals("the next take did not go straight to the working fallback", Result.success(cpu), nextTakeLoads(custom))
+    }
+
+    @Test fun aLateTimeoutForAnOlderIdentityLeavesTheCurrentSavedEvidenceAlone() {
+        val current = "c".repeat(64)
+        repository().setS1Processing(custom)
+        val saved = ProcessingQualification.of(current, setOf(gpu, cpu)).encode()
+        prefs.values["s1_processing_qualification"] = saved
+        // A take admitted under the previous model revision answers after the qualification moved to the current one.
+        val older = S1LoadConfiguration(context, geniex, custom, ProcessingQualification.of(context, setOf(gpu, cpu)), artifactStamp = "installed")
+        repository().recordProcessing(observation(1, PolishReason.LOCAL_TIMEOUT, timedOut(older, S1LoadedConfiguration(), ready = false)))
+
+        assertEquals("a take that proved nothing replaced the current evidence", saved, prefs.values["s1_processing_qualification"])
     }
 
     @Test fun aRealRuntimeFailureStillTakesEveryStandardRouteOutOfACustomPriority() {
@@ -75,6 +105,15 @@ class LocalTimeoutQualificationTest {
         val refused = nextTakeLoads(custom).exceptionOrNull()
         assertTrue("a runtime that cannot start was loaded again: $refused", refused is IllegalArgumentException)
         assertEquals("No qualified processing path", refused?.message)
+    }
+
+    @Test fun aRuntimeFailedSupportCheckStillTakesEveryStandardRouteOutOfACustomPriority() {
+        stageQualifiedCustomPriority()
+        val accepted = repository().acceptQualification(ProcessingCheckResult(1, gpu, context, ProcessingCheckStatus.RUNTIME_FAILED, stamp(200))) { true }
+
+        assertEquals(emptySet<ProcessingBackend>(), accepted?.backends)
+        assertEquals(emptySet<ProcessingBackend>(), repository().loadS1Qualification().backends)
+        assertEquals("No qualified processing path", nextTakeLoads(custom).exceptionOrNull()?.message)
     }
 
     @Test fun evidenceAnEarlierTimeoutPoisonedRecoversThroughRetryWithoutLosingTheCustomOrder() {

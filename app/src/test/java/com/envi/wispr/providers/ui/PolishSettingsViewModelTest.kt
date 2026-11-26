@@ -140,6 +140,33 @@ class PolishSettingsViewModelTest {
         assertFalse("The world changed, so an old result/new qualification pair would be torn", gpu in repository.loadS1Qualification().backends)
     }
 
+    /**
+     * Product Outcome (#559): a result saved before the fix recorded a local timeout as a runtime failure. When this
+     * fails, the user sees "could not start" on every processing route after one slow take, while a real runtime
+     * failure still shows it.
+     */
+    @Test fun aSavedTimeoutFromBeforeTheFixPaintsNoRuntimeFailureButARealOneStillDoes() {
+        val model = com.envi.wispr.polish.LocalPolishModel.S1_MINI
+        val runtime = com.envi.wispr.polish.S1RuntimeKind.runtimeKindFor(model)
+        val ctx = com.envi.wispr.processing.ProcessingEnvironment.s1ContextId(model.descriptor(), runtime)
+        val implemented = com.envi.wispr.processing.ProcessingEnvironment.implementedBackends(runtime, model)
+        val pref = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(implemented.toList())
+        settingsPrefs.values["s1_processing"] = pref.encode()
+        awaitDone(build())
+        fun show(id: String, reason: com.envi.wispr.polish.PolishReason): Map<com.envi.wispr.processing.ProcessingBackend, com.envi.wispr.processing.ProcessingCheckStatus?> {
+            val usage = com.envi.wispr.processing.ProcessingUsage(null, ctx, pref, false, "", runtimeFailed = true, modelId = model.wire,
+                generationStamp = com.envi.wispr.processing.ProcessingEvidenceStamp(1, 200))
+            settingsPrefs.values["latest_processing_result"] = com.envi.wispr.processing.ProcessingObservation(id, 1, 100, "local", reason, pref, usage, 1).encode()
+            // The fake store fires no change listener, so each read is the stream's own first emission.
+            val observing = viewModel.viewModelScope.launch { viewModel.observeProcessingUpdates() }
+            try { return awaitSettings { it.latestProcessingResult?.takeId == id }.processingChecks } finally { observing.cancel(); awaitDone(observing) }
+        }
+        assertEquals("a saved timeout was shown as software that could not start", emptyMap<com.envi.wispr.processing.ProcessingBackend, com.envi.wispr.processing.ProcessingCheckStatus?>(),
+            show("legacy-timeout", com.envi.wispr.polish.PolishReason.LOCAL_TIMEOUT))
+        assertEquals(implemented.associateWith { com.envi.wispr.processing.ProcessingCheckStatus.RUNTIME_FAILED },
+            show("runtime-failure", com.envi.wispr.polish.PolishReason.LOCAL_NOT_READY))
+    }
+
     @Test fun switchingLocalPolishModelPersistsSelectionPreservesS1PreferenceAndClearsChecks() {
         val customOrder = com.envi.wispr.processing.ProcessingPreference.DEFAULT.custom(
             listOf(com.envi.wispr.processing.ProcessingBackend.GPU, com.envi.wispr.processing.ProcessingBackend.CPU),

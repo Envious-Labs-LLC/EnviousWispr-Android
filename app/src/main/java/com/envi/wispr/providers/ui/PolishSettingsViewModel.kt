@@ -190,9 +190,11 @@ internal class PolishSettingsViewModel(
                         if (observation != providerSettings.value.latestProcessingResult) observation?.local?.let { usage ->
                             val usageModel = LocalPolishModel.fromWire(usage.modelId)
                             if (usageModel == activeModel && usage.contextId == activeContextId) {
-                                val failures = if (usage.runtimeFailed) ProcessingEnvironment.implementedBackends(activeRuntime, usageModel) else usage.failedBackends
+                                // A result saved before #559 marked a local timeout as a runtime failure; a timeout never is one.
+                                val runtimeFailed = usage.runtimeFailed && observation.reason != com.envi.wispr.polish.PolishReason.LOCAL_TIMEOUT
+                                val failures = if (runtimeFailed) ProcessingEnvironment.implementedBackends(activeRuntime, usageModel) else usage.failedBackends
                                 failures.forEach { backend ->
-                                    if (!checks.containsKey(backend) || checks[backend] != null) checks = checks + (backend to if (usage.runtimeFailed) ProcessingCheckStatus.RUNTIME_FAILED else ProcessingCheckStatus.LOAD_FAILED)
+                                    if (!checks.containsKey(backend) || checks[backend] != null) checks = checks + (backend to if (runtimeFailed) ProcessingCheckStatus.RUNTIME_FAILED else ProcessingCheckStatus.LOAD_FAILED)
                                 }
                             }
                         }

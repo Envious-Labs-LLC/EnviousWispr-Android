@@ -34,23 +34,33 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The processing fact a local generation deadline reports (#559): the route that was running, and no failure.
- * A timeout means this one generation ran past its budget, not that the native runtime cannot start. Reporting it
- * as a runtime failure struck every standard route from the saved evidence, so a Custom priority was left with no
- * qualified route and every later take, across restarts, answered `LOCAL_NOT_READY`. The take still falls back to
- * the deterministic text, and the next request starts on a fresh process. Real runtime and load failures keep
- * their own producers (the load observation in `run` and the qualification check), which this does not touch.
- * `expireLocal` stamps it when the deadline wins.
+ * The processing fact a local generation deadline reports (#559): the route that was running and what its load
+ * already proved, and no failure of its own. A timeout means this one generation ran past its budget, not that the
+ * native runtime cannot start. Reporting it as a runtime failure struck every standard route from the saved evidence,
+ * so a Custom priority was left with no qualified route and every later take, across restarts, answered
+ * `LOCAL_NOT_READY`. The take still falls back to the deterministic text, and the next request starts on a fresh
+ * process. A route that failed to LOAD before the running one took over is still reported, under the load's own stamp,
+ * because that failure is real whatever the generation did. Real runtime failures keep their own producers (the load
+ * observation in `run` and the qualification check), which this does not touch.
+ *
+ * [resident] is read with the same test `run` applies before it generates, so a reused instance is recognised even
+ * when its configuration is a newer copy of the captured one. `expireLocal` stamps the result when the deadline wins.
  */
 internal fun localTimeoutUsage(
-    running: ProcessingBackend?,
+    resident: S1LoadedConfiguration,
+    modelReady: Boolean,
     requested: S1LoadConfiguration,
     policy: PolishPolicy.LocalS1,
     artifactSha256: String,
-): ProcessingUsage = ProcessingUsage(
-    running, requested.contextId, policy.processing, acceptedLocalText = false,
-    runtimeFailed = false, modelId = policy.model.wire, artifactStamp = requested.artifactStamp, artifactSha256 = artifactSha256,
-)
+): ProcessingUsage {
+    val running = resident.loaded?.takeIf { modelReady && requested.artifactStamp.isNotEmpty() && resident.matches(requested) }
+    return ProcessingUsage(
+        running?.backend, requested.contextId, policy.processing, acceptedLocalText = false,
+        failedBackendCodes = running?.failedBackendCodes.orEmpty(), runtimeFailed = false, modelId = policy.model.wire,
+        artifactStamp = requested.artifactStamp, artifactSha256 = artifactSha256, loadStamp = running?.failureStamp,
+        generationFailed = false,
+    )
+}
 
 /**
  * Keeps S1-mini loaded in a separate process so ASR memory can be reclaimed independently.
@@ -325,7 +335,7 @@ class PolishService : Service() {
             )
         }
         val timeoutUsage = if (effectivePolicy is PolishPolicy.LocalS1 && captured != null) {
-            localTimeoutUsage(resident.loaded?.takeIf { it.requested == captured }?.backend, captured, effectivePolicy, installedS1Sha256(effectivePolicy.model.descriptor()))
+            localTimeoutUsage(resident, modelReady, captured, effectivePolicy, installedS1Sha256(effectivePolicy.model.descriptor()))
         } else null
         // Armed only for a local generation: the cloud client bounds itself and honours cancel.
         val armed = if (effectivePolicy is PolishPolicy.LocalS1 && !poisoned.get()) {

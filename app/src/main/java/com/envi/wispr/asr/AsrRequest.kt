@@ -39,6 +39,9 @@ internal class AsrRequest(
         if (clean) finishQueued()
     }
 
+    /** Still queued and uncancelled with its owner open: worth opening a model for (#562). */
+    fun canStartModelLoad(): Boolean = synchronized(lock) { work == Work.Queued && ownerOpen() }
+
     /** A cancelled queued wrapper is inert BEFORE starting any watchdog/model work. */
     fun claim(boundMs: Long): Boolean {
         var abandon = false

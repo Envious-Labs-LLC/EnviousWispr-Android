@@ -153,6 +153,7 @@ class SettingsActivity : ComponentActivity() {
                         ),
                         onboarding = OnboardingActions(
                             onStep = shellViewModel::setOnboardingStep,
+                            onAdvance = shellViewModel::advanceOnboardingStep,
                             onDismiss = shellViewModel::dismissOnboarding,
                             onResume = shellViewModel::resumeOnboarding,
                             onComplete = shellViewModel::completeOnboarding,

@@ -73,6 +73,7 @@ internal fun EnviousWisprApp(
             readiness = readiness,
             autoPaste = autoPaste,
             onStepChange = actions.onboarding.onStep,
+            onAdvance = actions.onboarding.onAdvance,
             onDismiss = actions.onboarding.onDismiss,
             onRequestMicrophone = actions.permissions.onRequestMicrophone,
             onRequestNotifications = actions.permissions.onRequestNotifications,

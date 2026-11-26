@@ -57,6 +57,8 @@ internal class PermissionActions(
 /** Onboarding progress; read by onboarding and by the Permissions page's continue-setup control. */
 internal class OnboardingActions(
     val onStep: (Int) -> Unit,
+    /** The step the setup screen moved to without a tap (#563). */
+    val onAdvance: (from: Int, to: Int) -> Unit,
     val onDismiss: () -> Unit,
     val onResume: () -> Unit,
     val onComplete: () -> Unit,

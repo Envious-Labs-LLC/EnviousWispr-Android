@@ -163,6 +163,14 @@ class DictationSessionService : Service() {
             runCatching { com.envi.wispr.models.ModelBootstrapApplication.speechKeepAlive(this@DictationSessionService)?.takeEnded(takeId) }
         }
 
+        override fun registerSettlementCandidate(takeId: String) {
+            ModelBootstrapApplication.takeDelivery(this@DictationSessionService).settlement.registerCandidate(takeId)
+        }
+
+        override fun onTakeDeliveryTerminal(takeId: String, result: String) {
+            ModelBootstrapApplication.takeDelivery(this@DictationSessionService).onTerminal(takeId, result)
+        }
+
         override fun postToMain(runnable: Runnable) {
             mainHandler.post(runnable)
         }

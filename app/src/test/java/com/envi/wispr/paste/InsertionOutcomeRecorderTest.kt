@@ -71,8 +71,13 @@ class InsertionOutcomeRecorderTest {
     private val events = mutableListOf<AnalyticsEvent>()
     private val crumbs = mutableListOf<Map<String, String?>>()
     private val warnings = mutableListOf<String>()
+    private val terminals = mutableListOf<Pair<String, String>>()
 
-    private fun recorder(dao: OutcomeDao, admitted: Enqueued = Enqueued.ACCEPTED) = InsertionOutcomeRecorder(
+    private fun recorder(
+        dao: OutcomeDao,
+        admitted: Enqueued = Enqueued.ACCEPTED,
+        onTerminal: (String, String) -> Unit = { takeId, result -> terminals += takeId to result },
+    ) = InsertionOutcomeRecorder(
         enqueue = { _, kind, body ->
             assertEquals("an outcome is a take's last word on its row", WriteKind.TERMINAL, kind)
             if (admitted == Enqueued.ACCEPTED) runBlocking { body(TranscriptRepository(dao, clock = { 1_000L })) }
@@ -81,6 +86,7 @@ class InsertionOutcomeRecorderTest {
         capture = { events += it },
         outcomeTrail = { crumbs += it },
         warn = { warnings += it },
+        onTerminal = onTerminal,
     )
 
     private fun ending(row: HistoryRow, takeId: String? = "take-1", endToEndMs: Long? = null) = InsertionEnding(
@@ -201,5 +207,49 @@ class InsertionOutcomeRecorderTest {
 
         recorder(dao, admitted = Enqueued.REJECTED).record(verifiedRecovery)
         assertTrue("rejected recovery write logs a warning", warnings.any { it.contains("19") })
+    }
+
+    /** #560, #563: live takes notify the terminal observer independently of History save and survive observer errors. */
+    @Test fun liveTakesNotifyTerminalObserverIndependentlyOfHistoryAndStayLimbSafe() {
+        val dao = OutcomeDao(answer = 1)
+        recorder(dao).record(ending(SavedRow(7L), takeId = "take-saved"))
+        recorder(dao).record(ending(HistoryRow.None, takeId = "take-nosave"))
+        recorder(dao, admitted = Enqueued.REJECTED).record(ending(SavedRow(8L), takeId = "take-rejected"))
+        assertEquals(
+            listOf(
+                "take-saved" to InsertionResults.COMMITTED,
+                "take-nosave" to InsertionResults.COMMITTED,
+                "take-rejected" to InsertionResults.COMMITTED,
+            ),
+            terminals,
+        )
+
+        // Throwing observer must never prevent History write or InsertionTerminal event (limb-safe).
+        val throwingDao = OutcomeDao(answer = 1)
+        events.clear()
+        recorder(throwingDao, onTerminal = { _, _ -> error("observer failure") })
+            .record(ending(SavedRow(9L), takeId = "take-limb"))
+        assertEquals(1, throwingDao.outcomes.size)
+        assertEquals(1, events.size)
+    }
+
+    /** #560, #563: History recovery retries and debug probes (null takeId) do not notify the live terminal observer. */
+    @Test fun recoveryAndDebugProbeDoNotNotifyTerminalObserver() {
+        val dao = OutcomeDao(answer = 1)
+        recorder(dao).record(ending(HistoryRow.None, takeId = null))
+        recorder(dao).record(
+            InsertionEnding(
+                row = HistoryRow.Saved,
+                takeId = "take-recovery",
+                targetPackage = "com.google.android.gm",
+                status = TranscriptEntity.STATUS_COMPLETED,
+                result = InsertionResults.COMMITTED,
+                interrupted = false,
+                clipboard = null,
+                latencyMs = 100L,
+                recoveryTranscriptId = 21L,
+            ),
+        )
+        assertTrue("recovery and probe must not fire live terminal observer", terminals.isEmpty())
     }
 }

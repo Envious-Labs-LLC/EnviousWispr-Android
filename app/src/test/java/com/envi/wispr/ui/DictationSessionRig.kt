@@ -122,7 +122,11 @@ internal class DictationSessionRig {
     /** The words' last resort (#288), on the observer's scope: application-owned in production, so it outlives the owner. */
     val rescuedWords = RescuedWords(
         rescueDir, saveScope, wallClock = { 1_000L }, warn = { line -> log.warn(line) },
-        beforeWrite = { if (rescueWriteDelayMs > 0L) kotlinx.coroutines.delay(rescueWriteDelayMs) },
+        beforeWrite = {
+            rescueWriteEntered?.countDown()
+            holdRescueWrite?.await()
+            if (rescueWriteDelayMs > 0L) kotlinx.coroutines.delay(rescueWriteDelayMs)
+        },
     )
 
     /** The start-up recovery's owner (#346), on the observer's scope like the rescue store; no telemetry in the rig. */
@@ -134,6 +138,9 @@ internal class DictationSessionRig {
 
     /** When set, each rescue write starts this late (#288): well inside the owner's bound, so only its wait sees KEPT. */
     @Volatile var rescueWriteDelayMs = 0L
+    /** Deterministic rescue-write hold gate for teardown-during-awaitRescue tests (#560). */
+    @Volatile var holdRescueWrite: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    @Volatile var rescueWriteEntered: CountDownLatch? = null
 
     /** The observer's breadcrumbs, as (message, data) (#304). */
     val breadcrumbs = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
@@ -165,6 +172,8 @@ internal class DictationSessionRig {
         preparationBoundMs: Long = 5_000L,
         /** Production's compile by default; the #290 rows throw or hold it. */
         compileMatcher: (List<CustomTerm>) -> com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher = com.envi.wispr.vocabulary.StructuredTermRestorer::compile,
+        /** Production's bound by default; teardown-during-awaitRescue rows widen it to avoid CI wall-clock flake. */
+        rescueWaitBoundMs: Long = RescuedWords.RESCUE_WRITE_BOUND_MS,
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
         surface = surface,
@@ -209,6 +218,7 @@ internal class DictationSessionRig {
         preparationBoundMs = preparationBoundMs,
         compileMatcher = compileMatcher,
         swapGate = swapGate,
+        rescueWaitBoundMs = rescueWaitBoundMs,
     )
 
     /** The rig's own model-swap gate (#108), recovered so takes are admitted unless a test begins a swap. */
@@ -371,6 +381,19 @@ internal class DictationSessionRig {
         override fun speechModelTakeStarted(takeId: String) { speechHold += "started:$takeId" }
         override fun speechModelUsed(takeId: String) { speechHold += "used:$takeId" }
         override fun speechModelTakeEnded(takeId: String) { speechHold += "ended:$takeId" }
+        /** Separate from [events] so existing event-list assertions stay unchanged (#560, #563). */
+        val settlementCandidates = CopyOnWriteArrayList<String>()
+        val terminalDeliveries = CopyOnWriteArrayList<Pair<String, String>>()
+        @Volatile var onRegisterSettlementCandidate: ((String) -> Unit)? = null
+        @Volatile var onTerminalDelivery: ((String, String) -> Unit)? = null
+        override fun registerSettlementCandidate(takeId: String) {
+            settlementCandidates += takeId
+            onRegisterSettlementCandidate?.invoke(takeId)
+        }
+        override fun onTakeDeliveryTerminal(takeId: String, result: String) {
+            terminalDeliveries += takeId to result
+            onTerminalDelivery?.invoke(takeId, result)
+        }
 
         override fun stopSelfNow() {
             events += "stopSelf"
@@ -429,7 +452,12 @@ internal class DictationSessionRig {
         fun awaitShown() {
             check(shown.await(10, TimeUnit.SECONDS)) { "the take never went live; surface events so far: $events" }
         }
-        override fun showStarting(token: BubbleRequestToken?) { events += "starting" }
+        /** Take ids published to [showStarting], apart from [events] (#560). */
+        val startedTakeIds = CopyOnWriteArrayList<String>()
+        override fun showStarting(token: BubbleRequestToken?, takeId: String?) {
+            events += "starting"
+            if (takeId != null) startedTakeIds += takeId
+        }
         override fun nameTarget(fieldId: String?) { events += "target:$fieldId" }
         override fun attachTranscript(id: Long) { events += "transcript:$id" }
         override fun show() {
@@ -470,7 +498,9 @@ internal class DictationSessionRig {
             pins.incrementAndGet()
             return pin
         }
-        override fun pinnedFieldId(): String? = "field-1"
+        /** The pinned editor's view id the owner reads at the start; the practice box's id stages a practice take. */
+        @Volatile var fieldId: String? = "field-1"
+        override fun pinnedFieldId(): String? = fieldId
         override fun releasePinnedTarget() { releases.incrementAndGet() }
         /**
          * When set, a scheduled handoff writes its PASTED outcome through the row handle on this queue, as the paste

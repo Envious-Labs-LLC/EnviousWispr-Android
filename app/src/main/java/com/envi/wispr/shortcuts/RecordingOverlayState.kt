@@ -30,6 +30,8 @@ internal object RecordingOverlayState {
         val targetFieldId: String? = null,
         /** The History row this take writes, once the owner has created it; 0 before that. */
         val transcriptId: Long = 0L,
+        /** The owner's stable id for this take, published at [showStarting] before any row exists (#560). */
+        val takeId: String? = null,
         val elapsedSeconds: Int = 0,
         /**
          * A short line to show under the timer, or null.
@@ -90,8 +92,8 @@ internal object RecordingOverlayState {
     }
 
     /** The take was admitted and is binding its services. Not yet interactive. */
-    fun showStarting(token: BubbleRequestToken?) = change {
-        Snapshot(phase = Phase.STARTING, requestToken = token)
+    fun showStarting(token: BubbleRequestToken?, takeId: String? = null) = change {
+        Snapshot(phase = Phase.STARTING, requestToken = token, takeId = takeId)
     }
 
     /** The take was pinned to an editor: name it. A no-op at IDLE, where there is no take to name. */
@@ -107,12 +109,12 @@ internal object RecordingOverlayState {
     /** Capture is running: draw the pill. Keeps the token and identity the take was admitted with. */
     fun show() = change {
         lastTakeSerial += 1
-        Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId, elapsedSeconds = 0, takeSerial = lastTakeSerial)
+        Snapshot(visible = true, phase = Phase.RECORDING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId, takeId = it.takeId, elapsedSeconds = 0, takeSerial = lastTakeSerial)
     }
 
     /** Transcribing, polishing, cancelling, finishing or failing: not accepting a start, pill hidden. */
     fun showProcessing() = change {
-        if (it.phase == Phase.PROCESSING) it else Snapshot(phase = Phase.PROCESSING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId)
+        if (it.phase == Phase.PROCESSING) it else Snapshot(phase = Phase.PROCESSING, requestToken = it.requestToken, targetFieldId = it.targetFieldId, transcriptId = it.transcriptId, takeId = it.takeId)
     }
 
     /** Show a line under the timer. It survives every later tick until the recorder is hidden. */

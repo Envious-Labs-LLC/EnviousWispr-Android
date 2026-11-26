@@ -9,7 +9,7 @@ import com.envi.wispr.shortcuts.RecordingOverlayState
  * test cannot reach it; it fakes this instead.
  */
 internal interface RecorderSurface {
-    fun showStarting(token: BubbleRequestToken?)
+    fun showStarting(token: BubbleRequestToken?, takeId: String? = null)
     fun nameTarget(fieldId: String?)
     fun attachTranscript(id: Long)
     fun show()
@@ -25,7 +25,7 @@ internal interface RecorderSurface {
 
 /** Production: every call delegates to [RecordingOverlayState]. */
 internal object OverlayRecorderSurface : RecorderSurface {
-    override fun showStarting(token: BubbleRequestToken?) = RecordingOverlayState.showStarting(token)
+    override fun showStarting(token: BubbleRequestToken?, takeId: String?) = RecordingOverlayState.showStarting(token, takeId)
     override fun nameTarget(fieldId: String?) = RecordingOverlayState.nameTarget(fieldId)
     override fun attachTranscript(id: Long) = RecordingOverlayState.attachTranscript(id)
     override fun show() = RecordingOverlayState.show()

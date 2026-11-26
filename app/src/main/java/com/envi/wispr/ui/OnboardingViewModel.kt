@@ -72,9 +72,8 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         private set
     var downloadMessage by mutableStateOf("")
         private set
-    private var take: PracticeTake? = null
-    /** The current take's verdict was reported once; reset when a new take starts (issue #176). */
-    private var takeReported = false
+    /** The followed take and its one reported verdict (issues #176, #560). */
+    private val practice = PracticeTakeFollower()
     private var rows: List<TranscriptEntity> = emptyList()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
@@ -106,8 +105,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun startSetup() {
         viewModelScope.launch {
             // Navigation is committed before worker admission. No late write can undo Back.
-            preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)
-            Telemetry.capture(AnalyticsEvent.OnboardingStageReached(OnboardingStage.DOWNLOADS.name.lowercase(), Telemetry.secondsSinceProcessStart()))
+            if (preferences.setOnboardingStep(OnboardingStage.DOWNLOADS.ordinal)) Telemetry.capture(AnalyticsEvent.OnboardingStageReached(OnboardingStage.DOWNLOADS.name.lowercase(), Telemetry.secondsSinceProcessStart()))
             downloadAction {
                 ModelManifest.ONBOARDING.forEach { ModelDeliveryWorker.enqueueSetup(context, it) }
             }
@@ -195,8 +193,8 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun leavePractice() {
         watching?.cancel()
         watching = null
-        if (take?.ended == false) {
-            take = null
+        if (practice.take?.ended == false) {
+            practice.forget()
             practiceOutcome = null
             takeHeld = null
         }
@@ -209,7 +207,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         if (practicing) return
         lesson = PracticeLesson.HOLD
         saved["practice_hold_lesson"] = true
-        take = null
+        practice.forget()
         practiceOutcome = null
     }
 
@@ -221,40 +219,26 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     private fun followOwner(snapshot: RecordingOverlayState.Snapshot) {
         val busy = snapshot.phase != RecordingOverlayState.Phase.IDLE
         val ours = busy && snapshot.targetFieldId == PRACTICE_FIELD_ID
-        val current = take
         if (busy && !ours) {
             // Someone else's take, or ours before the owner has named its target: nothing to show yet.
-            if (current?.ended == false) return
+            if (practice.take?.ended == false) return
             practicePhase = RecordingOverlayState.Phase.IDLE
             return
         }
         practicePhase = snapshot.phase
-        take = if (ours) {
-            val transcript = snapshot.transcriptId.takeIf { it > 0L }
-            if (current == null || current.ended) {
-                takeReported = false
-                PracticeTake(held = snapshot.requestToken?.held, transcriptId = transcript)
-            } else {
-                current.copy(held = current.held ?: snapshot.requestToken?.held, transcriptId = current.transcriptId ?: transcript)
-            }
-        } else {
-            current?.let { if (it.ended) it else it.copy(ended = true) }
-        }
-        takeHeld = take?.takeIf { !it.ended }?.held
+        practice.follow(ours, transcriptId = snapshot.transcriptId.takeIf { it > 0L }, held = snapshot.requestToken?.held)
+        takeHeld = practice.take?.takeIf { !it.ended }?.held
         judge()
     }
 
     /** Re-judge the current take off the row the owner named for it. */
     private fun judge() {
-        val current = take ?: return
-        val outcome = judgePracticeTake(current, lesson, rows)
+        val judgement = practice.judge(lesson, rows) ?: return
+        val outcome = judgement.shown
         practiceOutcome = outcome
-        // One `onboarding.practice` per ended take, with the verdict the screen shows (plan §3.1): the
-        // take itself is an ordinary bubble dictation and reports through the owner like any other.
-        if (outcome != null && outcome != PracticeOutcome.WORKING && current.ended && !takeReported) {
-            takeReported = true
-            Telemetry.capture(AnalyticsEvent.OnboardingPractice(lesson.name.lowercase(), outcome.name.lowercase()))
-        }
+        // One `onboarding.practice` per ended take, with its FINAL verdict (plan §3.1, #560): the take
+        // itself is an ordinary bubble dictation and reports through the owner like any other.
+        judgement.report?.let { Telemetry.capture(AnalyticsEvent.OnboardingPractice(lesson.name.lowercase(), it.name.lowercase())) }
         when (outcome) {
             PracticeOutcome.LANDED -> if (lesson == PracticeLesson.HOLD) {
                 holdComplete = true

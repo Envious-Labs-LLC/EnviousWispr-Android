@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.envi.wispr.audio.InputDevicePick
 import com.envi.wispr.processing.ProcessingPreference
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -43,6 +44,8 @@ internal data class ProcessingWriteUiState(val saving: Boolean = false, val erro
 /** Owns the app's preferences (#218): the settings writes with their telemetry, and onboarding. */
 internal class EnviousWisprViewModel(
     private val appPreferences: AppPreferences,
+    /** `Telemetry::capture` in the app; the onboarding rows' tests read what this model reports. */
+    private val capture: (AnalyticsEvent) -> Unit,
 ) : ViewModel() {
     private val processingWriteState = MutableStateFlow(ProcessingWriteUiState())
     val processingWrite: StateFlow<ProcessingWriteUiState> = processingWriteState
@@ -65,12 +68,11 @@ internal class EnviousWisprViewModel(
         }
     }
 
-    fun setOnboardingStep(step: Int) {
-        viewModelScope.launch {
-            appPreferences.setOnboardingStep(step)
-            OnboardingStage.entries.getOrNull(step)?.let { stage ->
-                Telemetry.capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
-            }
+    /** A stage is reported when the stored step actually moves to it, so a repeated write reports nothing (#563). */
+    fun setOnboardingStep(step: Int): Job = viewModelScope.launch {
+        if (!appPreferences.setOnboardingStep(step)) return@launch
+        OnboardingStage.entries.getOrNull(step)?.let { stage ->
+            capture(AnalyticsEvent.OnboardingStageReached(stage.name.lowercase(), Telemetry.secondsSinceProcessStart()))
         }
     }
 
@@ -86,12 +88,19 @@ internal class EnviousWisprViewModel(
         }
     }
 
-    fun completeOnboarding() {
-        viewModelScope.launch {
-            appPreferences.completeOnboarding()
-            Telemetry.capture(AnalyticsEvent.OnboardingCompleted(Telemetry.secondsSinceProcessStart()))
+    /** The guided flow's Finish setup or Skip practice: `onboarding.completed` once, however often it is tapped (#563). */
+    fun completeOnboarding(): Job = viewModelScope.launch {
+        if (appPreferences.completeOnboarding()) {
+            capture(AnalyticsEvent.OnboardingCompleted(Telemetry.secondsSinceProcessStart()))
         }
     }
+
+    /**
+     * A setup the user finished outside the guided flow ([onboardingSettledOutsideTheFlow], #563) is complete, so
+     * `app.launched` stops reporting an active user as never set up. No `onboarding.completed` row: that row is
+     * the guided flow's own last step, which this user left with "Set up later" and never finished.
+     */
+    fun settleOnboarding(): Job = viewModelScope.launch { appPreferences.completeOnboarding() }
 
     /**
      * One settings write plus its `settings.changed` row (issue #176): `from` is the PERSISTED value
@@ -183,7 +192,7 @@ internal class EnviousWisprViewModel(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             require(modelClass.isAssignableFrom(EnviousWisprViewModel::class.java))
-            return EnviousWisprViewModel(appPreferences) as T
+            return EnviousWisprViewModel(appPreferences, Telemetry::capture) as T
         }
     }
 }

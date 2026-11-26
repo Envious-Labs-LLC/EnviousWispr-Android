@@ -179,14 +179,23 @@ internal class AppPreferences internal constructor(
 
     suspend fun setRecordingVibrationEnabled(enabled: Boolean) { dataStore.edit { it[Keys.RECORDING_VIBRATION] = enabled } }
 
-    suspend fun setOnboardingStep(step: Int) {
+    /**
+     * @return whether the stored step changed, read and written in ONE edit, so a repeated write of the step
+     * already stored (two callers, or one effect replayed by a recreated screen) reports no new stage (#563).
+     */
+    suspend fun setOnboardingStep(step: Int): Boolean {
+        var changed = false
         dataStore.edit { preferences ->
             // The last stage, read off the enum: a literal here silently pinned setup to its old last screen
             // when the demo stage was added (emulator, 2026-09-14).
-            preferences[Keys.ONBOARDING_STEP] = step.coerceIn(0, OnboardingStage.entries.lastIndex)
+            val next = step.coerceIn(0, OnboardingStage.entries.lastIndex)
+            val stored = if (preferences[Keys.ONBOARDING_VERSION] == 2) preferences[Keys.ONBOARDING_STEP] ?: 0 else 0
+            changed = stored != next
+            preferences[Keys.ONBOARDING_STEP] = next
             preferences[Keys.ONBOARDING_VERSION] = 2
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }
+        return changed
     }
 
     suspend fun setModelDownloadsOnMobileData(allowed: Boolean) {
@@ -225,8 +234,11 @@ internal class AppPreferences internal constructor(
         }
     }
 
-    suspend fun completeOnboarding() {
+    /** @return whether this call completed setup, read and written in ONE edit, so a completion counts once (#563). */
+    suspend fun completeOnboarding(): Boolean {
+        var completedNow = false
         dataStore.edit { preferences ->
+            completedNow = preferences[Keys.ONBOARDING_COMPLETE] != true
             val priorSetup =
                 preferences[Keys.ONBOARDING_COMPLETE] == true || preferences[Keys.ONBOARDING_DISMISSED] == true
             preferences[Keys.ONBOARDING_COMPLETE] = true
@@ -235,6 +247,7 @@ internal class AppPreferences internal constructor(
                 preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = com.envi.wispr.about.ReleaseNotes.currentContentVersion
             }
         }
+        return completedNow
     }
 
     suspend fun markWhatsNewSeen(version: String = com.envi.wispr.about.ReleaseNotes.currentContentVersion) {

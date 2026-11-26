@@ -27,7 +27,7 @@ class EditorTargetTrackerProbeTest {
     private fun probeOffThisThread(probe: FieldProbe): FieldAdoption {
         val thread = Executors.newSingleThreadExecutor()
         try {
-            return thread.submit<FieldAdoption> { probe.probe(discover = true) }.get(5, TimeUnit.SECONDS)
+            return thread.submit<FieldAdoption> { probe.probe(discover = true, windows = emptyList()) }.get(5, TimeUnit.SECONDS)
         } finally {
             thread.shutdownNow()
         }
@@ -67,5 +67,17 @@ class EditorTargetTrackerProbeTest {
         tracker.clearTarget()
         assertEquals(FieldProbeOutcome.Stale, stale.adopt())
         assertEquals(FieldProbeOutcome.Current(null), probeOffThisThread(tracker.fieldProbe()).adopt())
+    }
+
+    @Test
+    fun theAdoptionDecisionIsStaleFirstThenAdmissionReadOnMain() {
+        // The rows a stub service cannot stage (a refreshed or discovered editor needs real nodes): a stale
+        // answer adopts nothing whatever it found; a candidate is adopted only when re-admitted on main, so a
+        // field of our own withdrawn while the probe ran is not adopted; no candidate is no field.
+        assertEquals(FieldAdoptionStep.STALE, fieldAdoptionStep(epochCurrent = false, candidateAdmitted = true))
+        assertEquals(FieldAdoptionStep.STALE, fieldAdoptionStep(epochCurrent = false, candidateAdmitted = null))
+        assertEquals(FieldAdoptionStep.ADOPT, fieldAdoptionStep(epochCurrent = true, candidateAdmitted = true))
+        assertEquals(FieldAdoptionStep.NO_FIELD, fieldAdoptionStep(epochCurrent = true, candidateAdmitted = false))
+        assertEquals(FieldAdoptionStep.NO_FIELD, fieldAdoptionStep(epochCurrent = true, candidateAdmitted = null))
     }
 }

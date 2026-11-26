@@ -14,16 +14,17 @@ internal data class BubbleFieldCheck(
     val revalidate: Boolean = false,
     /** A transition that warrants discovery and a retry sequence: a connect, a window state change, an unremembered focus. */
     val transition: Boolean = false,
-    /** The uptime of the newest transition merged in, from which a fresh retry sequence measures its offsets. */
+    /** The uptime of the newest direct [transition] merged in, from which a fresh retry sequence measures its offsets. */
     val transitionUptime: Long = 0L,
     /** The retry-sequence generation this is an attempt of, or null. */
     val retryOf: Int? = null,
     /**
-     * Windows-changed events by window id, each with whether it warranted discovery. An event whose window
-     * turns out to be an accessibility overlay (our own bubble moving) asks for nothing; which windows those
-     * are is itself IPC, so it is answered off main by [resolve].
+     * Windows-changed events by window id: the uptime of the event when it warranted discovery, null when it
+     * was cosmetic. An event whose window turns out to be an accessibility overlay (our own bubble moving)
+     * asks for nothing, its uptime included; which windows those are is itself IPC, so [resolve] answers it
+     * off main.
      */
-    val windowEvents: Map<Int, Boolean> = emptyMap(),
+    val windowEvents: Map<Int, Long?> = emptyMap(),
 ) {
     val isEmpty: Boolean get() = !revalidate && !transition && retryOf == null && windowEvents.isEmpty()
 
@@ -34,7 +35,7 @@ internal data class BubbleFieldCheck(
         transitionUptime = maxOf(transitionUptime, newer.transitionUptime),
         retryOf = newer.retryOf ?: retryOf,
         windowEvents = (windowEvents.keys + newer.windowEvents.keys).associateWith { id ->
-            windowEvents[id] == true || newer.windowEvents[id] == true
+            listOfNotNull(windowEvents[id], newer.windowEvents[id]).maxOrNull()
         },
     )
 
@@ -44,21 +45,40 @@ internal data class BubbleFieldCheck(
      */
     fun withoutSequence(): BubbleFieldCheck = BubbleFieldCheck(
         revalidate = revalidate || transition || retryOf != null,
-        windowEvents = windowEvents.mapValues { false },
+        windowEvents = windowEvents.mapValues { null },
     )
+
+    /** The same check without an attempt of a sequence other than [generation] (one a restart superseded). */
+    fun withoutRetryOtherThan(generation: Int): BubbleFieldCheck =
+        if (retryOf != null && retryOf != generation) copy(retryOf = null) else this
+
+    /**
+     * What to ask again when this check's answer could not be used (the screen changed while it ran):
+     * everything it asked, unless the retry sequence was cancelled since it began ([startedIn] is no longer
+     * [generation]), in which case only its re-check, as [withoutSequence] strips the waiting check.
+     */
+    fun askAgain(startedIn: Int, generation: Int): BubbleFieldCheck =
+        if (startedIn == generation) this else withoutSequence()
 
     /**
      * What this check asks once the accessibility overlay windows are known, or null when every event in it
-     * was an overlay's own (re-checking then would let our own bubble's moves drive traversals).
+     * was an overlay's own (re-checking then would let our own bubble's moves drive traversals). The overlay
+     * events are dropped FIRST, so an overlay's warranted change cannot move a real transition's uptime.
      */
     fun resolve(overlayWindowIds: Set<Int>): Resolved? {
         val live = windowEvents.filterKeys { it !in overlayWindowIds }
         if (!revalidate && !transition && retryOf == null && live.isEmpty()) return null
-        return Resolved(startsSequence = transition || live.containsValue(true), retryOf = retryOf)
+        val warrantedUptimes = live.values.filterNotNull()
+        val uptimes = if (transition) warrantedUptimes + transitionUptime else warrantedUptimes
+        return Resolved(
+            startsSequence = uptimes.isNotEmpty(),
+            retryOf = retryOf,
+            transitionUptime = uptimes.maxOrNull() ?: 0L,
+        )
     }
 
     /** A check with its overlay-only events removed. */
-    data class Resolved(val startsSequence: Boolean, val retryOf: Int?) {
+    data class Resolved(val startsSequence: Boolean, val retryOf: Int?, val transitionUptime: Long = 0L) {
         /**
          * Whether to traverse for the focused editor. A retry attempt always does. A transition does unless
          * a sequence is already chasing this same focused window ([chasingWindowId], -1 when the focused
@@ -89,7 +109,9 @@ internal sealed interface DiscoveryStep {
  * The retry sequence's decision after a check answered on main. [startedIn] is the sequence generation when
  * the check began and [generation] the one now: a cancel in between (a field found the direct way, a fresh
  * lock sequence, a teardown) means this answer may not start or continue a sequence, so a torn-down service
- * never schedules a retry from an answer that was already in flight.
+ * never schedules a retry from an answer that was already in flight. A check that answered nothing (its
+ * blocking half threw) is asked with `fieldPresent = false` and no transition, so a running sequence still
+ * moves on to its next attempt or ends rather than stalling with nothing scheduled.
  */
 internal fun discoveryStep(
     fieldPresent: Boolean,

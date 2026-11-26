@@ -4,14 +4,18 @@ import android.accessibilityservice.AccessibilityService
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.envi.wispr.debug.DebugLogger
 
 /** The remembered editor's app and password flag, for the bubble only (#523); content-free. */
 internal data class FieldTraits(val packageName: String, val passwordField: Boolean)
 
-/** The blocking half of the bubble's field check ([EditorTargetTracker.fieldProbe]): run it OFF the main thread. */
+/**
+ * The blocking half of the bubble's field check ([EditorTargetTracker.fieldProbe]): run it OFF the main thread.
+ * [windows] is the check's one window-list read, reused for every window-focus question but the last.
+ */
 internal fun interface FieldProbe {
-    fun probe(discover: Boolean): FieldAdoption
+    fun probe(discover: Boolean, windows: List<AccessibilityWindowInfo>): FieldAdoption
 }
 
 /** The main-thread half: applies what [FieldProbe] read, unless the remembered editor changed meanwhile. */
@@ -26,6 +30,21 @@ internal sealed interface FieldProbeOutcome {
 
     /** The focused field's key, or null when no editor is focused. */
     data class Current(val key: Any?) : FieldProbeOutcome
+}
+
+/** What adopting a probe's candidate editor does, on main. Owner: [fieldAdoptionStep]. */
+internal enum class FieldAdoptionStep { STALE, ADOPT, NO_FIELD }
+
+/**
+ * The adoption decision (#561). [epochCurrent]: the remembered editor is still the one the probe copied.
+ * [candidateAdmitted]: null when the probe found no editor, else whether the candidate (the refreshed
+ * remembered editor or a discovered one) still passes [OwnFieldAdmission] read ON MAIN, so a field of our
+ * own withdrawn while the probe ran is never adopted on the worker's earlier answer.
+ */
+internal fun fieldAdoptionStep(epochCurrent: Boolean, candidateAdmitted: Boolean?): FieldAdoptionStep = when {
+    !epochCurrent -> FieldAdoptionStep.STALE
+    candidateAdmitted == true -> FieldAdoptionStep.ADOPT
+    else -> FieldAdoptionStep.NO_FIELD
 }
 
 /**
@@ -230,42 +249,62 @@ internal class EditorTargetTracker(
      * writes nothing of this tracker. [FieldAdoption.adopt], back on main, applies the answer only while the
      * remembered editor is still the one copied here: any change in between (a newer focus, a pin, a close)
      * bumps [targetEpoch] and the answer is [FieldProbeOutcome.Stale], so an old answer can never overwrite a
-     * newer field. The old target is recycled only when a new one was adopted; a failed discovery keeps it.
+     * newer field. A still-focused editor's refreshed copy replaces the remembered one; a discovered editor
+     * replaces it too; a failed discovery keeps it. Either candidate is re-admitted on main first
+     * ([fieldAdoptionStep]).
      */
     fun fieldProbe(): FieldProbe {
         val epoch = targetEpoch
         val remembered = lastTarget?.let { it.copy(node = AccessibilityNodeInfo.obtain(it.node)) }
-        return FieldProbe { discover ->
+        return FieldProbe { discover, windows ->
+            val inSnapshotFocus = { windowId: Int -> windows.any { it.id == windowId && it.isFocused } }
             val stillFocused = remembered != null &&
-                runCatching { remembered.node.refresh() && isSafeFocusedEditor(remembered.node) && isInFocusedWindow(remembered.windowId) }
+                runCatching { remembered.node.refresh() && isSafeFocusedEditor(remembered.node) && inSnapshotFocus(remembered.windowId) }
                     .getOrDefault(false)
-            remembered?.node?.recycle()
+            // Still focused: the refreshed copy goes to main to replace the remembered node, so the traits read
+            // from it (a box toggled to a password box) are as fresh as a refresh on main used to leave them.
+            val refreshed = remembered?.takeIf { stillFocused }
+            if (!stillFocused) remembered?.node?.recycle()
             var found: TargetSnapshot? = null
             if (!stillFocused && discover) {
-                found = runCatching { findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) } }.getOrNull()
+                // One fresh window-focus read confirms a discovered editor; the traversal itself used the snapshot.
+                found = runCatching {
+                    findFocusedEditableTarget({ windows }, inSnapshotFocus)?.let { candidate ->
+                        if (isInFocusedWindow(candidate.windowId)) {
+                            candidate
+                        } else {
+                            candidate.node.recycle()
+                            null
+                        }
+                    }
+                }.getOrNull()
                 // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
-                DebugLogger.debug(
-                    TAG,
-                    "Bubble discovery found=${found != null} windows=${runCatching { service.windows.size }.getOrDefault(-1)}",
-                )
+                DebugLogger.debug(TAG, "Bubble discovery found=${found != null} windows=${windows.size}")
             }
-            FieldAdoption { adoptFieldProbe(epoch, stillFocused, found) }
+            FieldAdoption { adoptFieldProbe(epoch, refreshed ?: found) }
         }
     }
 
-    private fun adoptFieldProbe(epoch: Int, stillFocused: Boolean, found: TargetSnapshot?): FieldProbeOutcome {
-        if (epoch != targetEpoch) {
-            found?.node?.recycle()
-            return FieldProbeOutcome.Stale
+    private fun adoptFieldProbe(epoch: Int, candidate: TargetSnapshot?): FieldProbeOutcome {
+        val admitted = candidate?.let { OwnFieldAdmission.accepts(service.packageName, it.packageName, it.viewId) }
+        return when (fieldAdoptionStep(epochCurrent = epoch == targetEpoch, candidateAdmitted = admitted)) {
+            FieldAdoptionStep.STALE -> {
+                candidate?.node?.recycle()
+                FieldProbeOutcome.Stale
+            }
+            FieldAdoptionStep.NO_FIELD -> {
+                // A failed discovery, or a candidate withdrawn meanwhile, keeps the remembered editor.
+                candidate?.node?.recycle()
+                FieldProbeOutcome.Current(null)
+            }
+            FieldAdoptionStep.ADOPT -> {
+                val adopted = checkNotNull(candidate)
+                clearTarget()
+                lastTarget = adopted
+                notifyObservedField()
+                FieldProbeOutcome.Current(fieldKey(adopted))
+            }
         }
-        if (stillFocused) return FieldProbeOutcome.Current(lastTarget?.let(::fieldKey))
-        if (found != null) {
-            clearTarget()
-            lastTarget = found
-            notifyObservedField()
-            return FieldProbeOutcome.Current(fieldKey(found))
-        }
-        return FieldProbeOutcome.Current(null)
     }
 
     /**
@@ -379,14 +418,25 @@ internal class EditorTargetTracker(
         notifyObservedField()
     }
 
-    private fun findFocusedEditableTarget(): TargetSnapshot? {
+    /** The pin's search: the live window list and a live focus read for each question, as before #561. */
+    private fun findFocusedEditableTarget(): TargetSnapshot? = findFocusedEditableTarget({ service.windows }, ::isInFocusedWindow)
+
+    /**
+     * The search for the editor focused in the window that holds input focus. [windows] and [inFocusedWindow]
+     * are the window list and the window-focus question: live reads for the pin, the check's one snapshot for
+     * the bubble's probe.
+     */
+    private fun findFocusedEditableTarget(
+        windows: () -> List<AccessibilityWindowInfo>,
+        inFocusedWindow: (Int) -> Boolean,
+    ): TargetSnapshot? {
         // Only the window that currently holds input focus may supply the pin. An editor in a background
         // window keeps its own focus flag, so an unfiltered search could rediscover a stale editor in an
         // unfocused window and pin it, sending the words to the app the user just left (Codex review,
         // BUG 1 fast-follow, 2026-09-13). The filter is applied DURING the search, not after, so a match
         // in the focused window is never overlooked because an unfocused one answered first.
         val activeRoot = service.rootInActiveWindow
-        activeRoot?.takeIf { isInFocusedWindow(it.windowId) }?.let { root ->
+        activeRoot?.takeIf { inFocusedWindow(it.windowId) }?.let { root ->
             findFocusedEditableTarget(root)?.let { target ->
                 activeRoot.recycle()
                 return target
@@ -395,7 +445,7 @@ internal class EditorTargetTracker(
         val activeWindowId = activeRoot?.windowId
         activeRoot?.recycle()
 
-        for (window in service.windows) {
+        for (window in windows()) {
             if (!window.isFocused) continue
             if (window.id == activeWindowId) continue
             val root = window.root ?: continue

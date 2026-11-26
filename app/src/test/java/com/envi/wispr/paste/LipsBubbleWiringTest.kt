@@ -103,6 +103,8 @@ class LipsBubbleWiringTest {
         // re-checks without a traversal, to stay cheap (BUG 1 + phone-pass lag, 2026-09-13).
         assertTrue(branch.contains("event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {"))
         assertTrue(branch.contains("discoverFieldWithRetry()"))
+        // The click on a non-editor re-checks without a traversal, and supersedes a running check's reads.
+        assertTrue(branch.contains("requestCheck(BubbleFieldCheck(revalidate = true), supersedes = true)"))
     }
 
     @Test
@@ -168,8 +170,8 @@ class LipsBubbleWiringTest {
         // Since #561 a windows-changed is a check run off main: the window-list read that tells our own overlay
         // apart drops the event there, and a warranted change starts a sequence when the check answers.
         val windowsChanged = PasteSources.slice(bubbleHost, "AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {", "else -> Unit")
-        assertTrue(windowsChanged.contains("val warranted = discoveryWarranted(event)"))
-        assertTrue(windowsChanged.contains("windowEvents = mapOf(event.windowId to warranted)"))
+        assertTrue(windowsChanged.contains("val warrantedAt = if (discoveryWarranted(event)) SystemClock.uptimeMillis() else null"))
+        assertTrue(windowsChanged.contains("requestCheck(BubbleFieldCheck(windowEvents = mapOf(event.windowId to warrantedAt)), supersedes = false)"))
         val gate = PasteSources.slice(bubbleHost, "private fun discoveryWarranted(", "\n    /**")
         assertTrue(gate.contains("event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return true"))
         assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_FOCUSED"))
@@ -181,25 +183,33 @@ class LipsBubbleWiringTest {
         // whose calls run off main, and the bubble renders the adopted answer.
         val begin = PasteSources.slice(bubbleHost, "private fun beginFieldCheck(", "\n    /**")
         assertTrue(begin.contains("val probe = tracker.fieldProbe()"))
-        assertTrue(begin.contains("probe.probe(discover = resolved.discovers(focusedWindowId, chasingWindowId))"))
+        assertTrue(begin.contains("probe.probe(discover = resolved.discovers(focusedWindowId, chasingWindowId), windows = windows)"))
         val finish = PasteSources.slice(bubbleHost, "private fun finishFieldCheck(", "\n    /**")
         assertTrue(finish.contains("probed.adoption.adopt()"))
+        // An answer that began before a superseding event is neither adopted nor drawn; its ask runs again.
+        assertTrue(finish.indexOf("if (answer.startedRevision != checkRevision) {") in 0 until finish.indexOf("probed.adoption.adopt()"))
+        assertTrue(finish.contains("fieldChecks.submitOlder(answer.check.askAgain(answer.startedIn, discoveryGeneration))"))
         assertTrue(finish.indexOf("FieldProbeOutcome.Stale ->") in 0 until finish.indexOf("renderField(overlay, key, answer.imeBounds)"))
         // Since #523 an active field goes through the one visibility decision (`activateField`).
         val render = PasteSources.slice(bubbleHost, "private fun renderField(", "\n    /**")
         assertTrue(render.indexOf("activateField(overlay, key) else overlay.fieldLost()") in 0 until render.indexOf("overlay.keyboardBounds(dockedKeyboardTop(imeBounds))"))
         val body = PasteSources.slice(tracker, "fun fieldProbe(): FieldProbe {", "\n    /**")
         assertTrue(body.contains("if (!stillFocused && discover)"))
-        assertTrue(body.contains("findFocusedEditableTarget()"))
         // Split screen: an editor in the other pane keeps its focus flag. Both the remembered editor
-        // and a discovered one must sit in the window that has input focus, or the bubble hides.
-        assertTrue(body.contains("isSafeFocusedEditor(remembered.node) && isInFocusedWindow(remembered.windowId)"))
-        assertTrue(body.contains("findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) }"))
-        // A failed discovery keeps the old target: it is recycled only once a new one was adopted, on main,
-        // and only while the remembered editor is still the one the probe copied.
+        // and a discovered one must sit in the window that has input focus, or the bubble hides. The
+        // check's one window snapshot answers it, and a discovered editor is confirmed by one fresh read.
+        assertTrue(body.contains("isSafeFocusedEditor(remembered.node) && inSnapshotFocus(remembered.windowId)"))
+        assertTrue(body.contains("findFocusedEditableTarget({ windows }, inSnapshotFocus)"))
+        assertTrue(body.contains("if (isInFocusedWindow(candidate.windowId)) {"))
+        // A still-focused editor's refreshed copy goes to main, so its traits are fresh (#561 review).
+        assertTrue(body.contains("val refreshed = remembered?.takeIf { stillFocused }"))
+        // Adoption is decided on main: stale when the remembered editor changed, the candidate re-admitted
+        // there, and a failed discovery keeps the old target (it is replaced only in the ADOPT branch).
         val adopt = PasteSources.slice(tracker, "private fun adoptFieldProbe(", "\n    }\n")
-        assertTrue(adopt.indexOf("if (epoch != targetEpoch) {") in 0 until adopt.indexOf("if (found != null) {"))
-        assertTrue(adopt.indexOf("if (found != null) {") in 0 until adopt.indexOf("clearTarget()"))
+        assertTrue(adopt.contains("OwnFieldAdmission.accepts(service.packageName, it.packageName, it.viewId)"))
+        assertTrue(adopt.contains("fieldAdoptionStep(epochCurrent = epoch == targetEpoch, candidateAdmitted = admitted)"))
+        assertTrue(adopt.indexOf("FieldAdoptionStep.ADOPT ->") in 0 until adopt.indexOf("clearTarget()"))
+        assertTrue(adopt.indexOf("FieldAdoptionStep.NO_FIELD ->") < adopt.indexOf("FieldAdoptionStep.ADOPT ->"))
         assertTrue(tracker.contains("service.windows.any { it.id == windowId && it.isFocused }"))
     }
 
@@ -218,7 +228,12 @@ class LipsBubbleWiringTest {
         // Coalesce: a sequence already chasing the same focused window (unknown -1 included) is not restarted;
         // the window it chases is the sequence's state on main, read when the check answers.
         assertTrue(finish.contains("chasingWindowId = discoveryWindowId"))
-        assertTrue(finish.contains("is DiscoveryStep.Restart -> restartDiscovery(step.windowId, answer.check.transitionUptime)"))
+        assertTrue(finish.contains("is DiscoveryStep.Restart -> restartDiscovery(step.windowId, probed.resolved.transitionUptime)"))
+        // A check that answered nothing still moves a running sequence on (#561 review).
+        val failed = PasteSources.slice(bubbleHost, "private fun fieldCheckFailed(", "\n    }\n")
+        assertTrue(failed.contains("if (step == DiscoveryStep.Continue && discoveryRetryRunnable == null) scheduleDiscoveryRetry(discoveryGeneration)"))
+        // A superseded attempt does not traverse.
+        assertTrue(PasteSources.slice(bubbleHost, "private fun beginFieldCheck(", "\n    /**").contains("submitted.withoutRetryOtherThan(discoveryGeneration)"))
         // Stops the moment a field is found.
         assertTrue(finish.contains("DiscoveryStep.Stop -> resetDiscoverySequence()"))
         assertTrue(finish.contains("DiscoveryStep.Continue -> if (discoveryRetryRunnable == null) scheduleDiscoveryRetry(discoveryGeneration)"))
@@ -230,7 +245,8 @@ class LipsBubbleWiringTest {
         assertTrue(sched.contains("postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])"))
         // Generation guard: a superseding transition or teardown makes an in-flight attempt do nothing.
         assertTrue(sched.contains("if (generation != discoveryGeneration) return@Runnable"))
-        assertTrue(sched.contains("fieldChecks.submit(BubbleFieldCheck(retryOf = generation))"))
+        assertTrue(sched.contains("requestCheck(BubbleFieldCheck(retryOf = generation), supersedes = false)"))
+        assertTrue(sched.contains("resetDiscoverySequence()"))
         val cancel = PasteSources.slice(bubbleHost, "fun cancelDiscoveryRetries()", "\n    }\n")
         assertTrue(cancel.contains("resetDiscoverySequence()"))
         assertTrue(cancel.contains("fieldChecks.forgetSequence()"))
@@ -239,8 +255,15 @@ class LipsBubbleWiringTest {
         assertTrue(reset.contains("mainHandler.removeCallbacks(it)"))
         // Cancelled on every teardown so retries never leak past the service.
         // Since #217 the service asks the bubble host; its close cancels them on destroy.
-        assertTrue(PasteSources.slice(service, "override fun onInterrupt()", "\n    }\n").contains("bubble.cancelDiscoveryRetries()"))
-        assertTrue(PasteSources.slice(service, "override fun onUnbind(", "\n    }\n").contains("bubble.cancelDiscoveryRetries()"))
+        // Since #561 those teardowns also abandon a running check's answer and drop the waiting one.
+        assertTrue(PasteSources.slice(service, "override fun onInterrupt()", "\n    }\n").contains("bubble.onServiceInterrupted()"))
+        assertTrue(PasteSources.slice(service, "override fun onUnbind(", "\n    }\n").contains("bubble.onServiceUnbound()"))
+        val interrupted = PasteSources.slice(bubbleHost, "fun onServiceInterrupted()", "\n    }\n")
+        assertTrue(interrupted.contains("cancelDiscoveryRetries()") && interrupted.contains("fieldChecks.cancel()"))
+        val unbound = PasteSources.slice(bubbleHost, "fun onServiceUnbound()", "\n    }\n")
+        assertTrue(unbound.contains("unbound = true") && unbound.contains("onServiceInterrupted()"))
+        assertTrue(PasteSources.slice(bubbleHost, "private fun requestCheck(", "\n    }\n").contains("if (unbound) return"))
+        assertTrue(PasteSources.slice(bubbleHost, "fun discoverOnConnect()", "\n    }\n").contains("unbound = false"))
         assertTrue(PasteSources.slice(service, "override fun onDestroy()", "\n    }\n").contains("bubble.close()"))
         val close = PasteSources.slice(bubbleHost, "fun close() {", "\n    }\n")
         assertTrue(close.contains("cancelDiscoveryRetries()"))
@@ -256,7 +279,7 @@ class LipsBubbleWiringTest {
         // REVERT: call `tracker.fieldProbe().probe(...)` from `updateBubbleFromEvent`, or read `service.windows`
         // in `discoverFieldWithRetry`, and this row turns red.
         val begin = PasteSources.slice(bubbleHost, "private fun beginFieldCheck(", "\n    /**")
-        val blockingHalf = begin.substringAfter("return {")
+        val blockingHalf = begin.substring(begin.lastIndexOf("return {"))
         assertEquals("one window-list read in the host", 1, Regex("""\bservice\.windows\b""").findAll(bubbleHost).count())
         assertTrue("and it is in the blocking half", blockingHalf.contains("service.windows"))
         assertEquals("one probe call in the host", 1, Regex("""\.probe\(""").findAll(bubbleHost).count())
@@ -270,7 +293,7 @@ class LipsBubbleWiringTest {
         assertTrue(bubbleHost.contains("ThreadPoolExecutor(0, 1, 5L, TimeUnit.SECONDS, LinkedBlockingQueue())"))
         // The tracker's half that runs off main touches none of its state: no write of the remembered or
         // pinned editor inside the probe lambda, and its answer is adopted back on main.
-        val probe = PasteSources.slice(tracker, "return FieldProbe { discover ->", "FieldAdoption { adoptFieldProbe(epoch, stillFocused, found) }")
+        val probe = PasteSources.slice(tracker, "return FieldProbe { discover, windows ->", "FieldAdoption { adoptFieldProbe(epoch, refreshed ?: found) }")
         listOf("lastTarget", "pinnedTarget", "targetEpoch", "clearTarget(", "notifyObservedField(").forEach {
             assertFalse("the probe lambda touches $it", probe.contains(it))
         }
@@ -282,8 +305,10 @@ class LipsBubbleWiringTest {
         // rediscover the stale editor it just rejected and pin the departed app (Codex fast-follow,
         // 2026-09-13). The filter is applied during the search: the active-root shortcut is gated on
         // window focus, and the windows loop skips unfocused windows.
-        val body = PasteSources.slice(tracker, "private fun findFocusedEditableTarget(): TargetSnapshot?", "\n    }\n")
-        assertTrue(body.contains("activeRoot?.takeIf { isInFocusedWindow(it.windowId) }"))
+        // Since #561 the search takes its window list and focus question: live reads for the pin.
+        assertTrue(tracker.contains("private fun findFocusedEditableTarget(): TargetSnapshot? = findFocusedEditableTarget({ service.windows }, ::isInFocusedWindow)"))
+        val body = PasteSources.slice(tracker, "private fun findFocusedEditableTarget(\n        windows:", "\n    }\n")
+        assertTrue(body.contains("activeRoot?.takeIf { inFocusedWindow(it.windowId) }"))
         assertTrue(body.contains("if (!window.isFocused) continue"))
     }
 

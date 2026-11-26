@@ -102,6 +102,17 @@ internal class AccessibilityBubbleHost(
     private var discoveryStartUptime = 0L
     private var discoveryRetryRunnable: Runnable? = null
 
+    /**
+     * Bumped on main by every event that supersedes what a running check read: a focus or click, a window
+     * state change, a lock broadcast, a connect, an explicit [refresh]. An answer that began before the
+     * newest bump is not drawn; what it asked is asked again behind the newer check (#561 review). The
+     * frequent windows-changed stream does not bump it, so a running check is never starved by it.
+     */
+    private var checkRevision = 0
+
+    /** Set by [onServiceUnbound] until the next [discoverOnConnect]: an unbound service starts no check. */
+    private var unbound = false
+
     /** A check that resolved to something to do: what it asked and the tracker's answer, adopted on main. */
     private class Probed(val resolved: BubbleFieldCheck.Resolved, val adoption: FieldAdoption)
 
@@ -114,6 +125,8 @@ internal class AccessibilityBubbleHost(
         val imeBounds: Rect?,
         /** The sequence generation when the check began; a cancel since then decides the sequence instead. */
         val startedIn: Int,
+        /** [checkRevision] when the check began; a newer one means the screen changed while it ran. */
+        val startedRevision: Int,
     )
 
     /**
@@ -129,6 +142,7 @@ internal class AccessibilityBubbleHost(
         main = { mainHandler.post(it) },
         begin = ::beginFieldCheck,
         finish = ::finishFieldCheck,
+        failed = ::fieldCheckFailed,
     )
 
     /**
@@ -195,6 +209,7 @@ internal class AccessibilityBubbleHost(
      * under the one cancellation mechanism. It starts fresh: a prior sequence is invalidated first.
      */
     fun discoverOnConnect() {
+        unbound = false
         cancelDiscoveryRetries()
         val connectGeneration = discoveryGeneration
         // Generation-guard the post itself: an unbind/destroy between here and the looper turn bumps the
@@ -211,7 +226,7 @@ internal class AccessibilityBubbleHost(
 
     /** Main thread. An admitted field of our own was withdrawn with no event to say so: re-check it. */
     fun refresh() {
-        if (recordingOverlay != null) fieldChecks.submit(BubbleFieldCheck(revalidate = true))
+        if (recordingOverlay != null) requestCheck(BubbleFieldCheck(revalidate = true), supersedes = true)
     }
 
     /**
@@ -226,7 +241,9 @@ internal class AccessibilityBubbleHost(
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_FOCUSED, AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                 if (remembered) {
-                    // The field is found the direct way; stop any discovery-retry sequence still chasing it.
+                    // The field is found the direct way; stop any discovery-retry sequence still chasing it, and
+                    // draw no answer of a check that read the screen before this focus.
+                    checkRevision++
                     cancelDiscoveryRetries()
                     tracker.rememberedFieldKey()?.let { activateField(overlay, it) }
                 } else if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
@@ -238,7 +255,7 @@ internal class AccessibilityBubbleHost(
                     // A click on a non-editor: whether the remembered editor still holds focus is a question,
                     // not a given (a hardware-keyboard tab to a button; Codex round 2). Re-check without a
                     // traversal; if the field is still here, a pending retry sequence has done its job.
-                    fieldChecks.submit(BubbleFieldCheck(revalidate = true))
+                    requestCheck(BubbleFieldCheck(revalidate = true), supersedes = true)
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> discoverFieldWithRetry()
@@ -246,13 +263,8 @@ internal class AccessibilityBubbleHost(
                 // Whether this window is our own overlay moving is a window-list read, so the check answers it
                 // off main and drops the event if so. A warranted change discovers with retry; a cosmetic one
                 // re-checks, and finding the field present cancels any pending retry.
-                val warranted = discoveryWarranted(event)
-                fieldChecks.submit(
-                    BubbleFieldCheck(
-                        transitionUptime = if (warranted) SystemClock.uptimeMillis() else 0L,
-                        windowEvents = mapOf(event.windowId to warranted),
-                    ),
-                )
+                val warrantedAt = if (discoveryWarranted(event)) SystemClock.uptimeMillis() else null
+                requestCheck(BubbleFieldCheck(windowEvents = mapOf(event.windowId to warrantedAt)), supersedes = false)
             }
             else -> Unit
         }
@@ -264,6 +276,31 @@ internal class AccessibilityBubbleHost(
     fun cancelDiscoveryRetries() {
         resetDiscoverySequence()
         fieldChecks.forgetSequence()
+    }
+
+    /**
+     * Main thread, from `onInterrupt`: no answer of a check already running is drawn, the waiting check is
+     * dropped, and the retry sequence ends. The service stays bound, so later events check as usual.
+     */
+    fun onServiceInterrupted() {
+        cancelDiscoveryRetries()
+        fieldChecks.cancel()
+    }
+
+    /**
+     * Main thread, from `onUnbind`: as [onServiceInterrupted], and no check starts until the next connect
+     * ([discoverOnConnect]), so a preference emission after unbind cannot start one on a dead connection.
+     */
+    fun onServiceUnbound() {
+        unbound = true
+        onServiceInterrupted()
+    }
+
+    /** Main thread. Hands [check] to the queue; one that [supersedes] what a running check read bumps [checkRevision]. */
+    private fun requestCheck(check: BubbleFieldCheck, supersedes: Boolean) {
+        if (unbound) return
+        if (supersedes) checkRevision++
+        fieldChecks.submit(check)
     }
 
     /** The sequence's own state only: a check waiting to run was submitted after the answer that ends it. */
@@ -388,7 +425,7 @@ internal class AccessibilityBubbleHost(
         if (recordingOverlay == null) return
         // Captured at the transition, BEFORE the first look, so the retry deadlines measure from it, not from
         // after a slow initial traversal (Codex proviso, 2026-09-13).
-        fieldChecks.submit(BubbleFieldCheck(transition = true, transitionUptime = SystemClock.uptimeMillis()))
+        requestCheck(BubbleFieldCheck(transition = true, transitionUptime = SystemClock.uptimeMillis()), supersedes = true)
     }
 
     private fun scheduleDiscoveryRetry(generation: Int) {
@@ -403,12 +440,15 @@ internal class AccessibilityBubbleHost(
             discoveryRetryRunnable = null
             if (recordingOverlay == null) return@Runnable
             discoveryAttempt++
-            fieldChecks.submit(BubbleFieldCheck(retryOf = generation))
+            requestCheck(BubbleFieldCheck(retryOf = generation), supersedes = false)
         }
         discoveryRetryRunnable = runnable
         // Absolute offsets from the first attempt (uptime timebase), so a slow traversal cannot stretch the
-        // schedule past the ~2 s window it is meant to cover.
-        mainHandler.postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])
+        // schedule past the ~2 s window it is meant to cover. A looper that refuses the post is quitting: end
+        // the sequence rather than leave it chasing a window with nothing scheduled.
+        if (!mainHandler.postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])) {
+            resetDiscoverySequence()
+        }
     }
 
     /** A fresh sequence chasing [windowId], measured from the transition that started it. */
@@ -425,18 +465,22 @@ internal class AccessibilityBubbleHost(
      * accessibility call of the check: one window-list read (our own overlay, the focused window, the
      * keyboard) and the tracker's probe.
      */
-    private fun beginFieldCheck(check: BubbleFieldCheck): () -> FieldCheckAnswer {
+    private fun beginFieldCheck(submitted: BubbleFieldCheck): () -> FieldCheckAnswer {
+        // An attempt of a sequence a restart or cancel superseded while it waited does not traverse.
+        val check = submitted.withoutRetryOtherThan(discoveryGeneration)
+        val startedIn = discoveryGeneration
+        val startedRevision = checkRevision
+        if (check.isEmpty) return { FieldCheckAnswer(check, null, -1, null, startedIn, startedRevision) }
         val probe = tracker.fieldProbe()
         val chasingWindowId = discoveryWindowId
-        val startedIn = discoveryGeneration
         return {
             val windows = runCatching { service.windows }.getOrNull().orEmpty()
             val overlayWindowIds = windows.filter { it.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }.mapTo(HashSet()) { it.id }
             val focusedWindowId = windows.firstOrNull { it.isFocused }?.id ?: -1
             val probed = check.resolve(overlayWindowIds)?.let { resolved ->
-                Probed(resolved, probe.probe(discover = resolved.discovers(focusedWindowId, chasingWindowId)))
+                Probed(resolved, probe.probe(discover = resolved.discovers(focusedWindowId, chasingWindowId), windows = windows))
             }
-            FieldCheckAnswer(check, probed, focusedWindowId, imeBounds(windows), startedIn)
+            FieldCheckAnswer(check, probed, focusedWindowId, imeBounds(windows), startedIn, startedRevision)
         }
     }
 
@@ -448,10 +492,17 @@ internal class AccessibilityBubbleHost(
     private fun finishFieldCheck(answer: FieldCheckAnswer) {
         val overlay = recordingOverlay ?: return
         val probed = answer.probed ?: return
+        if (answer.startedRevision != checkRevision) {
+            // The screen changed while this check ran (a focus, a transition, a refresh): its reads may predate
+            // that, so nothing of it is adopted or drawn. What it asked is asked again, OLDER than the check the
+            // change submitted, so a transition is never lost to a plain re-check that superseded it.
+            fieldChecks.submitOlder(answer.check.askAgain(answer.startedIn, discoveryGeneration))
+            return
+        }
         val key = when (val outcome = probed.adoption.adopt()) {
             FieldProbeOutcome.Stale -> {
-                // A cancel since the check began strips its sequence, as it stripped the waiting check.
-                fieldChecks.submit(if (answer.startedIn == discoveryGeneration) answer.check else answer.check.withoutSequence())
+                // The remembered editor changed (a pin) while the check ran: ask again about the one remembered now.
+                fieldChecks.submitOlder(answer.check.askAgain(answer.startedIn, discoveryGeneration))
                 return
             }
             is FieldProbeOutcome.Current -> outcome.key
@@ -467,10 +518,28 @@ internal class AccessibilityBubbleHost(
         )
         when (step) {
             DiscoveryStep.Stop -> resetDiscoverySequence()
-            is DiscoveryStep.Restart -> restartDiscovery(step.windowId, answer.check.transitionUptime)
+            is DiscoveryStep.Restart -> restartDiscovery(step.windowId, probed.resolved.transitionUptime)
             DiscoveryStep.Continue -> if (discoveryRetryRunnable == null) scheduleDiscoveryRetry(discoveryGeneration)
             DiscoveryStep.Keep -> Unit
         }
+    }
+
+    /**
+     * Main thread: a check's blocking half threw, so it answered nothing and nothing is drawn. A running
+     * sequence still moves on: its attempt counts as finding nothing, so it schedules the next one or ends,
+     * never stalls chasing a window with nothing scheduled (which would make every later transition into that
+     * window coalesce into a sequence that no longer runs).
+     */
+    private fun fieldCheckFailed(check: BubbleFieldCheck) {
+        val step = discoveryStep(
+            fieldPresent = false,
+            resolved = BubbleFieldCheck.Resolved(startsSequence = false, retryOf = check.retryOf),
+            focusedWindowId = -1,
+            chasingWindowId = discoveryWindowId,
+            startedIn = discoveryGeneration,
+            generation = discoveryGeneration,
+        )
+        if (step == DiscoveryStep.Continue && discoveryRetryRunnable == null) scheduleDiscoveryRetry(discoveryGeneration)
     }
 
     /** Off main, from the check's one window-list read: the input method window's bounds, or null. */

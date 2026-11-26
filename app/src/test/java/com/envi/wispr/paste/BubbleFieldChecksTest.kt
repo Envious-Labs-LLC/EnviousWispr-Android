@@ -25,11 +25,16 @@ class BubbleFieldChecksTest {
         val begun = mutableListOf<BubbleFieldCheck>()
         val blockingRan = mutableListOf<BubbleFieldCheck>()
         val finished = mutableListOf<BubbleFieldCheck>()
+        val failed = mutableListOf<BubbleFieldCheck>()
+        var dispatchRefused = false
         var onFinish: (BubbleFieldCheck) -> Unit = {}
         var blockingThrows = false
 
         val checks = BubbleFieldChecks(
-            background = { background.addLast(it) },
+            background = {
+                if (dispatchRefused) throw java.util.concurrent.RejectedExecutionException("refused")
+                background.addLast(it)
+            },
             main = { main.addLast(it) },
             begin = { check ->
                 begun += check
@@ -44,6 +49,7 @@ class BubbleFieldChecksTest {
                 finished += answer
                 onFinish(answer)
             },
+            failed = { check -> failed += check },
         )
 
         fun runBackground() = background.removeFirst().run()
@@ -142,12 +148,70 @@ class BubbleFieldChecksTest {
         h.runBackground()
         h.runMain()
         assertEquals(emptyList<BubbleFieldCheck>(), h.finished)
+        assertEquals("the caller hears the check answered nothing", listOf(transition), h.failed)
         h.blockingThrows = false
         h.checks.submit(click)
         assertEquals("the next check starts", listOf(transition, click), h.begun)
         h.runBackground()
         h.runMain()
         assertEquals(listOf(click), h.finished)
+    }
+
+    @Test
+    fun aRefusedDispatchIsReportedAndDoesNotWedgeTheQueue() {
+        val h = Harness()
+        h.dispatchRefused = true
+        h.checks.submit(retry)
+        assertEquals(listOf(retry), h.failed)
+        h.dispatchRefused = false
+        h.checks.submit(click)
+        assertEquals("the next check starts", listOf(retry, click), h.begun)
+    }
+
+    @Test
+    fun aCancelAbandonsTheRunningAnswerAndTheWaitingCheckButKeepsWorking() {
+        // onInterrupt / onUnbind: nothing read before the teardown is drawn or re-asked.
+        val h = Harness()
+        h.checks.submit(transition)
+        h.checks.submit(click)
+        h.checks.cancel()
+        h.checks.submit(retry)
+        assertEquals("a later check starts at once", listOf(transition, retry), h.begun)
+        h.runBackground()
+        h.runMain()
+        assertEquals("the abandoned answer is neither applied nor reported", emptyList<BubbleFieldCheck>(), h.finished + h.failed)
+        h.runBackground()
+        h.runMain()
+        assertEquals(listOf(retry), h.finished)
+        assertTrue("the dropped waiting check never ran", h.background.isEmpty() && h.begun.size == 2)
+    }
+
+    @Test
+    fun anAbandonedAnswerArrivingLateDoesNotFreeTheSlotOfTheCheckRunningNow() {
+        val h = Harness()
+        h.checks.submit(transition)
+        h.checks.cancel()
+        h.checks.submit(retry)
+        h.runBackground() // the abandoned transition answers
+        h.runMain()
+        h.checks.submit(click)
+        assertEquals("the retry still runs, so the click waits", listOf(transition, retry), h.begun)
+    }
+
+    @Test
+    fun anAnswerAskedAgainIsOlderThanTheCheckThatSupersededIt() {
+        // The host re-asks an obsolete answer behind the newer check; the newer retry attempt keeps precedence.
+        val h = Harness()
+        h.onFinish = { answer -> if (answer == transition) h.checks.submitOlder(BubbleFieldCheck(transition = true, transitionUptime = 100L, retryOf = 2)) }
+        h.checks.submit(transition)
+        h.checks.submit(retry)
+        h.runBackground()
+        h.runMain()
+        assertEquals(
+            BubbleFieldCheck(transition = true, transitionUptime = 100L, retryOf = 3),
+            h.begun.last(),
+        )
+        assertEquals(1, h.background.size)
     }
 
     @Test
@@ -179,6 +243,7 @@ class BubbleFieldChecksTest {
                     finishThread.set(Thread.currentThread())
                     finished.countDown()
                 },
+                failed = {},
             )
             main.execute {
                 mainThread.set(Thread.currentThread())

@@ -19,8 +19,8 @@ class BubbleFieldCheckTest {
         val transition = BubbleFieldCheck(transition = true, transitionUptime = 1_000L)
         val click = BubbleFieldCheck(revalidate = true)
         val retry = BubbleFieldCheck(retryOf = 4)
-        val windows = BubbleFieldCheck(transitionUptime = 1_500L, windowEvents = mapOf(7 to true, 9 to false))
-        val laterWindows = BubbleFieldCheck(windowEvents = mapOf(9 to true, 11 to false))
+        val windows = BubbleFieldCheck(windowEvents = mapOf(7 to 1_500L, 9 to null))
+        val laterWindows = BubbleFieldCheck(windowEvents = mapOf(9 to 1_700L, 11 to null, 7 to 1_200L))
 
         val merged = transition.merge(click).merge(retry).merge(windows).merge(laterWindows)
 
@@ -28,9 +28,9 @@ class BubbleFieldCheckTest {
             BubbleFieldCheck(
                 revalidate = true,
                 transition = true,
-                transitionUptime = 1_500L,
+                transitionUptime = 1_000L,
                 retryOf = 4,
-                windowEvents = mapOf(7 to true, 9 to true, 11 to false),
+                windowEvents = mapOf(7 to 1_500L, 9 to 1_700L, 11 to null),
             ),
             merged,
         )
@@ -45,21 +45,35 @@ class BubbleFieldCheckTest {
     @Test
     fun ourOwnOverlayMovingAsksForNothing() {
         // Re-checking on our own bubble's moves would let the bubble drive traversals of its own.
-        val ownMove = BubbleFieldCheck(transitionUptime = 10L, windowEvents = mapOf(42 to true))
+        val ownMove = BubbleFieldCheck(windowEvents = mapOf(42 to 10L))
         assertNull(ownMove.resolve(overlayWindowIds = setOf(42)))
         assertEquals(
-            BubbleFieldCheck.Resolved(startsSequence = true, retryOf = null),
+            BubbleFieldCheck.Resolved(startsSequence = true, retryOf = null, transitionUptime = 10L),
             ownMove.resolve(overlayWindowIds = setOf(3)),
         )
     }
 
     @Test
+    fun ourOwnOverlayMovingLaterDoesNotMoveARealTransitionsDeadlines() {
+        // The retry offsets measure from the real transition, so an overlay event merged in after it must not
+        // push them later (#561 review: the deadlines would then miss the ~2 s a returning editor takes).
+        val merged = BubbleFieldCheck(transition = true, transitionUptime = 1_000L)
+            .merge(BubbleFieldCheck(windowEvents = mapOf(42 to 1_900L)))
+            .merge(BubbleFieldCheck(windowEvents = mapOf(8 to 1_400L)))
+        assertEquals(
+            BubbleFieldCheck.Resolved(startsSequence = true, retryOf = null, transitionUptime = 1_400L),
+            merged.resolve(overlayWindowIds = setOf(42)),
+        )
+        assertEquals(1_900L, merged.resolve(overlayWindowIds = emptySet())?.transitionUptime)
+    }
+
+    @Test
     fun onlyALiveWindowEventCanStartASequence() {
         // The overlay's warranted change is dropped; the other window's cosmetic change only re-checks.
-        val mixed = BubbleFieldCheck(windowEvents = mapOf(42 to true, 8 to false))
+        val mixed = BubbleFieldCheck(windowEvents = mapOf(42 to 5L, 8 to null))
         assertEquals(BubbleFieldCheck.Resolved(startsSequence = false, retryOf = null), mixed.resolve(setOf(42)))
         // An unconditional ask survives an overlay-only event beside it.
-        val clickAndOwnMove = BubbleFieldCheck(revalidate = true, windowEvents = mapOf(42 to true))
+        val clickAndOwnMove = BubbleFieldCheck(revalidate = true, windowEvents = mapOf(42 to 5L))
         assertEquals(BubbleFieldCheck.Resolved(startsSequence = false, retryOf = null), clickAndOwnMove.resolve(setOf(42)))
         assertEquals(BubbleFieldCheck.Resolved(startsSequence = false, retryOf = 2), BubbleFieldCheck(retryOf = 2).resolve(setOf(42)))
     }
@@ -70,15 +84,29 @@ class BubbleFieldCheckTest {
             transition = true,
             transitionUptime = 99L,
             retryOf = 3,
-            windowEvents = mapOf(5 to true, 6 to false),
+            windowEvents = mapOf(5 to 98L, 6 to null),
         )
         assertEquals(
-            BubbleFieldCheck(revalidate = true, windowEvents = mapOf(5 to false, 6 to false)),
+            BubbleFieldCheck(revalidate = true, windowEvents = mapOf(5 to null, 6 to null)),
             waiting.withoutSequence(),
         )
         assertEquals(BubbleFieldCheck(revalidate = true), BubbleFieldCheck(retryOf = 1).withoutSequence())
         assertTrue(BubbleFieldCheck().withoutSequence().isEmpty)
-        assertFalse(BubbleFieldCheck(windowEvents = mapOf(1 to false)).isEmpty)
+        assertFalse(BubbleFieldCheck(windowEvents = mapOf(1 to null)).isEmpty)
+    }
+
+    @Test
+    fun anUnusableAnswerIsAskedAgainWholeUnlessItsSequenceWasCancelled() {
+        val asked = BubbleFieldCheck(transition = true, transitionUptime = 50L, retryOf = 2)
+        assertEquals(asked, asked.askAgain(startedIn = 2, generation = 2))
+        assertEquals(BubbleFieldCheck(revalidate = true), asked.askAgain(startedIn = 2, generation = 3))
+    }
+
+    @Test
+    fun anAttemptOfASupersededSequenceDoesNotTraverse() {
+        assertEquals(BubbleFieldCheck(revalidate = true), BubbleFieldCheck(revalidate = true, retryOf = 2).withoutRetryOtherThan(3))
+        assertTrue(BubbleFieldCheck(retryOf = 2).withoutRetryOtherThan(3).isEmpty)
+        assertEquals(BubbleFieldCheck(retryOf = 3), BubbleFieldCheck(retryOf = 3).withoutRetryOtherThan(3))
     }
 
     @Test

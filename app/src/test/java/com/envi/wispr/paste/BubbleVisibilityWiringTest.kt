@@ -15,7 +15,7 @@ import java.io.File
  *
  * REVERTS (performed before commit): bypass `PasswordFieldRule` in `EditorTargetTracker` and
  * [theTrackerAsksTheSharedPasswordRuleWhileInsertionHasNoSensitiveGuard] turns red; call
- * `overlay.fieldActivated(key)` directly in `revalidateBubbleField` and
+ * `overlay.fieldActivated(key)` directly in `renderField` and
  * [onlyActivateFieldTellsTheOverlayAFieldIsActive] turns red.
  */
 class BubbleVisibilityWiringTest {
@@ -35,7 +35,7 @@ class BubbleVisibilityWiringTest {
         assertEquals("one overlay.fieldActivated in the paste service", 1, count(PasteSources.all, "overlay.fieldActivated("))
         val activate = PasteSources.slice(host, "private fun activateField(", "private fun keyguardLocked(")
         assertTrue(activate.contains("overlay.fieldActivated(key)"))
-        // Both former call sites: the remembered-field event and the revalidation.
+        // Both call sites: the remembered-field event and the rendering of a field check's answer (#561).
         assertEquals("two callers of activateField", 2, count(host, "activateField(overlay, "))
         assertTrue(host.contains("tracker.rememberedFieldKey()?.let { activateField(overlay, it) }"))
         assertTrue(host.contains("if (key != null) activateField(overlay, key) else overlay.fieldLost()"))

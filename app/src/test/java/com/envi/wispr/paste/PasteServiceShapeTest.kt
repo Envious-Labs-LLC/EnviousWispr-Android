@@ -129,11 +129,11 @@ class PasteServiceShapeTest {
         )
         assertInOrder(
             body(service, "override fun onInterrupt()"),
-            "runner.abandon(", "tracker.clearPinnedTarget()", "bubble.cancelDiscoveryRetries()",
+            "runner.abandon(", "tracker.clearPinnedTarget()", "bubble.onServiceInterrupted()",
         )
         assertInOrder(
             body(service, "override fun onUnbind("),
-            "if (instance === this) publishBinding(null)", "markStopWasClean()", "bubble.cancelDiscoveryRetries()",
+            "if (instance === this) publishBinding(null)", "markStopWasClean()", "bubble.onServiceUnbound()",
         )
         assertInOrder(
             body(service, "override fun onDestroy()"),

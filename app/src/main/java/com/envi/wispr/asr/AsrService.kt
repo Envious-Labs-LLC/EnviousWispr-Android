@@ -527,7 +527,8 @@ class AsrService : Service() {
     override fun onCreate() {
         super.onCreate()
         DebugLogger.log(TAG, "AsrService created (PID: ${android.os.Process.myPid()})")
-        // Receipt verification and native model loading are deliberately off the service main thread.
+        // Receipt verification and native model loading are deliberately off the service main thread. A failed open is
+        // retried by the next request through the same opener (#562, RecognizerOwner.load), never left for the process.
         owner.load(AsrBounds.LOAD_BOUND_MS) { initRecognizer() }
     }
 

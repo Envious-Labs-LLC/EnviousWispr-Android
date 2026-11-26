@@ -364,6 +364,125 @@ class RecognizerOwnerTest {
         fun runAll() { while (queued.isNotEmpty()) queued.removeFirst().run() }
     }
 
+    /**
+     * #562 rig: one owner on a queued worker whose opens are scripted in order. Build 327 showed seven takes in a row
+     * answered `MODEL_NOT_LOADED` after one failed open; when these rows fail, a user whose first open failed (no
+     * verified model yet when `:asr` started) never dictates again until the process dies.
+     */
+    private inner class LazyLoadRig(vararg script: () -> Recognizer?) {
+        val worker = QueueWorker()
+        private val watchdog = AsrWatchdog(com.envi.wispr.process.EngineDeadline(com.envi.wispr.process.ManualDeadlineScheduler())) { error(it) }
+        val owner = RecognizerOwner<Recognizer>(RecognizerLane(worker, watchdog), watchdog, worker,
+            free = { events += "free ${it.name}"; freed.incrementAndGet() },
+            discarded = { events += "discarded" }, releaseBoundMs = 7)
+        private val opens = java.util.ArrayDeque(script.toList())
+        var opened = 0
+            private set
+        /** What each take's work read: the model's name, or null for the `MODEL_NOT_LOADED` branch. */
+        val seen = mutableListOf<String?>()
+
+        fun load() = owner.load(5) { opened++; opens.removeFirst().invoke() }
+        fun take() = owner.use(6, request(owner)) { rec -> seen += rec?.name; return@use {} }
+    }
+
+    // MUTATION: drop the retry line in `use` turns this red (the take reads null, one open).
+    @Test fun aNullFirstOpenIsRetriedByTheNextTakeWhichReadsTheRecoveredModel() {
+        val rig = LazyLoadRig({ null }, { Recognizer("recovered") })
+        rig.load()
+        rig.worker.runAll()
+        assertFalse(rig.owner.isReady)
+        rig.take()
+        rig.worker.runAll()
+        assertEquals(listOf<String?>("recovered"), rig.seen)
+        assertEquals(2, rig.opened)
+        assertTrue(rig.owner.isReady)
+    }
+
+    // A throw escaping the worker would also fail this row out of runAll: in `:asr` it would end the process.
+    @Test fun aThrowingFirstOpenIsAFailedAttemptAndTheNextTakeRecovers() {
+        val rig = LazyLoadRig({ throw IllegalStateException("native open failed") }, { Recognizer("recovered") })
+        rig.load()
+        rig.worker.runAll()
+        assertFalse(rig.owner.isReady)
+        rig.take()
+        rig.worker.runAll()
+        assertEquals(listOf<String?>("recovered"), rig.seen)
+        assertEquals(2, rig.opened)
+    }
+
+    // MUTATION: drop `loadsFinished != asked` turns this red (one open per queued take).
+    @Test fun takesQueuedTogetherShareOneRetryWhetherItSucceedsOrFails() {
+        val recovered = LazyLoadRig({ null }, { Recognizer("recovered") })
+        recovered.load()
+        recovered.worker.runAll()
+        repeat(3) { recovered.take() }
+        recovered.worker.runAll()
+        assertEquals(listOf<String?>("recovered", "recovered", "recovered"), recovered.seen)
+        assertEquals(2, recovered.opened)
+
+        val missing = LazyLoadRig({ null }, { null }, { null })
+        missing.load()
+        missing.worker.runAll()
+        repeat(3) { missing.take() }
+        missing.worker.runAll()
+        assertEquals("a missing model answers each take MODEL_NOT_LOADED", listOf<String?>(null, null, null), missing.seen)
+        assertEquals("one retry for the whole burst", 2, missing.opened)
+        missing.take()
+        missing.worker.runAll()
+        assertEquals("a later take asks once more, never in a loop", 3, missing.opened)
+        assertTrue(missing.worker.queued.isEmpty())
+    }
+
+    @Test fun aTakeQueuedBehindTheFirstOpenSharesItsAnswerInsteadOfOpeningAgain() {
+        val rig = LazyLoadRig({ null }, { error("A take queued behind an unfinished open must not open again") })
+        rig.load()
+        rig.take()
+        rig.worker.runAll()
+        assertEquals(listOf<String?>(null), rig.seen)
+        assertEquals(1, rig.opened)
+    }
+
+    // MUTATION: drop `recognizer != null` from the attempt turns this red (a second heavy model over the first).
+    @Test fun aPresentModelIsNeverOpenedAgain() {
+        val rig = LazyLoadRig({ Recognizer("parakeet") }, { error("A present model must not be opened again") })
+        rig.load()
+        rig.worker.runAll()
+        rig.take()
+        rig.load()
+        rig.worker.runAll()
+        assertEquals(listOf<String?>("parakeet"), rig.seen)
+        assertEquals(1, rig.opened)
+    }
+
+    @Test fun noRetryOpensAfterCloseAndATakeAfterCloseNeverRuns() {
+        val rig = LazyLoadRig({ null }, { error("A closed owner must not open a model") })
+        rig.load()
+        rig.worker.runAll()
+        rig.take() // Its retry and work are queued, then the owner closes before the worker reaches them.
+        rig.owner.close { events += "retired" }
+        rig.worker.runAll()
+        rig.take()
+        rig.worker.runAll()
+        assertEquals(1, rig.opened)
+        assertTrue(rig.seen.isEmpty())
+        assertEquals(0, freed.get())
+        assertEquals(listOf("retired unstarted", "retired", "retired unstarted"), events.toList())
+    }
+
+    @Test fun aCloseDuringARetryFreesTheModelItOpenedOnceAndTheTakeNeverReadsIt() {
+        lateinit var rig: LazyLoadRig
+        rig = LazyLoadRig({ null }, { rig.owner.close { events += "retired" }; Recognizer("late") })
+        rig.load()
+        rig.worker.runAll()
+        rig.take()
+        rig.worker.runAll()
+        assertEquals(2, rig.opened)
+        assertTrue(rig.seen.isEmpty())
+        assertEquals(1, freed.get())
+        assertFalse(rig.owner.isReady)
+        assertEquals(listOf("retired unstarted", "free late", "retired"), events.toList())
+    }
+
     @Test fun theNextGenerationWaitsForFreeAndTheEntireRetirementTail() {
         val worker = QueueWorker()
         val watchdog = AsrWatchdog(com.envi.wispr.process.EngineDeadline(com.envi.wispr.process.ManualDeadlineScheduler())) { error(it) }

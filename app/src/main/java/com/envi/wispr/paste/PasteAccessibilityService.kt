@@ -358,7 +358,7 @@ class PasteAccessibilityService : AccessibilityService() {
         // where the service dies holding the text.
         runner.abandon(ServiceFallbackReason.SERVICE_INTERRUPTED, InsertionOutcomeLine.Outcome.INTERRUPTED)
         tracker.clearPinnedTarget()
-        bubble.cancelDiscoveryRetries()
+        bubble.onServiceInterrupted()
     }
 
     /**
@@ -369,7 +369,7 @@ class PasteAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         if (instance === this) publishBinding(null)
         markStopWasClean()
-        bubble.cancelDiscoveryRetries()
+        bubble.onServiceUnbound()
         return super.onUnbind(intent)
     }
 

@@ -166,12 +166,19 @@ class LipsBubbleWiringTest {
         // discover-with-retry sequence so a late-exposed editor still lights the bubble (phone-pass lag).
         // Since #217 the service asks the bubble host to discover on connect; the host holds the guarded post.
         assertTrue(PasteSources.slice(service, "override fun onServiceConnected()", "\n    }").contains("bubble.discoverOnConnect()"))
-        assertTrue(bubbleHost.contains("mainHandler.post { if (connectGeneration == discoveryGeneration) discoverFieldWithRetry() }"))
+        val connect = PasteSources.slice(bubbleHost, "fun discoverOnConnect()", "\n    }\n")
+        // Reconnect bumps checkRevision and cancels pre-reconnect checks synchronously BEFORE posting, so a
+        // queued pre-reconnect completion cannot adopt an old field and bump discoveryGeneration past connectGeneration (#561 R2).
+        assertTrue(connect.indexOf("checkRevision++") in 0 until connect.indexOf("mainHandler.post"))
+        assertTrue(connect.indexOf("fieldChecks.cancel()") in 0 until connect.indexOf("mainHandler.post"))
+        assertTrue(connect.contains("mainHandler.post { if (connectGeneration == discoveryGeneration) discoverFieldWithRetry() }"))
         // Since #561 a windows-changed is a check run off main: the window-list read that tells our own overlay
         // apart drops the event there, and a warranted change starts a sequence when the check answers.
+        // A focus-changing windows-changed supersedes a running check's reads (split-screen pane switch); cosmetic ones do not.
         val windowsChanged = PasteSources.slice(bubbleHost, "AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {", "else -> Unit")
         assertTrue(windowsChanged.contains("val warrantedAt = if (discoveryWarranted(event)) SystemClock.uptimeMillis() else null"))
-        assertTrue(windowsChanged.contains("requestCheck(BubbleFieldCheck(windowEvents = mapOf(event.windowId to warrantedAt)), supersedes = false)"))
+        assertTrue(windowsChanged.contains("val focusChanged = (event.windowChanges and AccessibilityEvent.WINDOWS_CHANGE_FOCUSED) != 0"))
+        assertTrue(windowsChanged.contains("requestCheck(BubbleFieldCheck(windowEvents = mapOf(event.windowId to warrantedAt)), supersedes = focusChanged)"))
         val gate = PasteSources.slice(bubbleHost, "private fun discoveryWarranted(", "\n    /**")
         assertTrue(gate.contains("event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return true"))
         assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_FOCUSED"))
@@ -197,8 +204,12 @@ class LipsBubbleWiringTest {
         assertTrue(body.contains("if (!stillFocused && discover)"))
         // Split screen: an editor in the other pane keeps its focus flag. Both the remembered editor
         // and a discovered one must sit in the window that has input focus, or the bubble hides. The
-        // check's one window snapshot answers it, and a discovered editor is confirmed by one fresh read.
-        assertTrue(body.contains("isSafeFocusedEditor(remembered.node) && inSnapshotFocus(remembered.windowId)"))
+        // check's one window snapshot filters them, and BOTH a refreshed editor and a discovered editor
+        // are confirmed by one live focus read after their node IPC (#561 R2).
+        val stillFocusedExpr = PasteSources.slice(body, "val stillFocused =", "\n            // Still focused:")
+        assertTrue(stillFocusedExpr.contains("inSnapshotFocus(remembered.windowId)"))
+        assertTrue(stillFocusedExpr.indexOf("remembered.node.refresh()") in 0 until stillFocusedExpr.indexOf("isInFocusedWindow(remembered.windowId)"))
+        assertTrue(stillFocusedExpr.contains("isSafeFocusedEditor(remembered.node)"))
         assertTrue(body.contains("findFocusedEditableTarget({ windows }, inSnapshotFocus)"))
         assertTrue(body.contains("if (isInFocusedWindow(candidate.windowId)) {"))
         // A still-focused editor's refreshed copy goes to main, so its traits are fresh (#561 review).

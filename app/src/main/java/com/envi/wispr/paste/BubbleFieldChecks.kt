@@ -67,13 +67,14 @@ internal class BubbleFieldChecks<A : Any>(
     }
 
     /**
-     * Main thread. The service was interrupted or unbound: the running check's answer is abandoned (neither
-     * [finish] nor [failed] hears of it) and the waiting check is dropped. Later submits run as usual; a
-     * blocked check still holds the one worker, so the next one waits behind it there.
+     * Main thread. The service was interrupted, unbound, or reconnected: the running check's answer is
+     * abandoned (neither [finish] nor [failed] hears of it) and the waiting check is dropped. [running] stays
+     * true while a blocked probe still occupies the one worker, so repeated cancels and submits merge into
+     * [waiting] instead of piling obsolete probes onto the executor; [completed] frees the slot and drains
+     * [waiting] once the worker finishes.
      */
     fun cancel() {
         startToken++
-        running = false
         waiting = null
     }
 
@@ -84,10 +85,15 @@ internal class BubbleFieldChecks<A : Any>(
     }
 
     private fun start(check: BubbleFieldCheck) {
-        // A throw in the snapshot must not take down the accessibility service, and auto-paste with it.
-        val blocking = runCatching { begin(check) }.getOrNull() ?: return
         running = true
         val token = startToken
+        // A throw in the snapshot must not take down the accessibility service, and auto-paste with it.
+        // Report it through [completed] so an active retry sequence advances and any waiting check drains.
+        val blocking = runCatching { begin(check) }.getOrNull()
+        if (blocking == null) {
+            completed(token, check, null)
+            return
+        }
         val dispatched = runCatching {
             background(Runnable {
                 // A throw off main is a check that answered nothing; the queue must not stay "running" forever.
@@ -99,15 +105,22 @@ internal class BubbleFieldChecks<A : Any>(
     }
 
     private fun completed(token: Int, check: BubbleFieldCheck, answer: A?) {
-        // Abandoned by [cancel] or [close]: the check now running, if any, is not this one.
-        if (token != startToken || closed) return
-        // Still "running" while the answer is applied, so a check submitted from [finish] (an unusable answer
-        // re-asked) waits in the slot rather than starting a second one beside the next.
+        if (closed) {
+            running = false
+            return
+        }
+        // Still "running" while the answer is applied, so a check submitted from [finish] or [failed]
+        // waits in the slot rather than starting a second one beside the next.
         try {
-            if (answer != null) finish(answer) else failed(check)
+            // Abandoned by [cancel]: neither [finish] nor [failed] hears of it, while `running` still
+            // clears below so the latest waiting check starts once the worker is free.
+            if (token == startToken) {
+                if (answer != null) finish(answer) else failed(check)
+            }
         } finally {
             running = false
         }
+        if (closed) return
         val next = waiting ?: return
         waiting = null
         start(next)

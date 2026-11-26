@@ -259,8 +259,12 @@ internal class EditorTargetTracker(
         return FieldProbe { discover, windows ->
             val inSnapshotFocus = { windowId: Int -> windows.any { it.id == windowId && it.isFocused } }
             val stillFocused = remembered != null &&
-                runCatching { remembered.node.refresh() && isSafeFocusedEditor(remembered.node) && inSnapshotFocus(remembered.windowId) }
-                    .getOrDefault(false)
+                runCatching {
+                    inSnapshotFocus(remembered.windowId) &&
+                        remembered.node.refresh() &&
+                        isSafeFocusedEditor(remembered.node) &&
+                        isInFocusedWindow(remembered.windowId)
+                }.getOrDefault(false)
             // Still focused: the refreshed copy goes to main to replace the remembered node, so the traits read
             // from it (a box toggled to a password box) are as fresh as a refresh on main used to leave them.
             val refreshed = remembered?.takeIf { stillFocused }

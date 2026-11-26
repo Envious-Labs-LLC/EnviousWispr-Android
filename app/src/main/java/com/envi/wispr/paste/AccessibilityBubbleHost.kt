@@ -104,9 +104,10 @@ internal class AccessibilityBubbleHost(
 
     /**
      * Bumped on main by every event that supersedes what a running check read: a focus or click, a window
-     * state change, a lock broadcast, a connect, an explicit [refresh]. An answer that began before the
-     * newest bump is not drawn; what it asked is asked again behind the newer check (#561 review). The
-     * frequent windows-changed stream does not bump it, so a running check is never starved by it.
+     * state change, a focus-changing windows-changed (`WINDOWS_CHANGE_FOCUSED`), a lock broadcast, a
+     * connect, an explicit [refresh], or a service interrupt/unbind. An answer that began before the newest
+     * bump is not drawn; what it asked is asked again behind the newer check (#561 review). Cosmetic
+     * windows-changed events do not bump it, so a running check is never starved by them.
      */
     private var checkRevision = 0
 
@@ -210,7 +211,12 @@ internal class AccessibilityBubbleHost(
      */
     fun discoverOnConnect() {
         unbound = false
+        // Bump the revision and abandon pre-reconnect checks synchronously BEFORE posting, so a queued
+        // pre-reconnect completion cannot adopt an old field, hit DiscoveryStep.Stop -> resetDiscoverySequence(),
+        // and bump discoveryGeneration past connectGeneration (causing the posted discovery to be skipped).
+        checkRevision++
         cancelDiscoveryRetries()
+        fieldChecks.cancel()
         val connectGeneration = discoveryGeneration
         // Generation-guard the post itself: an unbind/destroy between here and the looper turn bumps the
         // generation, so a torn-down service never starts a fresh sequence (Codex review, 2026-09-13).
@@ -262,9 +268,11 @@ internal class AccessibilityBubbleHost(
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 // Whether this window is our own overlay moving is a window-list read, so the check answers it
                 // off main and drops the event if so. A warranted change discovers with retry; a cosmetic one
-                // re-checks, and finding the field present cancels any pending retry.
+                // re-checks, and finding the field present cancels any pending retry. A window-focus change
+                // (e.g. switching split-screen panes) supersedes a running check's reads; cosmetic ones do not.
                 val warrantedAt = if (discoveryWarranted(event)) SystemClock.uptimeMillis() else null
-                requestCheck(BubbleFieldCheck(windowEvents = mapOf(event.windowId to warrantedAt)), supersedes = false)
+                val focusChanged = (event.windowChanges and AccessibilityEvent.WINDOWS_CHANGE_FOCUSED) != 0
+                requestCheck(BubbleFieldCheck(windowEvents = mapOf(event.windowId to warrantedAt)), supersedes = focusChanged)
             }
             else -> Unit
         }
@@ -283,6 +291,7 @@ internal class AccessibilityBubbleHost(
      * dropped, and the retry sequence ends. The service stays bound, so later events check as usual.
      */
     fun onServiceInterrupted() {
+        checkRevision++
         cancelDiscoveryRetries()
         fieldChecks.cancel()
     }
@@ -531,6 +540,7 @@ internal class AccessibilityBubbleHost(
      * window coalesce into a sequence that no longer runs).
      */
     private fun fieldCheckFailed(check: BubbleFieldCheck) {
+        if (recordingOverlay == null) return
         val step = discoveryStep(
             fieldPresent = false,
             resolved = BubbleFieldCheck.Resolved(startsSequence = false, retryOf = check.retryOf),

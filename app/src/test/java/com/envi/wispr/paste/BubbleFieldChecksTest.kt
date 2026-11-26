@@ -28,6 +28,8 @@ class BubbleFieldChecksTest {
         val failed = mutableListOf<BubbleFieldCheck>()
         var dispatchRefused = false
         var onFinish: (BubbleFieldCheck) -> Unit = {}
+        var onFailed: (BubbleFieldCheck) -> Unit = {}
+        var beginThrows = false
         var blockingThrows = false
 
         val checks = BubbleFieldChecks(
@@ -38,6 +40,7 @@ class BubbleFieldChecksTest {
             main = { main.addLast(it) },
             begin = { check ->
                 begun += check
+                if (beginThrows) error("snapshot failed")
                 val blocking: () -> BubbleFieldCheck = {
                     blockingRan += check
                     if (blockingThrows) error("the probe failed")
@@ -49,7 +52,10 @@ class BubbleFieldChecksTest {
                 finished += answer
                 onFinish(answer)
             },
-            failed = { check -> failed += check },
+            failed = { check ->
+                failed += check
+                onFailed(check)
+            },
         )
 
         fun runBackground() = background.removeFirst().run()
@@ -169,17 +175,63 @@ class BubbleFieldChecksTest {
     }
 
     @Test
-    fun aCancelAbandonsTheRunningAnswerAndTheWaitingCheckButKeepsWorking() {
-        // onInterrupt / onUnbind: nothing read before the teardown is drawn or re-asked.
+    fun aBeginThatThrowsOnARetryReportsFailureAndDrainsWaitingWork() {
+        // #561 R2: a throw in begin() during a retry must report failure so the retry sequence advances
+        // instead of stalling, and any waiting check submitted while handling it must drain.
+        val h = Harness()
+        h.beginThrows = true
+        var begunInsideFailed: List<BubbleFieldCheck>? = null
+        h.onFailed = {
+            h.beginThrows = false
+            h.checks.submit(click)
+            begunInsideFailed = h.begun.toList()
+        }
+        h.checks.submit(retry)
+        assertEquals(listOf(retry), h.failed)
+        assertEquals("running stays true during failed so follow-up waits and drains cleanly", listOf(retry), begunInsideFailed)
+        assertEquals(emptyList<BubbleFieldCheck>(), h.finished)
+        assertEquals("the follow-up check drained cleanly", listOf(retry, click), h.begun)
+        assertEquals(1, h.background.size)
+        h.runBackground()
+        h.runMain()
+        assertEquals(listOf(click), h.finished)
+        assertTrue(h.background.isEmpty() && h.main.isEmpty())
+    }
+
+    @Test
+    fun aCancelBeforeAQueuedCompletionRunsAbandonsItAndLetsTheNextCheckStart() {
+        // #561 R2 reconnect ordering: a pre-reconnect completion already queued on main must be abandoned
+        // by cancel() so it never calls finish/failed, and frees the slot for the post-reconnect check.
+        val h = Harness()
+        h.checks.submit(transition)
+        h.runBackground() // completed runnable is now queued on main
+        h.checks.cancel()
+        h.runMain() // queued pre-reconnect completion runs before reconnect's posted check
+        assertEquals(emptyList<BubbleFieldCheck>(), h.finished + h.failed)
+        h.checks.submit(retry)
+        assertEquals("the slot is free, so reconnect's check starts at once", listOf(transition, retry), h.begun)
+        assertEquals(1, h.background.size)
+        h.runBackground()
+        h.runMain()
+        assertEquals(listOf(retry), h.finished)
+    }
+
+    @Test
+    fun aCancelAbandonsTheRunningAnswerAndTheWaitingCheckAndDrainsAfterTheWorkerFrees() {
+        // onInterrupt / onUnbind / reconnect: nothing read before the cancel is drawn or re-asked,
+        // and the post-cancel check waits behind the blocked worker before running.
         val h = Harness()
         h.checks.submit(transition)
         h.checks.submit(click)
         h.checks.cancel()
         h.checks.submit(retry)
-        assertEquals("a later check starts at once", listOf(transition, retry), h.begun)
+        assertEquals("the worker is still blocked, so the post-cancel check waits", listOf(transition), h.begun)
+        assertEquals(1, h.background.size)
         h.runBackground()
         h.runMain()
         assertEquals("the abandoned answer is neither applied nor reported", emptyList<BubbleFieldCheck>(), h.finished + h.failed)
+        assertEquals("once the worker frees, the post-cancel check starts", listOf(transition, retry), h.begun)
+        assertEquals(1, h.background.size)
         h.runBackground()
         h.runMain()
         assertEquals(listOf(retry), h.finished)
@@ -187,15 +239,35 @@ class BubbleFieldChecksTest {
     }
 
     @Test
-    fun anAbandonedAnswerArrivingLateDoesNotFreeTheSlotOfTheCheckRunningNow() {
+    fun repeatedCancelsAndSubmitsWhileWorkerIsBlockedNeverPileObsoleteProbes() {
+        // #561 R2: repeated cancel + submit cycles while one probe is blocked must not pile obsolete
+        // probes onto the executor; only the 1 in-flight obsolete probe runs, then only the latest submit.
+        val latest = BubbleFieldCheck(transition = true, transitionUptime = 250L)
         val h = Harness()
         h.checks.submit(transition)
         h.checks.cancel()
-        h.checks.submit(retry)
-        h.runBackground() // the abandoned transition answers
-        h.runMain()
         h.checks.submit(click)
-        assertEquals("the retry still runs, so the click waits", listOf(transition, retry), h.begun)
+        h.checks.cancel()
+        h.checks.submit(retry)
+        h.checks.cancel()
+        h.checks.submit(latest)
+
+        assertEquals("still only 1 probe queued on the worker", 1, h.background.size)
+        assertEquals("no obsolete probe started beside the blocked one", listOf(transition), h.begun)
+
+        h.runBackground()
+        h.runMain()
+        assertEquals("only the 1 obsolete probe ran on the worker", listOf(transition), h.blockingRan)
+        assertEquals("abandoned completion neither finishes nor fails", emptyList<BubbleFieldCheck>(), h.finished + h.failed)
+        assertEquals("only the latest submitted check runs next", listOf(transition, latest), h.begun)
+        assertEquals(1, h.background.size)
+
+        h.runBackground()
+        h.runMain()
+        assertEquals(listOf(transition, latest), h.blockingRan)
+        assertEquals(listOf(latest), h.finished)
+        assertEquals(emptyList<BubbleFieldCheck>(), h.failed)
+        assertTrue(h.background.isEmpty() && h.main.isEmpty())
     }
 
     @Test

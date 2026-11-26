@@ -151,7 +151,8 @@ class LipsBubbleWiringTest {
         assertTrue(config.contains("android:canRetrieveWindowContent=\"true\""))
         assertTrue(service.contains("AccessibilityEvent.TYPE_WINDOWS_CHANGED"))
         // And the bubble host acts on it (#217): the keyboard's own windows-changed reaches the bubble.
-        assertTrue(bubbleHost.contains("AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED ->"))
+        assertTrue(bubbleHost.contains("AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> discoverFieldWithRetry()"))
+        assertTrue(bubbleHost.contains("AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {"))
         assertTrue(PasteSources.slice(service, "override fun onAccessibilityEvent(", "\n    }").contains("bubble.updateBubbleFromEvent(event, remembered)"))
     }
 
@@ -164,7 +165,11 @@ class LipsBubbleWiringTest {
         // Since #217 the service asks the bubble host to discover on connect; the host holds the guarded post.
         assertTrue(PasteSources.slice(service, "override fun onServiceConnected()", "\n    }").contains("bubble.discoverOnConnect()"))
         assertTrue(bubbleHost.contains("mainHandler.post { if (connectGeneration == discoveryGeneration) discoverFieldWithRetry() }"))
-        assertTrue(bubbleHost.contains("if (discoveryWarranted(event)) discoverFieldWithRetry() else if (revalidateBubbleField(overlay)) cancelDiscoveryRetries()"))
+        // Since #561 a windows-changed is a check run off main: the window-list read that tells our own overlay
+        // apart drops the event there, and a warranted change starts a sequence when the check answers.
+        val windowsChanged = PasteSources.slice(bubbleHost, "AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {", "else -> Unit")
+        assertTrue(windowsChanged.contains("val warranted = discoveryWarranted(event)"))
+        assertTrue(windowsChanged.contains("windowEvents = mapOf(event.windowId to warranted)"))
         val gate = PasteSources.slice(bubbleHost, "private fun discoveryWarranted(", "\n    /**")
         assertTrue(gate.contains("event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return true"))
         assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_FOCUSED"))
@@ -172,20 +177,29 @@ class LipsBubbleWiringTest {
         assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_ADDED"))
         assertTrue(gate.contains("AccessibilityEvent.WINDOWS_CHANGE_REMOVED"))
         assertTrue(gate.contains("event.windowChanges and relevant) != 0"))
-        // Since #217 the bubble asks the tracker, which checks and adopts; the bubble then renders.
-        val revalidate = PasteSources.slice(bubbleHost, "private fun revalidateBubbleField(", "\n    /**")
-        assertTrue(revalidate.contains("val key = tracker.refreshFocusedField(discover)"))
+        // Since #217 the bubble asks the tracker, which checks and adopts; since #561 it asks through a probe
+        // whose calls run off main, and the bubble renders the adopted answer.
+        val begin = PasteSources.slice(bubbleHost, "private fun beginFieldCheck(", "\n    /**")
+        assertTrue(begin.contains("val probe = tracker.fieldProbe()"))
+        assertTrue(begin.contains("probe.probe(discover = resolved.discovers(focusedWindowId, chasingWindowId))"))
+        val finish = PasteSources.slice(bubbleHost, "private fun finishFieldCheck(", "\n    /**")
+        assertTrue(finish.contains("probed.adoption.adopt()"))
+        assertTrue(finish.indexOf("FieldProbeOutcome.Stale ->") in 0 until finish.indexOf("renderField(overlay, key, answer.imeBounds)"))
         // Since #523 an active field goes through the one visibility decision (`activateField`).
-        assertTrue(revalidate.indexOf("activateField(overlay, key) else overlay.fieldLost()") in 0 until revalidate.indexOf("overlay.keyboardBounds(dockedKeyboardTop())"))
-        val body = PasteSources.slice(tracker, "fun refreshFocusedField(discover: Boolean): Any? {", "\n    /**")
+        val render = PasteSources.slice(bubbleHost, "private fun renderField(", "\n    /**")
+        assertTrue(render.indexOf("activateField(overlay, key) else overlay.fieldLost()") in 0 until render.indexOf("overlay.keyboardBounds(dockedKeyboardTop(imeBounds))"))
+        val body = PasteSources.slice(tracker, "fun fieldProbe(): FieldProbe {", "\n    /**")
         assertTrue(body.contains("if (!stillFocused && discover)"))
         assertTrue(body.contains("findFocusedEditableTarget()"))
         // Split screen: an editor in the other pane keeps its focus flag. Both the remembered editor
         // and a discovered one must sit in the window that has input focus, or the bubble hides.
-        assertTrue(body.contains("isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId)"))
+        assertTrue(body.contains("isSafeFocusedEditor(remembered.node) && isInFocusedWindow(remembered.windowId)"))
         assertTrue(body.contains("findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) }"))
-        // A failed discovery keeps the old target: it is recycled only once a new one was found.
-        assertTrue(body.indexOf("if (found != null) {") in 0 until body.indexOf("clearTarget()"))
+        // A failed discovery keeps the old target: it is recycled only once a new one was adopted, on main,
+        // and only while the remembered editor is still the one the probe copied.
+        val adopt = PasteSources.slice(tracker, "private fun adoptFieldProbe(", "\n    }\n")
+        assertTrue(adopt.indexOf("if (epoch != targetEpoch) {") in 0 until adopt.indexOf("if (found != null) {"))
+        assertTrue(adopt.indexOf("if (found != null) {") in 0 until adopt.indexOf("clearTarget()"))
         assertTrue(tracker.contains("service.windows.any { it.id == windowId && it.isFocused }"))
     }
 
@@ -195,29 +209,71 @@ class LipsBubbleWiringTest {
         // fixed offsets so the bubble lights without a re-tap; one guarded sequence, coalesced per window,
         // cancelled on success and teardown (phone pass + Codex, 2026-09-13).
         assertTrue(bubbleHost.contains("DISCOVERY_RETRY_DELAYS_MS = longArrayOf(250L, 750L, 2_250L)"))
+        // Since #561 the first look and each attempt are checks run off main; the coalescing and the schedule
+        // are decided when a check answers (`discoveryStep`, its branches in BubbleFieldCheckTest).
         val start = PasteSources.slice(bubbleHost, "private fun discoverFieldWithRetry()", "\n    }\n")
-        // Coalesce: a sequence already chasing the same focused window (unknown -1 included) is not restarted.
-        assertTrue(start.contains("discoveryRetryRunnable != null && focusedId == discoveryWindowId) return"))
-        assertTrue(start.contains("if (revalidateBubbleField(overlay, discover = true)) return"))
-        assertTrue(start.contains("discoveryStartUptime = SystemClock.uptimeMillis()"))
-        assertTrue(start.contains("scheduleDiscoveryRetry(discoveryGeneration)"))
+        // The deadlines measure from the transition, captured before the first look.
+        assertTrue(start.contains("BubbleFieldCheck(transition = true, transitionUptime = SystemClock.uptimeMillis())"))
+        val finish = PasteSources.slice(bubbleHost, "private fun finishFieldCheck(", "\n    /**")
+        // Coalesce: a sequence already chasing the same focused window (unknown -1 included) is not restarted;
+        // the window it chases is the sequence's state on main, read when the check answers.
+        assertTrue(finish.contains("chasingWindowId = discoveryWindowId"))
+        assertTrue(finish.contains("is DiscoveryStep.Restart -> restartDiscovery(step.windowId, answer.check.transitionUptime)"))
+        // Stops the moment a field is found.
+        assertTrue(finish.contains("DiscoveryStep.Stop -> resetDiscoverySequence()"))
+        assertTrue(finish.contains("DiscoveryStep.Continue -> if (discoveryRetryRunnable == null) scheduleDiscoveryRetry(discoveryGeneration)"))
+        val restart = PasteSources.slice(bubbleHost, "private fun restartDiscovery(", "\n    }\n")
+        assertTrue(restart.contains("discoveryStartUptime = startUptime"))
+        assertTrue(restart.contains("scheduleDiscoveryRetry(discoveryGeneration)"))
         val sched = PasteSources.slice(bubbleHost, "private fun scheduleDiscoveryRetry(", "\n    }\n")
         // Absolute offsets from the first attempt, so a slow traversal cannot stretch the schedule.
         assertTrue(sched.contains("postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])"))
         // Generation guard: a superseding transition or teardown makes an in-flight attempt do nothing.
         assertTrue(sched.contains("if (generation != discoveryGeneration) return@Runnable"))
-        // Stops the moment a field is found.
-        assertTrue(sched.contains("if (revalidateBubbleField(overlay, discover = true)) {"))
-        assertTrue(sched.contains("cancelDiscoveryRetries()"))
+        assertTrue(sched.contains("fieldChecks.submit(BubbleFieldCheck(retryOf = generation))"))
         val cancel = PasteSources.slice(bubbleHost, "fun cancelDiscoveryRetries()", "\n    }\n")
-        assertTrue(cancel.contains("discoveryGeneration++"))
-        assertTrue(cancel.contains("mainHandler.removeCallbacks(it)"))
+        assertTrue(cancel.contains("resetDiscoverySequence()"))
+        assertTrue(cancel.contains("fieldChecks.forgetSequence()"))
+        val reset = PasteSources.slice(bubbleHost, "private fun resetDiscoverySequence()", "\n    }\n")
+        assertTrue(reset.contains("discoveryGeneration++"))
+        assertTrue(reset.contains("mainHandler.removeCallbacks(it)"))
         // Cancelled on every teardown so retries never leak past the service.
         // Since #217 the service asks the bubble host; its close cancels them on destroy.
         assertTrue(PasteSources.slice(service, "override fun onInterrupt()", "\n    }\n").contains("bubble.cancelDiscoveryRetries()"))
         assertTrue(PasteSources.slice(service, "override fun onUnbind(", "\n    }\n").contains("bubble.cancelDiscoveryRetries()"))
         assertTrue(PasteSources.slice(service, "override fun onDestroy()", "\n    }\n").contains("bubble.close()"))
-        assertTrue(PasteSources.slice(bubbleHost, "fun close() {", "\n    }\n").contains("cancelDiscoveryRetries()"))
+        val close = PasteSources.slice(bubbleHost, "fun close() {", "\n    }\n")
+        assertTrue(close.contains("cancelDiscoveryRetries()"))
+        assertTrue(close.contains("fieldChecks.close()"))
+        assertTrue(close.contains("probeExecutor.shutdownNow()"))
+    }
+
+    @Test
+    fun theBubbleMakesNoAccessibilityCallOnTheMainThread() {
+        // #561 (Sentry ENVIOUSWISPR-ANDROID-V): `discoverOnConnect` reached `findFocus` on main and the phone
+        // froze in a fatal ANR. Every accessibility call of a field check now runs in the blocking half that
+        // `beginFieldCheck` returns, which `probeExecutor` runs; nothing else in the host makes one.
+        // REVERT: call `tracker.fieldProbe().probe(...)` from `updateBubbleFromEvent`, or read `service.windows`
+        // in `discoverFieldWithRetry`, and this row turns red.
+        val begin = PasteSources.slice(bubbleHost, "private fun beginFieldCheck(", "\n    /**")
+        val blockingHalf = begin.substringAfter("return {")
+        assertEquals("one window-list read in the host", 1, Regex("""\bservice\.windows\b""").findAll(bubbleHost).count())
+        assertTrue("and it is in the blocking half", blockingHalf.contains("service.windows"))
+        assertEquals("one probe call in the host", 1, Regex("""\.probe\(""").findAll(bubbleHost).count())
+        assertTrue("and it is in the blocking half", blockingHalf.contains("probe.probe(discover = "))
+        listOf("""\bfindFocus\(""", """\brootInActiveWindow\b""", """\.refresh\(\)""", """\bgetWindows\(""").forEach {
+            assertEquals("the host makes no $it call", 0, Regex(it).findAll(bubbleHost).count())
+        }
+        // The blocking half reaches main only through the queue, which runs it on the executor.
+        assertTrue(bubbleHost.contains("background = { probeExecutor.execute(it) }"))
+        assertTrue(bubbleHost.contains("main = { mainHandler.post(it) }"))
+        assertTrue(bubbleHost.contains("ThreadPoolExecutor(0, 1, 5L, TimeUnit.SECONDS, LinkedBlockingQueue())"))
+        // The tracker's half that runs off main touches none of its state: no write of the remembered or
+        // pinned editor inside the probe lambda, and its answer is adopted back on main.
+        val probe = PasteSources.slice(tracker, "return FieldProbe { discover ->", "FieldAdoption { adoptFieldProbe(epoch, stillFocused, found) }")
+        listOf("lastTarget", "pinnedTarget", "targetEpoch", "clearTarget(", "notifyObservedField(").forEach {
+            assertFalse("the probe lambda touches $it", probe.contains(it))
+        }
     }
 
     @Test

@@ -9,13 +9,34 @@ import com.envi.wispr.debug.DebugLogger
 /** The remembered editor's app and password flag, for the bubble only (#523); content-free. */
 internal data class FieldTraits(val packageName: String, val passwordField: Boolean)
 
+/** The blocking half of the bubble's field check ([EditorTargetTracker.fieldProbe]): run it OFF the main thread. */
+internal fun interface FieldProbe {
+    fun probe(discover: Boolean): FieldAdoption
+}
+
+/** The main-thread half: applies what [FieldProbe] read, unless the remembered editor changed meanwhile. */
+internal fun interface FieldAdoption {
+    fun adopt(): FieldProbeOutcome
+}
+
+/** What adopting a probe's answer did. */
+internal sealed interface FieldProbeOutcome {
+    /** The remembered editor changed while the probe ran; nothing was applied. */
+    data object Stale : FieldProbeOutcome
+
+    /** The focused field's key, or null when no editor is focused. */
+    data class Current(val key: Any?) : FieldProbeOutcome
+}
+
 /**
  * Which editor a dictation aims at (#217): the editor the user last focused (remembered), and the editor a
  * take pinned (the one its words go to). Both the pin and the floating bubble ask this one owner the same
  * question, which editor is focused in the window that holds input focus, so they cannot disagree.
  *
- * Every call runs on the service's main thread. The node copies this holds are its own: it recycles them,
- * and a caller reads the pinned editor only through [withPinnedNode] and the three read-only properties.
+ * Every call runs on the service's main thread, except the blocking half of the bubble's check
+ * ([fieldProbe]), which runs off main and touches none of this state. The node copies this holds are its
+ * own: it recycles them, and a caller reads the pinned editor only through [withPinnedNode] and the three
+ * read-only properties.
  */
 internal class EditorTargetTracker(
     private val service: AccessibilityService,
@@ -45,7 +66,16 @@ internal class EditorTargetTracker(
 
     private data class FieldKey(val windowId: Int, val node: Int)
 
+    /**
+     * Bumped by EVERY write of [lastTarget], so the bubble's off-main probe can tell that the editor it
+     * copied is no longer the remembered one ([fieldProbe]). Main thread only, like the target itself.
+     */
+    private var targetEpoch = 0
     private var lastTarget: TargetSnapshot? = null
+        set(value) {
+            field = value
+            targetEpoch++
+        }
     private var pinnedTarget: TargetToken? = null
 
     /** The pinned editor's package, or null when nothing is pinned. */
@@ -190,33 +220,52 @@ internal class EditorTargetTracker(
     }
 
     /**
-     * The bubble's question (#217): is the remembered editor still focused? When it is not, and [discover]
-     * is set, look for the editor that IS focused right now and adopt it. Discovery is one window
-     * traversal, so the bubble asks for it only on the rare events. The old target is recycled only when a
-     * new one was found; a failed discovery keeps it. Returns the field's key, or null when no editor is
-     * focused.
+     * The bubble's question (#217): is the remembered editor still focused? When it is not, and the probe is
+     * asked to discover, look for the editor that IS focused right now and adopt it. Discovery is one window
+     * traversal, so the bubble asks for it only on the rare events.
+     *
+     * Split in two so its accessibility calls leave the main thread (#561: `findFocus` here froze the phone
+     * in an ANR). This half runs on main and only copies the remembered editor, so the refresh off main never
+     * touches a node main reads. [FieldProbe.probe] makes every blocking call, on any thread, and reads or
+     * writes nothing of this tracker. [FieldAdoption.adopt], back on main, applies the answer only while the
+     * remembered editor is still the one copied here: any change in between (a newer focus, a pin, a close)
+     * bumps [targetEpoch] and the answer is [FieldProbeOutcome.Stale], so an old answer can never overwrite a
+     * newer field. The old target is recycled only when a new one was adopted; a failed discovery keeps it.
      */
-    fun refreshFocusedField(discover: Boolean): Any? {
-        var target = lastTarget
-        var stillFocused = target != null &&
-            runCatching { target.node.refresh() && isSafeFocusedEditor(target.node) && isInFocusedWindow(target.windowId) }
-                .getOrDefault(false)
-        if (!stillFocused && discover) {
-            val found = runCatching { findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) } }.getOrNull()
-            // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
-            DebugLogger.debug(
-                TAG,
-                "Bubble discovery found=${found != null} windows=${runCatching { service.windows.size }.getOrDefault(-1)}",
-            )
-            if (found != null) {
-                clearTarget()
-                lastTarget = found
-                notifyObservedField()
-                target = found
-                stillFocused = true
+    fun fieldProbe(): FieldProbe {
+        val epoch = targetEpoch
+        val remembered = lastTarget?.let { it.copy(node = AccessibilityNodeInfo.obtain(it.node)) }
+        return FieldProbe { discover ->
+            val stillFocused = remembered != null &&
+                runCatching { remembered.node.refresh() && isSafeFocusedEditor(remembered.node) && isInFocusedWindow(remembered.windowId) }
+                    .getOrDefault(false)
+            remembered?.node?.recycle()
+            var found: TargetSnapshot? = null
+            if (!stillFocused && discover) {
+                found = runCatching { findFocusedEditableTarget()?.takeIf { isInFocusedWindow(it.windowId) } }.getOrNull()
+                // Content-free: counts and booleans only (`kotlin-patterns.md` RULE: no-content-in-diagnostics).
+                DebugLogger.debug(
+                    TAG,
+                    "Bubble discovery found=${found != null} windows=${runCatching { service.windows.size }.getOrDefault(-1)}",
+                )
             }
+            FieldAdoption { adoptFieldProbe(epoch, stillFocused, found) }
         }
-        return if (stillFocused) fieldKey(target!!) else null
+    }
+
+    private fun adoptFieldProbe(epoch: Int, stillFocused: Boolean, found: TargetSnapshot?): FieldProbeOutcome {
+        if (epoch != targetEpoch) {
+            found?.node?.recycle()
+            return FieldProbeOutcome.Stale
+        }
+        if (stillFocused) return FieldProbeOutcome.Current(lastTarget?.let(::fieldKey))
+        if (found != null) {
+            clearTarget()
+            lastTarget = found
+            notifyObservedField()
+            return FieldProbeOutcome.Current(fieldKey(found))
+        }
+        return FieldProbeOutcome.Current(null)
     }
 
     /**

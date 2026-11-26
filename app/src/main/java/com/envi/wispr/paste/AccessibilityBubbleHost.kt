@@ -25,13 +25,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * The floating lips bubble as the paste service hosts it (#217): the overlay, its look and colour, its
  * remembered dock, and the field discovery that decides when it shows. It asks [tracker] which editor is
  * focused and never pins one. Event and overlay operations run on main; the look collection and the
  * position reads and writes run on IO, with UI updates posted to main. The position work stays on the
- * service's [historyScope], so it is cancelled with it, after the insertion's teardown.
+ * service's [historyScope], so it is cancelled with it, after the insertion's teardown. Every accessibility
+ * call of a field check (the window list, the active root, `findFocus`, `refresh`) runs on [probeExecutor],
+ * never on main (#561), and its answer is rendered back on main by [finishFieldCheck].
  */
 internal class AccessibilityBubbleHost(
     private val service: PasteAccessibilityService,
@@ -92,9 +97,39 @@ internal class AccessibilityBubbleHost(
     // indefinitely (Codex review, 2026-09-13). Separate from the insertion's retry.
     private var discoveryGeneration = 0
     private var discoveryAttempt = 0
-    private var discoveryWindowId = -1
+    /** The focused window a running sequence chases (-1 when it was unknown), or null when none runs. */
+    private var discoveryWindowId: Int? = null
     private var discoveryStartUptime = 0L
     private var discoveryRetryRunnable: Runnable? = null
+
+    /** A check that resolved to something to do: what it asked and the tracker's answer, adopted on main. */
+    private class Probed(val resolved: BubbleFieldCheck.Resolved, val adoption: FieldAdoption)
+
+    /** One field check's answer, carried from [probeExecutor] back to main. Window ids and bounds are plain values. */
+    private class FieldCheckAnswer(
+        val check: BubbleFieldCheck,
+        /** Null when every event in the check was an accessibility overlay's own (our bubble moving). */
+        val probed: Probed?,
+        val focusedWindowId: Int,
+        val imeBounds: Rect?,
+        /** The sequence generation when the check began; a cancel since then decides the sequence instead. */
+        val startedIn: Int,
+    )
+
+    /**
+     * The one thread a field check blocks on (#561: `findFocus` on main was a fatal ANR). One worker at
+     * most, so checks never overlap; it exits after a few idle seconds, so nothing is resident at idle
+     * (`architecture-rules.md` RULE: no-idle-cost). Shut down at [close].
+     */
+    private val probeExecutor = ThreadPoolExecutor(0, 1, 5L, TimeUnit.SECONDS, LinkedBlockingQueue()) { runnable ->
+        Thread(runnable, "BubbleFieldCheck").apply { isDaemon = true }
+    }
+    private val fieldChecks = BubbleFieldChecks(
+        background = { probeExecutor.execute(it) },
+        main = { mainHandler.post(it) },
+        begin = ::beginFieldCheck,
+        finish = ::finishFieldCheck,
+    )
 
     /**
      * Main thread, from `onServiceConnected`. `onServiceConnected` fires again on the same instance
@@ -176,14 +211,15 @@ internal class AccessibilityBubbleHost(
 
     /** Main thread. An admitted field of our own was withdrawn with no event to say so: re-check it. */
     fun refresh() {
-        recordingOverlay?.let { overlay -> revalidateBubbleField(overlay) }
+        if (recordingOverlay != null) fieldChecks.submit(BubbleFieldCheck(revalidate = true))
     }
 
     /**
      * Tell the floating bubble whether another app's editable field is active, and where a docked
      * keyboard ends. Event-driven only: nothing here runs at idle, and a windows-changed event caused
-     * by our own overlay moving is dropped before any node is touched
-     * (`architecture-rules.md` RULE: no-idle-cost, as read by the #135 adjudication).
+     * by our own overlay moving is dropped (off main, by the check's window read) before any node is touched
+     * (`architecture-rules.md` RULE: no-idle-cost, as read by the #135 adjudication). No accessibility call
+     * runs here: every re-check is a [BubbleFieldCheck] run off main (#561).
      */
     fun updateBubbleFromEvent(event: AccessibilityEvent, remembered: Boolean) {
         val overlay = recordingOverlay ?: return
@@ -202,25 +238,41 @@ internal class AccessibilityBubbleHost(
                     // A click on a non-editor: whether the remembered editor still holds focus is a question,
                     // not a given (a hardware-keyboard tab to a button; Codex round 2). Re-check without a
                     // traversal; if the field is still here, a pending retry sequence has done its job.
-                    if (revalidateBubbleField(overlay)) cancelDiscoveryRetries()
+                    fieldChecks.submit(BubbleFieldCheck(revalidate = true))
                 }
             }
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED && isOwnOverlayWindow(event.windowId)) return
-                // A cosmetic windows-changed that finds the field present cancels any pending retry.
-                if (discoveryWarranted(event)) discoverFieldWithRetry() else if (revalidateBubbleField(overlay)) cancelDiscoveryRetries()
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> discoverFieldWithRetry()
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                // Whether this window is our own overlay moving is a window-list read, so the check answers it
+                // off main and drops the event if so. A warranted change discovers with retry; a cosmetic one
+                // re-checks, and finding the field present cancels any pending retry.
+                val warranted = discoveryWarranted(event)
+                fieldChecks.submit(
+                    BubbleFieldCheck(
+                        transitionUptime = if (warranted) SystemClock.uptimeMillis() else 0L,
+                        windowEvents = mapOf(event.windowId to warranted),
+                    ),
+                )
             }
             else -> Unit
         }
     }
 
     /** Invalidate any pending discovery-retry sequence. Bumps the generation so an in-flight runnable that
-     *  already left the handler queue sees itself superseded and does nothing. */
+     *  already left the handler queue, or a check already running, sees itself superseded and starts or
+     *  continues nothing; the check waiting to run keeps only its re-check. */
     fun cancelDiscoveryRetries() {
+        resetDiscoverySequence()
+        fieldChecks.forgetSequence()
+    }
+
+    /** The sequence's own state only: a check waiting to run was submitted after the answer that ends it. */
+    private fun resetDiscoverySequence() {
         discoveryGeneration++
         discoveryRetryRunnable?.let { mainHandler.removeCallbacks(it) }
         discoveryRetryRunnable = null
         discoveryAttempt = 0
+        discoveryWindowId = null
     }
 
     /**
@@ -237,6 +289,9 @@ internal class AccessibilityBubbleHost(
         recordingOverlay?.stop()
         recordingOverlay = null
         cancelDiscoveryRetries()
+        // No check answer is rendered after this; a check blocked in a call ends with the framework's timeout.
+        fieldChecks.close()
+        probeExecutor.shutdownNow()
     }
 
     /** Main thread. The current input list, then the colour. A failed read is an empty list: brand rainbow. */
@@ -277,18 +332,16 @@ internal class AccessibilityBubbleHost(
     }
 
     /**
-     * Is the remembered editor still focused? When it is not, and [discover] is set, look for the
-     * editor that IS focused right now and adopt it ([EditorTargetTracker.refreshFocusedField]). Discovery
-     * is one window traversal, so it runs only on the rare events: a window state change and a service
-     * connect, never on the frequent windows-changed stream. Without it a service recreated while a text
+     * Main thread. Draws a check's answer: the field it found through the one visibility decision, or no
+     * field, and where a docked keyboard ends. A check asks [EditorTargetTracker.fieldProbe] whether the
+     * remembered editor is still focused and, on the rare events, discovers the editor that IS focused; the
+     * calls themselves ran off main ([beginFieldCheck]). Without discovery a service recreated while a text
      * box already had focus (a Play update, an accessibility toggle) kept the bubble hidden until the user
      * tapped the box again (Codex review of the Play branch, 2026-09-12).
      */
-    private fun revalidateBubbleField(overlay: RecordingAccessibilityOverlay, discover: Boolean = false): Boolean {
-        val key = tracker.refreshFocusedField(discover)
+    private fun renderField(overlay: RecordingAccessibilityOverlay, key: Any?, imeBounds: Rect?) {
         if (key != null) activateField(overlay, key) else overlay.fieldLost()
-        overlay.keyboardBounds(dockedKeyboardTop())
-        return key != null
+        overlay.keyboardBounds(dockedKeyboardTop(imeBounds))
     }
 
     /**
@@ -326,40 +379,31 @@ internal class AccessibilityBubbleHost(
     /**
      * Discover the focused editor now, and if none is accessible yet, re-look at [DISCOVERY_RETRY_DELAYS_MS]
      * so a returning field that the framework exposes a second or two late still lights the bubble without a
-     * re-tap (#141 phone pass). Coalesced per focused window: a stream of windows-changed events for the same
-     * return does not restart the schedule (which would postpone the retries forever); a genuinely different
-     * focused window starts one fresh sequence. Stops the moment a field is found.
+     * re-tap (#141 phone pass). Coalesced per focused window: a stream of events for the same return does not
+     * restart the schedule (which would postpone the retries forever); a genuinely different focused window
+     * starts one fresh sequence. Stops the moment a field is found. Since #561 the look is a check run off
+     * main, and the coalescing and the schedule are decided when it answers ([discoveryStep]).
      */
     private fun discoverFieldWithRetry() {
-        val overlay = recordingOverlay ?: return
-        val focusedId = focusedWindowId()
-        // A sequence already chasing this same focused window keeps running; do not restart it, or a burst
-        // of events would postpone the retries forever. A still-unknown focused window (-1) coalesces the
-        // same way, so a burst during the exact window-unavailable state being repaired does not churn
-        // (Codex review, 2026-09-13).
-        if (discoveryRetryRunnable != null && focusedId == discoveryWindowId) return
-        cancelDiscoveryRetries()
-        discoveryWindowId = focusedId
-        // Captured BEFORE the first look, so the retry deadlines measure from the transition, not from after
-        // a slow initial traversal (Codex proviso, 2026-09-13).
-        discoveryStartUptime = SystemClock.uptimeMillis()
-        if (revalidateBubbleField(overlay, discover = true)) return
-        scheduleDiscoveryRetry(discoveryGeneration)
+        if (recordingOverlay == null) return
+        // Captured at the transition, BEFORE the first look, so the retry deadlines measure from it, not from
+        // after a slow initial traversal (Codex proviso, 2026-09-13).
+        fieldChecks.submit(BubbleFieldCheck(transition = true, transitionUptime = SystemClock.uptimeMillis()))
     }
 
     private fun scheduleDiscoveryRetry(generation: Int) {
-        if (discoveryAttempt >= DISCOVERY_RETRY_DELAYS_MS.size) return
+        if (discoveryAttempt >= DISCOVERY_RETRY_DELAYS_MS.size) {
+            // The last attempt has answered: the sequence is over, and the next transition starts a fresh one.
+            discoveryWindowId = null
+            return
+        }
         val runnable = Runnable {
             // A newer transition or a teardown bumped the generation: this attempt is stale.
             if (generation != discoveryGeneration) return@Runnable
             discoveryRetryRunnable = null
-            val overlay = recordingOverlay ?: return@Runnable
+            if (recordingOverlay == null) return@Runnable
             discoveryAttempt++
-            if (revalidateBubbleField(overlay, discover = true)) {
-                cancelDiscoveryRetries()
-                return@Runnable
-            }
-            scheduleDiscoveryRetry(generation)
+            fieldChecks.submit(BubbleFieldCheck(retryOf = generation))
         }
         discoveryRetryRunnable = runnable
         // Absolute offsets from the first attempt (uptime timebase), so a slow traversal cannot stretch the
@@ -367,22 +411,80 @@ internal class AccessibilityBubbleHost(
         mainHandler.postAtTime(runnable, discoveryStartUptime + DISCOVERY_RETRY_DELAYS_MS[discoveryAttempt])
     }
 
-    private fun focusedWindowId(): Int =
-        runCatching { service.windows.firstOrNull { it.isFocused }?.id ?: -1 }.getOrDefault(-1)
-
-    private fun isOwnOverlayWindow(windowId: Int): Boolean = runCatching {
-        service.windows.any { it.id == windowId && it.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }
-    }.getOrDefault(false)
+    /** A fresh sequence chasing [windowId], measured from the transition that started it. */
+    private fun restartDiscovery(windowId: Int, startUptime: Long) {
+        resetDiscoverySequence()
+        discoveryWindowId = windowId
+        discoveryStartUptime = startUptime
+        scheduleDiscoveryRetry(discoveryGeneration)
+    }
 
     /**
-     * The top of a keyboard docked at the bottom edge, in screen pixels, or null. A floating or split
-     * keyboard does not touch the bottom edge and is reported as null on purpose: clamping above it
-     * would push the bubble into the middle of the screen.
+     * Main thread, when [fieldChecks] starts a check: copy what it needs from main (the remembered editor,
+     * the sequence's state) and return its blocking half, which [probeExecutor] runs. That half makes every
+     * accessibility call of the check: one window-list read (our own overlay, the focused window, the
+     * keyboard) and the tracker's probe.
      */
-    private fun dockedKeyboardTop(): Int? = runCatching {
-        val ime = service.windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } ?: return null
-        val bounds = Rect()
-        ime.getBoundsInScreen(bounds)
+    private fun beginFieldCheck(check: BubbleFieldCheck): () -> FieldCheckAnswer {
+        val probe = tracker.fieldProbe()
+        val chasingWindowId = discoveryWindowId
+        val startedIn = discoveryGeneration
+        return {
+            val windows = runCatching { service.windows }.getOrNull().orEmpty()
+            val overlayWindowIds = windows.filter { it.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }.mapTo(HashSet()) { it.id }
+            val focusedWindowId = windows.firstOrNull { it.isFocused }?.id ?: -1
+            val probed = check.resolve(overlayWindowIds)?.let { resolved ->
+                Probed(resolved, probe.probe(discover = resolved.discovers(focusedWindowId, chasingWindowId)))
+            }
+            FieldCheckAnswer(check, probed, focusedWindowId, imeBounds(windows), startedIn)
+        }
+    }
+
+    /**
+     * Main thread: a check answered. Adopt it through the tracker, draw it, and move the retry sequence on.
+     * An answer about an editor that is no longer the remembered one (a newer focus or a pin changed it while
+     * the check ran) is dropped and asked again, so an old answer never overwrites a newer field.
+     */
+    private fun finishFieldCheck(answer: FieldCheckAnswer) {
+        val overlay = recordingOverlay ?: return
+        val probed = answer.probed ?: return
+        val key = when (val outcome = probed.adoption.adopt()) {
+            FieldProbeOutcome.Stale -> {
+                // A cancel since the check began strips its sequence, as it stripped the waiting check.
+                fieldChecks.submit(if (answer.startedIn == discoveryGeneration) answer.check else answer.check.withoutSequence())
+                return
+            }
+            is FieldProbeOutcome.Current -> outcome.key
+        }
+        renderField(overlay, key, answer.imeBounds)
+        val step = discoveryStep(
+            fieldPresent = key != null,
+            resolved = probed.resolved,
+            focusedWindowId = answer.focusedWindowId,
+            chasingWindowId = discoveryWindowId,
+            startedIn = answer.startedIn,
+            generation = discoveryGeneration,
+        )
+        when (step) {
+            DiscoveryStep.Stop -> resetDiscoverySequence()
+            is DiscoveryStep.Restart -> restartDiscovery(step.windowId, answer.check.transitionUptime)
+            DiscoveryStep.Continue -> if (discoveryRetryRunnable == null) scheduleDiscoveryRetry(discoveryGeneration)
+            DiscoveryStep.Keep -> Unit
+        }
+    }
+
+    /** Off main, from the check's one window-list read: the input method window's bounds, or null. */
+    private fun imeBounds(windows: List<AccessibilityWindowInfo>): Rect? = runCatching {
+        windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }?.let { ime -> Rect().also { ime.getBoundsInScreen(it) } }
+    }.getOrNull()
+
+    /**
+     * Main thread. The top of a keyboard docked at the bottom edge, in screen pixels, or null. A floating or
+     * split keyboard does not touch the bottom edge and is reported as null on purpose: clamping above it
+     * would push the bubble into the middle of the screen. [imeBounds] were read off main by the check.
+     */
+    private fun dockedKeyboardTop(imeBounds: Rect?): Int? = runCatching {
+        val bounds = imeBounds ?: return null
         val screenBottom = service.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds.bottom
         if (bounds.bottom >= screenBottom - 1 && bounds.height() > 0) bounds.top else null
     }.getOrNull()

@@ -84,7 +84,7 @@ class TakePolishControllerTest {
     private fun newController(
         detector: com.envi.wispr.cleanup.LanguageDetector = com.envi.wispr.cleanup.LanguageDetector { null },
         restore: (String, com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
-        cleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> String = com.envi.wispr.polish.PolishFallback::deterministic,
+        cleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> com.envi.wispr.polish.PolishFallback.Outcome = com.envi.wispr.polish.PolishFallback::deterministicOutcome,
         defectSink: (AppDefect, Map<String, Any?>) -> Unit = { defect, facts -> defects += defect to facts },
     ) = TakePolishController(
         lock = lock,
@@ -451,8 +451,8 @@ class TakePolishControllerTest {
         return { text, _ -> if (++calls == n) throw IllegalStateException("restorer broke") else text }
     }
 
-    private val markedCleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> String =
-        { text, _, _ -> "cleaned $text" }
+    private val markedCleanup: (String, com.envi.wispr.cleanup.CleanupOptions, com.envi.wispr.cleanup.LanguageDetector) -> com.envi.wispr.polish.PolishFallback.Outcome =
+        { text, _, _ -> com.envi.wispr.polish.PolishFallback.Outcome("cleaned $text") }
 
     private fun preparationSteps() = defects.filter { it.first == AppDefect.PolishPreparationFailed }.map { it.second["step"] }
 
@@ -548,7 +548,7 @@ class TakePolishControllerTest {
             preparedIn += threadName()
             preparing.countDown()
             release.await(10, TimeUnit.SECONDS)
-            text
+            com.envi.wispr.polish.PolishFallback.Outcome(text)
         })
         try {
             c.disconnected()
@@ -630,5 +630,95 @@ class TakePolishControllerTest {
         link.awaitRequest().onOutcome(link.outcome("Hello world."))
         log.awaitLine("Prepared polish text dropped", 2)
         assertTrue("nothing handed back: $prepared", prepared.isEmpty())
+    }
+
+    @Test fun casualModeRunsOnceAfterFinalCustomWordRestoreOverIpc() {
+        val en = com.envi.wispr.cleanup.LanguageDetector { com.envi.wispr.cleanup.DetectedLanguage("en", 0.99f) }
+        val phdMatcher = com.envi.wispr.vocabulary.StructuredTermRestorer.compile(
+            listOf(com.envi.wispr.vocabulary.CustomTerm(spelling = "Ph.D", aliases = listOf("21st"))),
+        )
+        val ipcController = newController(detector = en)
+        val phdPrefs = SessionPreferences(
+            cleanup = com.envi.wispr.cleanup.CleanupOptions(casualMode = true),
+            matcher = phdMatcher,
+            policy = PolishPolicy.Off,
+        )
+        ipcController.prepare("We settled it on the twenty first.", phdPrefs)
+        val listener = link.awaitRequest()
+        assertEquals(false, link.lastCleanup?.casualMode)
+        val pipeline = com.envi.wispr.cleanup.PolishPipeline.run(
+            checkNotNull(link.lastRaw),
+            checkNotNull(link.lastCleanup),
+            com.envi.wispr.cleanup.CleanupLanguage.Known("en"),
+        )
+        listener.onOutcome(
+            PolishOutcome(
+                requestId = link.requestId,
+                text = pipeline.text,
+                engine = "Off",
+                reason = PolishReason.OFF,
+                statusCode = 0,
+                latencyMs = 4L,
+                processing = null,
+                diagnostics = null,
+                spokenFinalFullStop = pipeline.spokenFinalFullStop,
+                languageCode = pipeline.languageCode,
+            ),
+        )
+        assertEquals("We settled it on the Ph.D.", awaitHandedBack().text)
+    }
+
+    @Test fun casualModeRunsOnceAfterFinalCustomWordRestoreOnFallbackAbbreviation() {
+        val en = com.envi.wispr.cleanup.LanguageDetector { com.envi.wispr.cleanup.DetectedLanguage("en", 0.99f) }
+        val phdMatcher = com.envi.wispr.vocabulary.StructuredTermRestorer.compile(
+            listOf(com.envi.wispr.vocabulary.CustomTerm(spelling = "Ph.D", aliases = listOf("21st"))),
+        )
+        val c = newController(detector = en)
+        c.disconnected()
+        c.prepare(
+            "We settled it on the twenty first.",
+            SessionPreferences(
+                cleanup = com.envi.wispr.cleanup.CleanupOptions(casualMode = true),
+                matcher = phdMatcher,
+                policy = PolishPolicy.Off,
+            ),
+        )
+        assertEquals("We settled it on the Ph.D.", awaitHandedBack().text)
+    }
+
+    @Test fun casualModeFallbackUsesPostVocabInputRatherThanRawPeriodAlias() {
+        val en = com.envi.wispr.cleanup.LanguageDetector { com.envi.wispr.cleanup.DetectedLanguage("en", 0.99f) }
+        val deadlineMatcher = com.envi.wispr.vocabulary.StructuredTermRestorer.compile(
+            listOf(com.envi.wispr.vocabulary.CustomTerm(spelling = "deadline", aliases = listOf("period"))),
+        )
+        val c = newController(detector = en)
+        c.disconnected()
+        c.prepare(
+            "I reviewed the grace period.",
+            SessionPreferences(
+                cleanup = com.envi.wispr.cleanup.CleanupOptions(spokenPunctuation = true, casualMode = true),
+                matcher = deadlineMatcher,
+                policy = PolishPolicy.Off,
+            ),
+        )
+        assertEquals("I reviewed the grace deadline", awaitHandedBack().text)
+    }
+
+    @Test fun casualModeFallbackDoesNotRepeatLanguageDetectionOrCleanup() {
+        var detections = 0
+        val oneShotGerman = com.envi.wispr.cleanup.LanguageDetector {
+            if (detections++ == 0) com.envi.wispr.cleanup.DetectedLanguage("de", 0.99f) else null
+        }
+        val c = newController(detector = oneShotGerman)
+        c.disconnected()
+        c.prepare(
+            "See you at 5.",
+            SessionPreferences(
+                cleanup = com.envi.wispr.cleanup.CleanupOptions(casualMode = true),
+                policy = PolishPolicy.Off,
+            ),
+        )
+        assertEquals("See you at 5.", awaitHandedBack().text)
+        assertEquals(1, detections)
     }
 }

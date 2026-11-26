@@ -28,6 +28,7 @@ class AppPreferencesStateTest {
         assertTrue(options.removeFillers)
         assertTrue(options.spokenEmoji)
         assertFalse(options.spokenPunctuation)
+        assertFalse(options.casualMode)
     }
 
     @Test
@@ -36,11 +37,13 @@ class AppPreferencesStateTest {
             fillerRemovalEnabled = false,
             emojiFormatterEnabled = false,
             spokenPunctuationEnabled = true,
+            casualModeEnabled = true,
         ).cleanupOptions()
 
         assertFalse(options.removeFillers)
         assertFalse(options.spokenEmoji)
         assertTrue(options.spokenPunctuation)
+        assertTrue(options.casualMode)
     }
 
     @Test

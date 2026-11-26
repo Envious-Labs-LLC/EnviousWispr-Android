@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,7 +34,10 @@ import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.AutoPasteReadiness
 import com.envi.wispr.paste.PasteAccessibilityService
+import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.settings.AppPreferencesState
 import com.envi.wispr.ui.theme.EnviousWisprTheme
+import com.envi.wispr.ui.theme.applySystemBarTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -58,7 +62,22 @@ class AccessibilityGuideActivity : ComponentActivity() {
             }
         }
         setContent {
-            EnviousWisprTheme(dynamicColor = false) {
+            val preferences by produceState<AppPreferencesState?>(initialValue = null, applicationContext) {
+                AppPreferences(applicationContext).state.collect { value = it }
+            }
+            val loadedPrefs = preferences ?: return@setContent
+            val guideThemeMode = if (phase == GuidePhase.Disclosure) {
+                loadedPrefs.themeMode
+            } else {
+                // Non-disclosure guide phases draw over a fixed dark purple canvas (#251F37),
+                // so controls and bar icons must use dark-mode colors to keep sufficient contrast.
+                com.envi.wispr.settings.ThemeMode.DARK
+            }
+            val barDark = guideThemeMode.resolveDarkTheme(isSystemInDarkTheme())
+            LaunchedEffect(compact, barDark) {
+                if (!compact) applySystemBarTheme(barDark)
+            }
+            EnviousWisprTheme(dynamicColor = false, themeMode = guideThemeMode) {
                 when (val current = phase) {
                     GuidePhase.Disclosure -> AccessibilityDisclosure(onAgree = { phase = GuidePhase.Ready(GuideHistory.NeverOpened) }, onDecline = ::finish)
                     is GuidePhase.Ready -> AccessibilityGuide(entry, current.history, compact, launchFailed = false, ::openSettings, ::finish)
@@ -199,7 +218,11 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
     val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val reduced = onboardingReducedMotion()
     var step by remember { mutableIntStateOf(0) }
-    var paused by remember { mutableStateOf(reduced) }
+    var manualPause by remember { mutableStateOf<Boolean?>(null) }
+    val paused = manualPause ?: reduced
+    LaunchedEffect(reduced) {
+        if (reduced && manualPause == false) manualPause = null
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
     val appLabel = remember { context.applicationInfo.loadLabel(context.packageManager).toString() }
     val samsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
@@ -247,7 +270,7 @@ private fun AccessibilityGuide(entry: AutoPasteAvailability, history: GuideHisto
             if (floating) Text(FLOATING_ALLOW_HELP, Modifier.padding(top = 12.dp), fontSize = 14.sp)
             Text("After you allow access, if $appLabel does not reopen, open it from Recents or its app icon.", Modifier.padding(vertical = 12.dp), fontSize = 14.sp)
             if (launchFailed) Text("Open your phone’s Settings, then Accessibility.")
-            Row { TextButton(onClick = { paused = !paused }) { Text(if (paused) "Play" else "Pause") }; TextButton(onClick = { paused = true; step = (step + 1) % frames.size }) { Text("Next") } }
+            Row { TextButton(onClick = { manualPause = !paused }) { Text(if (paused) "Play" else "Pause") }; TextButton(onClick = { manualPause = true; step = (step + 1) % frames.size }) { Text("Next") } }
             Button(onClick = openSettings, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 16.dp)) {
                 Text(when (history) { GuideHistory.NeverOpened -> "Open Settings"; GuideHistory.Opened -> "Open Settings again" })
             }

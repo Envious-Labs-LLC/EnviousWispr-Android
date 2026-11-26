@@ -9,10 +9,11 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.UUID
 
-/** Exact version-one UTF-16 format. Call only on a worker; authenticate its frame before decode. */
+/** Exact UTF-16 recovery context codec (v1 predates Casual mode; v2 carries it when enabled). */
 internal object RecoveryContextCodec {
     private const val MAGIC = 0x4557524354583031L // EWRCTX01
-    private const val VERSION = 1
+    private const val VERSION_1 = 1
+    private const val VERSION_2 = 2
     private const val USER_TERMS = 2_000
     private const val USER_ALIASES = 2_000
     private const val TERM_UNITS = 200
@@ -39,7 +40,9 @@ internal object RecoveryContextCodec {
     fun decode(encoded: ByteArray, expectedTake: UUID): FrozenRecoveryContext {
         if (encoded.size > RecoveryFrameLimits.CONTEXT_BYTES) malformed()
         val input = Reader(ByteBuffer.wrap(encoded))
-        if (input.long() != MAGIC || input.short() != VERSION) malformed()
+        if (input.long() != MAGIC) malformed()
+        val version = input.short()
+        if (version != VERSION_1 && version != VERSION_2) malformed()
         val take = UUID(input.long(), input.long())
         if (take != expectedTake) throw RecoveryFrameException(RecoveryFrameFailure.WRONG_RECORD)
         val createdAt = input.long()
@@ -49,6 +52,11 @@ internal object RecoveryContextCodec {
         val fillers = input.boolean()
         val emoji = input.boolean()
         val punctuation = input.boolean()
+        val casualMode = if (version == VERSION_2) {
+            input.boolean().also { if (!it) malformed() }
+        } else {
+            false
+        }
         val spelling = when (input.byte()) {
             0 -> EnglishSpelling.AMERICAN
             1 -> EnglishSpelling.BRITISH
@@ -82,7 +90,7 @@ internal object RecoveryContextCodec {
         if (input.remaining != 0) malformed()
         val context = FrozenRecoveryContext.freeze(
             take, createdAt, recipe, provenance,
-            CleanupOptions(fillers, emoji, punctuation, spelling, protected), terms,
+            CleanupOptions(fillers, emoji, punctuation, spelling, protected, casualMode = casualMode), terms,
         )
         // Reuse the encoder's semantic checks without allocating a second encoded context.
         write(Writer(null), context)
@@ -101,12 +109,14 @@ internal object RecoveryContextCodec {
 
     private fun write(out: Writer, context: FrozenRecoveryContext) {
         checkCollectionBounds(context.terms, context.cleanup.spellingProtectedWords)
-        out.long(MAGIC); out.short(VERSION)
+        val version = if (context.cleanup.casualMode) VERSION_2 else VERSION_1
+        out.long(MAGIC); out.short(version)
         out.long(context.takeId.mostSignificantBits); out.long(context.takeId.leastSignificantBits)
         out.long(context.createdAtMs)
         out.int(PcmAudio.SAMPLE_RATE); out.int(1); out.int(PcmAudio.BYTES_PER_SAMPLE)
         out.string(context.recipeId, PROVENANCE_UNITS); out.string(context.formatProvenance, PROVENANCE_UNITS)
         out.boolean(context.cleanup.removeFillers); out.boolean(context.cleanup.spokenEmoji); out.boolean(context.cleanup.spokenPunctuation)
+        if (version == VERSION_2) out.boolean(context.cleanup.casualMode)
         out.byte(when (context.cleanup.englishSpelling) {
             EnglishSpelling.AMERICAN -> 0
             EnglishSpelling.BRITISH -> 1

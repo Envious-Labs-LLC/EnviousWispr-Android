@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
@@ -93,8 +94,15 @@ internal fun OnboardingDemo(
     palette: DemoPalette,
     onFinished: () -> Unit,
 ) {
-    var elapsed by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) {
+    val reduced = onboardingReducedMotion()
+    var elapsed by remember {
+        mutableFloatStateOf(if (reduced) DemoScript.staticSteps.first() else 0f)
+    }
+    LaunchedEffect(reduced) {
+        if (reduced) {
+            elapsed = DemoScript.staticStepFor(elapsed)
+            return@LaunchedEffect
+        }
         var last = withFrameNanos { it }
         while (elapsed < DemoScript.total) {
             withFrameNanos { now ->
@@ -122,7 +130,27 @@ internal fun OnboardingDemo(
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             DemoProgress(moment.scene, palette)
-            TextButton(onClick = onFinished) { Text("Skip to practice", color = palette.accent, fontSize = 12.sp) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (reduced) {
+                    val steps = DemoScript.staticSteps
+                    val index = DemoScript.staticStepIndex(elapsed)
+                    if (index > 0) {
+                        TextButton(onClick = { elapsed = steps[index - 1] }) {
+                            Text("Back", color = palette.accent, fontSize = 12.sp)
+                        }
+                    }
+                    TextButton(onClick = {
+                        if (index < steps.lastIndex) {
+                            elapsed = steps[index + 1]
+                        } else {
+                            onFinished()
+                        }
+                    }) {
+                        Text(if (index < steps.lastIndex) "Next" else "Practice", color = palette.accent, fontSize = 12.sp)
+                    }
+                }
+                TextButton(onClick = onFinished) { Text("Skip to practice", color = palette.accent, fontSize = 12.sp) }
+            }
         }
     }
 }
@@ -141,9 +169,25 @@ private fun DemoCaption(moment: DemoMoment, palette: DemoPalette) {
         DemoScript.between(t, beatStart, beatStart + 0.4f)
     } else 1f
     val compact = LocalConfiguration.current.screenHeightDp < 560
-    Column(Modifier.fillMaxWidth().height(if (compact) 60.dp else 96.dp).alpha(fade), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(title, fontSize = if (compact) 17.sp else 22.sp, lineHeight = if (compact) 21.sp else 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = palette.foreground)
-        if (sub.isNotEmpty() && !compact) Text(sub, Modifier.padding(top = 6.dp), fontSize = 13.sp, lineHeight = 18.sp, color = palette.muted, textAlign = TextAlign.Center)
+    Column(Modifier.fillMaxWidth().heightIn(min = if (compact) 60.dp else 96.dp).alpha(fade), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text(
+            title,
+            fontSize = if (compact) 16.sp else 22.sp,
+            lineHeight = if (compact) 20.sp else 28.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            color = palette.foreground,
+        )
+        if (sub.isNotEmpty()) {
+            Text(
+                sub,
+                Modifier.padding(top = if (compact) 2.dp else 6.dp),
+                fontSize = if (compact) 11.sp else 13.sp,
+                lineHeight = if (compact) 14.sp else 18.sp,
+                color = palette.muted,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 

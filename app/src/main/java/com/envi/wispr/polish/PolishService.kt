@@ -66,9 +66,9 @@ class PolishService : Service() {
      * The failure answers' own worker (#291): never the binder thread, never [executor], which may be wedged (#75).
      * A daemon, so it never holds the process open.
      */
-    private val fallbackLane = PolishFallbackLane(
+    private val fallbackLane = PolishFallbackLane.withProvenance(
         worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "PolishFallbackThread").apply { isDaemon = true } },
-        prepare = { raw, options, log -> fallbackText(raw, options, log) },
+        prepareOutcome = { raw, options, log -> fallbackDetails(raw, options, log) },
     )
     private lateinit var secrets: SecretStore
     private val providerClient = ProviderPolishClient()
@@ -434,14 +434,18 @@ class PolishService : Service() {
      * seven call sites it replaced, so a new failure exit cannot forget the language.
      */
     /** [log] is the request's take log when there is one (#378); the take-less lane and legacy path pass null. */
-    private fun fallbackText(raw: String, options: CleanupOptions, log: TakeLog?): String =
-        PolishFallback.deterministicOrWords(raw, options, languageDetector, warn = { message ->
+    private fun fallbackDetails(raw: String, options: CleanupOptions, log: TakeLog?): PolishFallback.Outcome =
+        PolishFallback.deterministicOutcomeOrWords(raw, options, languageDetector, warn = { message ->
             if (log != null) log.warn(message) else DebugLogger.warn(TAG, message)
         })
 
     private fun fallbackOutcome(requestId: Long, raw: String, options: CleanupOptions, log: TakeLog?, reason: PolishReason, latencyMs: Long = 0): PolishOutcome {
-        val cleaned = fallbackText(raw, options, log)
-        return PolishOutcome(requestId, cleaned, PolishEngineLabels.DETERMINISTIC, reason, 0, latencyMs)
+        val details = fallbackDetails(raw, options, log)
+        return PolishOutcome(
+            requestId, details.text, PolishEngineLabels.DETERMINISTIC, reason, 0, latencyMs,
+            processing = null, diagnostics = null,
+            spokenFinalFullStop = details.spokenFinalFullStop, languageCode = details.languageCode,
+        )
     }
 
     /** The single delivery site. A dead client throws here; the throw is logged and goes no further. */
@@ -539,7 +543,18 @@ class PolishService : Service() {
                 loadStamp = resident.loaded?.failureStamp ?: lastLoadStamp, generationStamp = if (attemptedBackend != null) ProcessingEvidenceStamp.now(this) else null, generationFailed = generationFailed,
             )
         } else null
-        return PolishOutcome(requestId, pipeline.text, engine, reason, statusCode, SystemClock.elapsedRealtime() - started, usage)
+        return PolishOutcome(
+            requestId,
+            pipeline.text,
+            engine,
+            reason,
+            statusCode,
+            SystemClock.elapsedRealtime() - started,
+            usage,
+            diagnostics = null,
+            spokenFinalFullStop = pipeline.spokenFinalFullStop,
+            languageCode = pipeline.languageCode,
+        )
     }
 
     override fun onCreate() {

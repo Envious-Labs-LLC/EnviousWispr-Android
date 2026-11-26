@@ -4,6 +4,7 @@ import android.content.Context
 import com.envi.wispr.processing.ProcessingPreference
 import com.envi.wispr.audio.RecordingSoundPairing
 import com.envi.wispr.audio.RecordingSoundVolume
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -43,10 +44,13 @@ internal data class AppPreferencesState(
     val answeredUpdatePrompts: Set<String> = emptySet(),
     val onboardingComplete: Boolean = false,
     val onboardingDismissed: Boolean = false,
+    val lastSeenWhatsNewVersion: String? = null,
     // OFF by default, so what a user sees out of the box is EnviousWispr rather than their wallpaper.
     // The two defaults have to agree: this one is what the UI renders before DataStore has delivered,
     // and `mapState` is what it settles on. They disagreed once and the app flashed the wrong theme.
     val dynamicColorEnabled: Boolean = false,
+    /** System, Light, or Dark override for the app UI (`PAR-097`). Same default in `mapState`. */
+    val themeMode: ThemeMode = ThemeMode.DEFAULT,
     val speechProcessing: ProcessingPreference = ProcessingPreference.DEFAULT,
     val speechProcessingReadError: Boolean = false,
     /** How the floating button and its recorder pills look. Same default here and in `mapState`. */
@@ -54,6 +58,7 @@ internal data class AppPreferencesState(
     val fillerRemovalEnabled: Boolean = true,
     val emojiFormatterEnabled: Boolean = true,
     val spokenPunctuationEnabled: Boolean = false,
+    val casualModeEnabled: Boolean = false,
     val englishSpelling: com.envi.wispr.cleanup.EnglishSpelling = com.envi.wispr.cleanup.EnglishSpelling.AMERICAN,
     val autoCopyToClipboard: Boolean = true,
     val restoreClipboardAfterPaste: Boolean = true,
@@ -73,7 +78,14 @@ internal data class AppPreferencesState(
     val keepEarbudsReady: Boolean = true,
     /** "Unload model after" for the speech model (#37). Read live by `SpeechModelKeepAlive`; same default in `mapState`. */
     val speechModelUnload: SpeechModelUnload = SpeechModelUnload.DEFAULT,
-)
+) {
+    val hasUnreadWhatsNew: Boolean
+        get() = com.envi.wispr.about.ReleaseNotes.hasUnread(
+            lastSeenVersion = lastSeenWhatsNewVersion,
+            onboardingComplete = onboardingComplete,
+            onboardingDismissed = onboardingDismissed,
+        )
+}
 
 /** The Developer page's stored values (#378); a null switch was never set. */
 internal data class DeveloperStored(val unlocked: Boolean, val detailedLog: Boolean?, val keepRecordings: Boolean?)
@@ -94,6 +106,7 @@ internal fun AppPreferencesState.cleanupOptions(): CleanupOptions = CleanupOptio
     spokenEmoji = emojiFormatterEnabled,
     spokenPunctuation = spokenPunctuationEnabled,
     englishSpelling = englishSpelling,
+    casualMode = casualModeEnabled,
 )
 
 internal fun AppPreferencesState.clipboardInsertionPolicy(): ClipboardInsertionPolicy = ClipboardInsertionPolicy(
@@ -102,8 +115,10 @@ internal fun AppPreferencesState.clipboardInsertionPolicy(): ClipboardInsertionP
     smartInsertion = smartInsertionEnabled,
 )
 
-internal class AppPreferences(context: Context) {
-    private val dataStore = context.applicationContext.enviousWisprDataStore
+internal class AppPreferences internal constructor(
+    private val dataStore: DataStore<Preferences>,
+) {
+    constructor(context: Context) : this(context.applicationContext.enviousWisprDataStore)
 
     val authoritativeState: Flow<AppPreferencesState> = dataStore.data
         .map { mapState(it) }
@@ -128,7 +143,9 @@ internal class AppPreferences(context: Context) {
         answeredUpdatePrompts = preferences[Keys.ANSWERED_UPDATE_PROMPTS] ?: emptySet(),
         onboardingComplete = preferences[Keys.ONBOARDING_COMPLETE] ?: false,
         onboardingDismissed = preferences[Keys.ONBOARDING_DISMISSED] ?: false,
+        lastSeenWhatsNewVersion = preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION],
         dynamicColorEnabled = preferences[Keys.DYNAMIC_COLOR] ?: false,
+        themeMode = ThemeMode.fromStorage(preferences[Keys.THEME_MODE]),
         speechProcessing = if (strictProcessing) ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) else
             runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.getOrDefault(ProcessingPreference.DEFAULT),
         speechProcessingReadError = runCatching { ProcessingPreference.decode(preferences[Keys.SPEECH_PROCESSING]) }.isFailure,
@@ -137,6 +154,7 @@ internal class AppPreferences(context: Context) {
         fillerRemovalEnabled = preferences[Keys.FILLER_REMOVAL] ?: true,
         emojiFormatterEnabled = preferences[Keys.EMOJI_FORMATTER] ?: true,
         spokenPunctuationEnabled = preferences[Keys.SPOKEN_PUNCTUATION] ?: false,
+        casualModeEnabled = preferences[Keys.CASUAL_MODE] ?: false,
         englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.fromStored(preferences[Keys.ENGLISH_SPELLING]),
         autoCopyToClipboard = preferences[Keys.AUTO_COPY_TO_CLIPBOARD] ?: true,
         restoreClipboardAfterPaste = preferences[Keys.RESTORE_CLIPBOARD_AFTER_PASTE] ?: true,
@@ -187,20 +205,43 @@ internal class AppPreferences(context: Context) {
 
     suspend fun dismissOnboarding() {
         dataStore.edit { preferences ->
+            val priorSetup =
+                preferences[Keys.ONBOARDING_COMPLETE] == true || preferences[Keys.ONBOARDING_DISMISSED] == true
             preferences[Keys.ONBOARDING_DISMISSED] = true
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] == null && !priorSetup) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = com.envi.wispr.about.ReleaseNotes.currentContentVersion
+            }
         }
     }
 
     suspend fun resumeOnboarding() {
         dataStore.edit { preferences ->
+            val priorSetup =
+                preferences[Keys.ONBOARDING_DISMISSED] == true || preferences[Keys.ONBOARDING_COMPLETE] == true
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] == null && priorSetup) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = LEGACY_UNSEEN_VERSION
+            }
             preferences[Keys.ONBOARDING_DISMISSED] = false
         }
     }
 
     suspend fun completeOnboarding() {
         dataStore.edit { preferences ->
+            val priorSetup =
+                preferences[Keys.ONBOARDING_COMPLETE] == true || preferences[Keys.ONBOARDING_DISMISSED] == true
             preferences[Keys.ONBOARDING_COMPLETE] = true
             preferences[Keys.ONBOARDING_DISMISSED] = false
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] == null && !priorSetup) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = com.envi.wispr.about.ReleaseNotes.currentContentVersion
+            }
+        }
+    }
+
+    suspend fun markWhatsNewSeen(version: String = com.envi.wispr.about.ReleaseNotes.currentContentVersion) {
+        dataStore.edit { preferences ->
+            if (preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] != version) {
+                preferences[Keys.LAST_SEEN_WHATS_NEW_VERSION] = version
+            }
         }
     }
 
@@ -211,6 +252,12 @@ internal class AppPreferences(context: Context) {
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[Keys.DYNAMIC_COLOR] = enabled
+        }
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) {
+        dataStore.edit { preferences ->
+            preferences[Keys.THEME_MODE] = mode.storageKey
         }
     }
 
@@ -241,6 +288,12 @@ internal class AppPreferences(context: Context) {
     suspend fun setSpokenPunctuationEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[Keys.SPOKEN_PUNCTUATION] = enabled
+        }
+    }
+
+    suspend fun setCasualModeEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[Keys.CASUAL_MODE] = enabled
         }
     }
 
@@ -349,14 +402,17 @@ internal class AppPreferences(context: Context) {
         val ONBOARDING_STEP = intPreferencesKey("onboarding_step")
         val ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val ONBOARDING_DISMISSED = booleanPreferencesKey("onboarding_dismissed")
+        val LAST_SEEN_WHATS_NEW_VERSION = stringPreferencesKey("last_seen_whats_new_version")
         val SPEECH_PROCESSING = stringPreferencesKey("speech_processing")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val THEME_MODE = stringPreferencesKey("theme_mode")
         val BUBBLE_LOOK = stringPreferencesKey("bubble_look")
         val SPEECH_MODEL_UNLOAD = stringPreferencesKey("speech_model_unload")
         val FILLER_REMOVAL = booleanPreferencesKey("filler_removal_enabled")
         val EMOJI_FORMATTER = booleanPreferencesKey("emoji_formatter_enabled")
         val ENGLISH_SPELLING = stringPreferencesKey("english_spelling")
         val SPOKEN_PUNCTUATION = booleanPreferencesKey("spoken_punctuation_enabled")
+        val CASUAL_MODE = booleanPreferencesKey("casual_mode_enabled")
         val AUTO_COPY_TO_CLIPBOARD = booleanPreferencesKey("auto_copy_to_clipboard")
         val RESTORE_CLIPBOARD_AFTER_PASTE = booleanPreferencesKey("restore_clipboard_after_paste")
         val SMART_INSERTION = booleanPreferencesKey("smart_insertion_enabled")
@@ -368,5 +424,9 @@ internal class AppPreferences(context: Context) {
         val DEVELOPER_UNLOCKED = booleanPreferencesKey("developer_unlocked")
         val DETAILED_LOG = booleanPreferencesKey("developer_detailed_log")
         val KEEP_RECORDINGS = booleanPreferencesKey("developer_keep_recordings")
+    }
+
+    private companion object {
+        const val LEGACY_UNSEEN_VERSION = ""
     }
 }

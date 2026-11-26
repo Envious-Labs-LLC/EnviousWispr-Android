@@ -44,6 +44,7 @@ internal class ShellActions(
     val onRefreshReadiness: () -> Unit,
     /** The tab whose model card shows, or null for none (#255); `ModelWorkViewModel.show`. */
     val onShowModels: (AppDestination?) -> Unit,
+    val onMarkWhatsNewSeen: () -> Unit = {},
 )
 
 /** Launching a system permission or settings screen; read by onboarding, the Microphone page and the Permissions page. */
@@ -111,6 +112,7 @@ internal class TranscriptionActions(
     val onAutoStopOnSilenceChanged: (Boolean) -> Unit,
     val onSilencePauseSecondsChanged: (Float) -> Unit,
     val onSpeechModelUnloadChanged: (com.envi.wispr.settings.SpeechModelUnload) -> Unit = {},
+    val onCasualModeChanged: (Boolean) -> Unit = {},
 )
 
 internal class PolishActions(
@@ -140,6 +142,7 @@ internal class ClipboardActions(
 )
 
 internal class AppearanceActions(
+    val onThemeModeChanged: (com.envi.wispr.settings.ThemeMode) -> Unit,
     val onDynamicColorChanged: (Boolean) -> Unit,
     val onBubbleLookChanged: (BubbleLook) -> Unit,
     val onBubbleShowOnPasswordsChanged: (Boolean) -> Unit,

@@ -110,9 +110,50 @@ class PolishServiceCleanupOptionsDeviceTest {
     }
 
     @Test
+    fun frozenCasualModeStripsFinalFullStopAcrossTheRealPolishProcess() {
+        val completed = CountDownLatch(1)
+        var outcome: PolishOutcome? = null
+        val options = com.envi.wispr.cleanup.CleanupOptions(
+            englishSpelling = com.envi.wispr.cleanup.EnglishSpelling.BRITISH,
+            casualMode = true,
+        )
+        com.envi.wispr.ui.PipelineBindings.polishProxy(checkNotNull(service)) { it.run() }.polishRequestWithCleanupForTake(4_131L,
+            "The organization needs to prioritize the color review at the center today.",
+            options, PolishPolicy.Off, "casual-mode-device",
+            object : com.envi.wispr.ui.PolishListener {
+                override fun onOutcome(value: PolishOutcome?) { outcome = value; completed.countDown() }
+            })
+        assertTrue("casual mode cleanup request did not answer", completed.await(10, TimeUnit.SECONDS))
+        val value = checkNotNull(outcome)
+        assertEquals("The organisation needs to prioritise the colour review at the centre today", value.text)
+        assertEquals(PolishReason.OFF, value.reason)
+        assertEquals(false, value.spokenFinalFullStop)
+        assertEquals("en", value.languageCode)
+
+        val spokenCompleted = CountDownLatch(1)
+        var spokenOutcome: PolishOutcome? = null
+        val spokenOptions = com.envi.wispr.cleanup.CleanupOptions(
+            spokenPunctuation = true,
+            casualMode = false,
+        )
+        com.envi.wispr.ui.PipelineBindings.polishProxy(checkNotNull(service)) { it.run() }.polishRequestWithCleanupForTake(4_132L,
+            "See you at the office tomorrow period.",
+            spokenOptions, PolishPolicy.Off, "casual-provenance-device",
+            object : com.envi.wispr.ui.PolishListener {
+                override fun onOutcome(value: PolishOutcome?) { spokenOutcome = value; spokenCompleted.countDown() }
+            })
+        assertTrue("spoken provenance request did not answer", spokenCompleted.await(10, TimeUnit.SECONDS))
+        val spokenValue = checkNotNull(spokenOutcome)
+        assertEquals("See you at the office tomorrow.", spokenValue.text)
+        assertEquals(true, spokenValue.spokenFinalFullStop)
+        assertEquals("en", spokenValue.languageCode)
+    }
+
+    @Test
     fun appendedCleanupParcelPreservesEveryFrozenOption() {
         val options = com.envi.wispr.cleanup.CleanupOptions(false, false, true,
-            com.envi.wispr.cleanup.EnglishSpelling.BRITISH, setOf("kennedy", "center", "colour"))
+            com.envi.wispr.cleanup.EnglishSpelling.BRITISH, setOf("kennedy", "center", "colour"),
+            casualMode = true)
         val parcel = android.os.Parcel.obtain()
         try {
             CleanupRequestOptions(options).writeToParcel(parcel, 0)

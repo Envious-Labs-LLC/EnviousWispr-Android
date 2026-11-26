@@ -11,9 +11,15 @@ internal data class CleanupOptions(
     val spokenPunctuation: Boolean = false,
     val englishSpelling: EnglishSpelling = EnglishSpelling.AMERICAN,
     val spellingProtectedWords: Set<String> = emptySet(),
+    val casualMode: Boolean = false,
 )
 
-internal data class CleanupResult(val text: String, val changed: Boolean, val recovered: Boolean)
+internal data class CleanupResult(
+    val text: String,
+    val changed: Boolean,
+    val recovered: Boolean,
+    val spokenFinalFullStop: Boolean = false,
+)
 
 /** Deterministic English cleanup plus the language-neutral identifier/address subset. No network. */
 internal object DeterministicCleanup {
@@ -47,22 +53,76 @@ internal object DeterministicCleanup {
         "exclamation mark" to "!", "exclamation point" to "!", "full stop" to ".",
         "semicolon" to ";", "period" to ".", "comma" to ",", "colon" to ":",
     )
+    private val spokenFinalFullStopPattern = cleaningRegex(
+        "\\s+(?:period|full stop)\\b(?:\\s+new\\s+(?:paragraph|line)\\b)*\\s*\\z",
+        RegexOption.IGNORE_CASE,
+    )
     // Prepare command words before any replacement writes marks, so two explicit aliases stay two.
     // Only identical adjacent one/two-mark runs are absorbed; ellipses and mixed runs keep their intent.
-    private val recognizerMarkPatterns = punctuation.filterValues { '\n' !in it }.map { (phrase, mark) ->
-        val literal = Regex.escape(mark)
+    private val allCommandNames = punctuation.keys.sortedByDescending { it.length }
+        .joinToString("|") { Regex.escape(it) }
+    private val horizontalSpace = "[ \\t\\u00A0\\u202F]"
+    private val primaryCommandPattern = cleaningRegex("(?<!\\S)($allCommandNames)\\b", RegexOption.IGNORE_CASE)
+    private val repeatedCommandPattern = cleaningRegex(
+        "\\A$horizontalSpace*(?:[.,;:!?]|[.]{2}|,{2}|;{2}|:{2}|!{2}|[?]{2})(?![.,;:!?…])$horizontalSpace*($allCommandNames)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    private val markCommandNames = punctuation.filterValues { '\n' !in it }.keys.sortedByDescending { it.length }
+        .joinToString("|") { Regex.escape(it) }
+    private val dotCommands = setOf("full stop", "period")
+    private val closerClass = "[\\u201D\\u2019\"')\\]}»]"
+    private val recognizerMarkBeforePatterns = punctuation.filterValues { '\n' !in it }.map { (phrase, mark) ->
+        val absorbSet = if (phrase in dotCommands) "[.!?]" else Regex.escape(mark)
         val command = "(${Regex.escape(phrase)})"
         val otherMark = "[.,;:!?…]"
-        val horizontal = "[ \t]*"
-        cleaningRegex("(?<!$otherMark)$literal{1,2}(?!$otherMark)$horizontal\\b$command\\b", RegexOption.IGNORE_CASE) to
-            cleaningRegex("\\b$command\\b$horizontal$literal{1,2}(?!$otherMark)(?=\\s|$)", RegexOption.IGNORE_CASE)
+        cleaningRegex("(?<!$otherMark)($absorbSet)\\1?(?!$otherMark)($closerClass{0,3}[ \t]*)\\b$command\\b", RegexOption.IGNORE_CASE)
+    }
+    private val recognizerMarkAfterPattern = cleaningRegex(
+        "\\b($markCommandNames)\\b[ \t]*([.,;:!?])\\2?(?![.,;:!?…])(?=\\s|$)",
+        RegexOption.IGNORE_CASE,
+    )
+    private val recognizerBreakAfterMarkPattern = cleaningRegex(
+        "(\\b(?:$markCommandNames)\\s+(?:new paragraph|new line))\\b([.,])\\2?(?![.,;:!?…])(?=\\s|$)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun mergeRepeatedCommands(input: String): String {
+        val out = StringBuilder()
+        var cursor = 0
+        for (match in primaryCommandPattern.findAll(input)) {
+            val start = match.range.first
+            if (start < cursor) continue
+            var end = match.range.last + 1
+            val key = commandKey(match.groupValues[1])
+            while (end < input.length) {
+                val next = repeatedCommandPattern.find(input.substring(end)) ?: break
+                if (commandKey(next.groupValues[1]) != key) break
+                end += next.value.length
+            }
+            if (end > match.range.last + 1) {
+                out.append(input, cursor, match.range.last + 1)
+                cursor = end
+            }
+        }
+        if (cursor == 0) return input
+        return out.append(input, cursor, input.length).toString()
     }
 
-    private fun prepareSpokenPunctuation(input: String): String =
-        recognizerMarkPatterns.fold(input) { text, (before, after) ->
-            val withoutBefore = before.replace(text) { " ${it.groupValues[1]}" }
-            after.replace(withoutBefore) { "${it.groupValues[1]} " }
+    private fun commandKey(phrase: String): String =
+        phrase.lowercase(Locale.ROOT).split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+
+    private fun prepareSpokenPunctuation(input: String): String {
+        val merged = mergeRepeatedCommands(input)
+        val withoutBefore = recognizerMarkBeforePatterns.fold(merged) { text, before ->
+            before.replace(text) { match ->
+                val tail = match.groupValues[2]
+                val command = match.groupValues[3]
+                if (tail.isEmpty() || !tail.last().isWhitespace()) "$tail $command" else "$tail$command"
+            }
         }
+        val withoutAfter = recognizerMarkAfterPattern.replace(withoutBefore) { "${it.groupValues[1]} " }
+        return recognizerBreakAfterMarkPattern.replace(withoutAfter) { it.groupValues[1] }
+    }
 
     private val protectedPhrases = listOf(
         cleaningRegex("\\beleventh hour\\b", RegexOption.IGNORE_CASE),
@@ -140,6 +200,7 @@ internal object DeterministicCleanup {
         // by the same policy, which is macOS `FillerRemovalStep` read from the English side.
         val skipEnglishRewrites = CleanupLanguagePolicy.skipsEnglishRewrites(language)
         var lastGood = original
+        var punctuationCommitted = false
         return try {
             var value = original
             if (options.removeFillers) {
@@ -179,31 +240,43 @@ internal object DeterministicCleanup {
                 lastGood = value
                 trace("structured", value)
             }
+            var punctuationFinalFullStop = false
             if (options.spokenPunctuation && !skipEnglishRewrites) {
                 value = prepareSpokenPunctuation(value)
-                punctuation.forEach { (phrase, mark) ->
-                    val command = if ('\n' in mark) {
-                        cleaningRegex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
+                punctuationFinalFullStop = spokenFinalFullStopPattern.containsMatchIn(value)
+                val (breakPunctuation, markPunctuation) = punctuation.entries.partition { '\n' in it.value }
+                markPunctuation.forEach { (phrase, mark) ->
+                    val command = cleaningRegex("\\s*\\b${Regex.escape(phrase)}\\b\\s*", RegexOption.IGNORE_CASE)
+                    value = value.replace(command, "$mark ")
+                }
+                breakPunctuation.forEach { (phrase, mark) ->
+                    if (phrase == "new paragraph") {
+                        val command = cleaningRegex("[ \t]*\\b${Regex.escape(phrase)}\\b[ \t]*", RegexOption.IGNORE_CASE)
+                        value = value.replace(command, mark)
                     } else {
-                        cleaningRegex("\\s*\\b${Regex.escape(phrase)}\\b\\s*", RegexOption.IGNORE_CASE)
+                        val afterSentence = cleaningRegex("(?<=[.!?])[ \t]+\\b${Regex.escape(phrase)}\\b[ \t]*", RegexOption.IGNORE_CASE)
+                        value = value.replace(afterSentence, mark)
+                        val command = cleaningRegex("\\b${Regex.escape(phrase)}\\b", RegexOption.IGNORE_CASE)
+                        value = value.replace(command, mark)
                     }
-                    val replacement = if ('\n' in mark) mark else "$mark "
-                    value = value.replace(command, replacement)
                 }
             }
             if (!skipEnglishRewrites) value = SpokenSlash.apply(value, options.spokenPunctuation)
             else value = SpokenIdentifiers.normalize(NeutralAddresses.normalize(value, neutral = true), english = false)
             if (!TextSafety.isDeterministicSafe(lastGood, value, true)) return CleanupResult(lastGood, lastGood != original, true)
             lastGood = value
+            punctuationCommitted = punctuationFinalFullStop
             if (options.spokenPunctuation && !skipEnglishRewrites) trace("punctuation", value)
             value = formatText(value)
             value = BritishSpelling.convert(value, options.englishSpelling, language, options.spellingProtectedWords)
-            if (!TextSafety.isDeterministicSafe(original, value, structuredChanged || emojiChanged)) return CleanupResult(lastGood, lastGood != original, true)
+            if (!TextSafety.isDeterministicSafe(original, value, structuredChanged || emojiChanged)) {
+                return CleanupResult(lastGood, lastGood != original, true, punctuationCommitted)
+            }
             lastGood = value
             trace("format", value)
-            CleanupResult(value, value != original, false)
+            CleanupResult(value, value != original, false, punctuationCommitted)
         } catch (_: RuntimeException) {
-            CleanupResult(lastGood, lastGood != original, true)
+            CleanupResult(lastGood, lastGood != original, true, punctuationCommitted)
         } catch (_: StackOverflowError) {
             // Catastrophic backtracking in one of the regex families unwinds the stack rather than
             // corrupting it, so it is recoverable, and a limb must never throw into the session path
@@ -215,9 +288,16 @@ internal object DeterministicCleanup {
             //
             // Only completed plain-text stages are eligible here. Sentinels are restored and validated
             // inside the structured stage before it can become lastGood.
-            CleanupResult(lastGood, lastGood != original, true)
+            CleanupResult(lastGood, lastGood != original, true, punctuationCommitted)
         }
     }
+
+    /** True only when the spoken punctuation pass actually converted a final `period` / `full stop`. */
+    fun hasSpokenFinalFullStop(
+        raw: String,
+        options: CleanupOptions,
+        language: CleanupLanguage = CleanupLanguage.Unknown,
+    ): Boolean = apply(raw, options, language).spokenFinalFullStop
 
     /** The default [apply] observer: nothing. */
     val NO_TRACE: (String, String) -> Unit = { _, _ -> }

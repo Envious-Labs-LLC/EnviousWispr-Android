@@ -33,6 +33,7 @@ import com.envi.wispr.models.ModelUiAction
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.BubbleLook
 import com.envi.wispr.shortcuts.RecordingOverlayState
+import com.envi.wispr.ui.theme.LocalDarkTheme
 
 /** The Accessibility card says what the service does, in the words of the Android service description. */
 internal const val ACCESSIBILITY_CARD_COPY =
@@ -55,7 +56,7 @@ internal fun OnboardingScreen(
     val model: OnboardingViewModel = viewModel()
     val downloads by model.downloads.collectAsStateWithLifecycle()
     val stage = onboardingStage(step, readiness, autoPaste)
-    val dark = isSystemInDarkTheme()
+    val dark = LocalDarkTheme.current ?: isSystemInDarkTheme()
     val background = if (dark) Color(0xFF251F37) else Color.White
     val surface = if (dark) Color(0xFF201B2C) else Color(0xFFF0ECF8)
     val foreground = if (dark) Color(0xFFE8E4F1) else Color(0xFF160F22)

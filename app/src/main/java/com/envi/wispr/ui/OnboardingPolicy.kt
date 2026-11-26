@@ -6,12 +6,15 @@ import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.DictationTargetPin
 import com.envi.wispr.settings.AppPreferences
 import com.envi.wispr.telemetry.AnalyticsEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 
 /**
@@ -377,10 +380,13 @@ internal class OnboardingSettlement(
     private val preferences: AppPreferences,
     private val setupModelsReady: () -> Boolean,
     private val scope: CoroutineScope,
+    /** Invoked on non-cancellation settlement failures; defaults to no-op in production so dictation stays limb-safe. */
+    private val onError: (Throwable) -> Unit = {},
 ) {
     private val lock = Any()
     private val candidates = LinkedHashSet<String>()
     private val earlyTerminals = LinkedHashMap<String, String>()
+    private val activeSettlements = LinkedHashSet<Job>()
 
     /**
      * Registers [takeId] as an eligible external take BEFORE `finalizer.deliver()`. Bounded to
@@ -427,11 +433,30 @@ internal class OnboardingSettlement(
     /** Exposed for unit tests to verify failed/cancelled candidates are evicted cleanly. */
     internal fun pendingCandidateCount(): Int = synchronized(lock) { candidates.size }
 
-    private fun settleAsync(): Job = scope.launch {
-        runCatching {
-            if (preferences.authoritativeState.first().onboardingComplete) return@runCatching
-            if (setupModelsReady()) preferences.completeOnboarding()
+    /** Joins all currently active settlement jobs so tests wait on the settlement signal rather than polling DataStore. */
+    internal suspend fun awaitPending() {
+        while (true) {
+            val pending = synchronized(lock) { activeSettlements.filter { !it.isCompleted } }
+            if (pending.isEmpty()) return
+            pending.joinAll()
         }
+    }
+
+    private fun settleAsync(): Job {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                if (preferences.authoritativeState.first().onboardingComplete) return@launch
+                if (setupModelsReady()) preferences.completeOnboarding()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                runCatching { onError(error) }
+            }
+        }
+        synchronized(lock) { activeSettlements.add(job) }
+        job.invokeOnCompletion { synchronized(lock) { activeSettlements.remove(job) } }
+        job.start()
+        return job
     }
 
     companion object {

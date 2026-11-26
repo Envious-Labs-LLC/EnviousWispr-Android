@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -283,6 +284,8 @@ class OnboardingTelemetryTest {
     private val mainDispatcher = mainPool.asCoroutineDispatcher()
     private val storeJob = Job()
     private val storeScope = CoroutineScope(storeJob + Dispatchers.IO)
+    private val settlementJob = SupervisorJob()
+    private val settlementScope = CoroutineScope(settlementJob + Dispatchers.IO)
     private val store by lazy { PreferenceDataStoreFactory.create(scope = storeScope) { File(tempFolder.root, "onboarding.preferences_pb") } }
     private val preferences by lazy { AppPreferences(store) }
     private val captured = mutableListOf<AnalyticsEvent>()
@@ -307,6 +310,7 @@ class OnboardingTelemetryTest {
                 ViewModelStore().apply { put("shell", shell); clear() }
                 vmJob.join()
             }
+            settlementJob.cancelAndJoin()
             storeJob.cancelAndJoin()
         }
         Dispatchers.resetMain()
@@ -383,7 +387,13 @@ class OnboardingTelemetryTest {
         // User still in the guided flow (not dismissed): SCHEDULED alone never completes setup.
         preferences.setOnboardingStep(OnboardingStage.PERMISSIONS.ordinal)
         var modelsReady = true
-        val settlement = OnboardingSettlement(preferences, setupModelsReady = { modelsReady }, scope = storeScope)
+        val errors = mutableListOf<Throwable>()
+        val settlement = OnboardingSettlement(
+            preferences = preferences,
+            setupModelsReady = { modelsReady },
+            scope = settlementScope,
+            onError = { synchronized(errors) { errors += it } },
+        )
 
         assertNull(settlement.registerCandidate("take-copy"))
         assertEquals(1, settlement.pendingCandidateCount())
@@ -411,14 +421,17 @@ class OnboardingTelemetryTest {
         // Missing setup models leave setup incomplete even on COMMITTED.
         modelsReady = false
         assertNull(settlement.registerCandidate("take-no-models"))
-        checkNotNull(settlement.onTerminal("take-no-models", InsertionResults.COMMITTED)).join()
+        checkNotNull(settlement.onTerminal("take-no-models", InsertionResults.COMMITTED))
+        // deadline-fallback: wait on settlement's completion signal with a fail-fast deadline.
+        withTimeout(15_000L) { settlement.awaitPending() }
         assertEquals(0, settlement.pendingCandidateCount())
         assertFalse("missing setup models must not complete setup", preferences.state.first().onboardingComplete)
 
         // Registered external take receiving COMMITTED with models ready completes setup (0 OnboardingCompleted rows).
         modelsReady = true
         assertNull(settlement.registerCandidate("take-committed"))
-        checkNotNull(settlement.onTerminal("take-committed", InsertionResults.COMMITTED)).join()
+        checkNotNull(settlement.onTerminal("take-committed", InsertionResults.COMMITTED))
+        withTimeout(15_000L) { settlement.awaitPending() }
         assertEquals(0, settlement.pendingCandidateCount())
         val settled = preferences.state.first()
         assertTrue(settled.onboardingComplete)
@@ -430,9 +443,62 @@ class OnboardingTelemetryTest {
         // Verify PASTED also settles cleanly on a fresh store.
         val pastedStore = PreferenceDataStoreFactory.create(scope = storeScope) { File(tempFolder.root, "pasted.preferences_pb") }
         val pastedPrefs = AppPreferences(pastedStore)
-        val pastedSettlement = OnboardingSettlement(pastedPrefs, setupModelsReady = { true }, scope = storeScope)
+        val pastedSettlement = OnboardingSettlement(
+            preferences = pastedPrefs,
+            setupModelsReady = { true },
+            scope = settlementScope,
+            onError = { synchronized(errors) { errors += it } },
+        )
         assertNull(pastedSettlement.registerCandidate("take-pasted"))
-        checkNotNull(pastedSettlement.onTerminal("take-pasted", InsertionResults.PASTED)).join()
+        checkNotNull(pastedSettlement.onTerminal("take-pasted", InsertionResults.PASTED))
+        withTimeout(15_000L) { pastedSettlement.awaitPending() }
         assertTrue(pastedPrefs.state.first().onboardingComplete)
+        assertEquals(emptyList<Throwable>(), synchronized(errors) { errors.toList() })
+    }
+
+    /** #563: non-cancellation failures surface via onError while CancellationException is rethrown cleanly. */
+    @Test fun settlementReportsNonCancellationErrorsAndRethrowsCancellation() = runBlocking {
+        val boomStore = PreferenceDataStoreFactory.create(scope = storeScope) { File(tempFolder.root, "boom.preferences_pb") }
+        val boomPrefs = AppPreferences(boomStore)
+        val errors = mutableListOf<Throwable>()
+        val failingSettlement = OnboardingSettlement(
+            preferences = boomPrefs,
+            setupModelsReady = { throw IllegalStateException("model check failed") },
+            scope = settlementScope,
+            onError = { synchronized(errors) { errors += it } },
+        )
+        assertNull(failingSettlement.registerCandidate("take-boom"))
+        checkNotNull(failingSettlement.onTerminal("take-boom", InsertionResults.COMMITTED))
+        withTimeout(15_000L) { failingSettlement.awaitPending() }
+        assertEquals(listOf("model check failed"), synchronized(errors) { errors.map { it.message } })
+        assertFalse(boomPrefs.state.first().onboardingComplete)
+
+        // CancellationException inside settleAsync must be rethrown (cancelling the Job), never routed to onError.
+        val cancelErrors = mutableListOf<Throwable>()
+        val cancelJob = SupervisorJob()
+        val cancelScope = CoroutineScope(cancelJob + Dispatchers.IO)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        try {
+            val cancellingSettlement = OnboardingSettlement(
+                preferences = boomPrefs,
+                setupModelsReady = {
+                    entered.countDown()
+                    throw kotlinx.coroutines.CancellationException("cancelled")
+                },
+                scope = cancelScope,
+                onError = { synchronized(cancelErrors) { cancelErrors += it } },
+            )
+            assertNull(cancellingSettlement.registerCandidate("take-cancel"))
+            val cancelledJob = checkNotNull(cancellingSettlement.onTerminal("take-cancel", InsertionResults.COMMITTED))
+            withTimeout(15_000L) {
+                cancelledJob.join()
+                cancellingSettlement.awaitPending()
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertTrue("CancellationException must cancel the settlement Job rather than being swallowed", cancelledJob.isCancelled)
+            assertEquals(emptyList<Throwable>(), synchronized(cancelErrors) { cancelErrors.toList() })
+        } finally {
+            cancelJob.cancelAndJoin()
+        }
     }
 }

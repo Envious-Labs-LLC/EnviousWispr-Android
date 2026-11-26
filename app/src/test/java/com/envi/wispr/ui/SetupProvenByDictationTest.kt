@@ -54,18 +54,31 @@ class SetupProvenByDictationTest {
     private val rig = DictationSessionRig()
     private val storeJob = Job()
     private val storeScope = CoroutineScope(storeJob + Dispatchers.IO)
+    /** Dedicated supervisor IO scope matching production, torn down before DataStore's [storeJob]. */
+    private val settlementJob = SupervisorJob()
+    private val settlementScope = CoroutineScope(settlementJob + Dispatchers.IO)
     private val immediateScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     @After fun tearDown() {
         rig.holdRescueWrite?.complete(Unit)
         rig.close()
-        runBlocking { storeJob.cancelAndJoin() }
+        runBlocking {
+            settlementJob.cancelAndJoin()
+            storeJob.cancelAndJoin()
+        }
     }
 
     private fun newPrefs(name: String): AppPreferences {
         val store = PreferenceDataStoreFactory.create(scope = storeScope) { File(tempFolder.root, "$name.preferences_pb") }
         return AppPreferences(store)
     }
+
+    private fun newSettlement(prefs: AppPreferences, setupModelsReady: () -> Boolean = { true }) = OnboardingSettlement(
+        preferences = prefs,
+        setupModelsReady = setupModelsReady,
+        scope = settlementScope,
+        onError = { rig.uncaught += it },
+    )
 
     private fun runCompletedTake(): String {
         val coordinator = rig.coordinator()
@@ -105,7 +118,7 @@ class SetupProvenByDictationTest {
 
     @Test fun externalTakeSettlesOnlyAfterCommittedNeverOnScheduledAlone() = runBlocking {
         val prefs = newPrefs("external-commit")
-        val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
+        val settlement = newSettlement(prefs)
         val observer = TakeDeliveryObserver(PracticeTakeTracker({}, immediateScope), settlement)
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
@@ -116,20 +129,25 @@ class SetupProvenByDictationTest {
         assertFalse("SCHEDULED handoff alone must leave onboardingComplete false", prefs.state.first().onboardingComplete)
 
         recordInsertion(observer, takeId, InsertionResults.COMMITTED)
-        val settled = withTimeout(5_000L) { prefs.state.first { it.onboardingComplete } }
+        // deadline-fallback: wait on settlement's own completion signal rather than racing a cold DataStore flow.
+        withTimeout(15_000L) { settlement.awaitPending() }
+        assertEquals("settlement must not fail", emptyList<Throwable>(), rig.uncaught.toList())
+        val settled = prefs.state.first()
         assertTrue(settled.onboardingComplete)
         assertEquals(0, settlement.pendingCandidateCount())
     }
 
     @Test fun externalTakeFallingBackToCopyOnlyNeverSettlesAndEvictsCandidate() = runBlocking {
         val prefs = newPrefs("external-copy")
-        val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
+        val settlement = newSettlement(prefs)
         val observer = TakeDeliveryObserver(PracticeTakeTracker({}, immediateScope), settlement)
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
 
         val takeId = runCompletedTake()
         recordInsertion(observer, takeId, InsertionResults.COPY_ONLY)
+        withTimeout(15_000L) { settlement.awaitPending() }
+        assertEquals(emptyList<Throwable>(), rig.uncaught.toList())
         assertFalse(prefs.state.first().onboardingComplete)
         assertEquals(0, settlement.pendingCandidateCount())
     }
@@ -143,13 +161,15 @@ class SetupProvenByDictationTest {
 
     @Test fun nonScheduledFallbackEmitsTerminalOutcomeAndEvictsSettlementCandidate() = runBlocking {
         val prefs = newPrefs("non-scheduled")
-        val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
+        val settlement = newSettlement(prefs)
         val observer = TakeDeliveryObserver(PracticeTakeTracker({}, immediateScope), settlement)
         rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
         rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
         rig.insertion.handoff = InsertionHandoff.SERVICE_NOT_RUNNING
 
         val takeId = runCompletedTake()
+        withTimeout(15_000L) { settlement.awaitPending() }
+        assertEquals(emptyList<Throwable>(), rig.uncaught.toList())
         assertEquals(listOf(takeId to InsertionResults.CLIPBOARD), rig.host.terminalDeliveries.toList())
         assertEquals(0, settlement.pendingCandidateCount())
         assertFalse(prefs.state.first().onboardingComplete)
@@ -166,7 +186,7 @@ class SetupProvenByDictationTest {
             scope = immediateScope,
         )
         val practice = PracticeTakeFollower(tracker)
-        val observer = TakeDeliveryObserver(tracker, OnboardingSettlement(newPrefs("practice-nosave"), { true }, storeScope))
+        val observer = TakeDeliveryObserver(tracker, newSettlement(newPrefs("practice-nosave")))
         rig.host.onTerminalDelivery = observer::onTerminal
         rig.insertion.fieldId = OnboardingViewModel.PRACTICE_FIELD_ID
         rig.dao.failInserts = true
@@ -264,7 +284,7 @@ class SetupProvenByDictationTest {
                 scope = bgScope,
             )
             tracker.track("take-nonblocking", PracticeLesson.TAP, held = false)
-            val observer = TakeDeliveryObserver(tracker, OnboardingSettlement(newPrefs("nonblocking"), { true }, storeScope))
+            val observer = TakeDeliveryObserver(tracker, newSettlement(newPrefs("nonblocking")))
             val enqueued = mutableListOf<String>()
             val recorder = InsertionOutcomeRecorder(
                 enqueue = { label, _, _ -> enqueued += label; Enqueued.ACCEPTED },

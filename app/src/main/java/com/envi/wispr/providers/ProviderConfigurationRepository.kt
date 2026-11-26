@@ -265,17 +265,22 @@ internal class ProviderConfigurationRepository internal constructor(
         observation.local?.let { usage ->
             val model = LocalPolishModel.fromWire(usage.modelId)
             val key = qualificationKeyFor(model)
-            var evidence = runCatching {
-                ProcessingQualification.decode(storedProcessingString(values, key))
-            }.getOrNull()?.takeIf { it.contextId == usage.contextId }
+            val saved = runCatching { ProcessingQualification.decode(storedProcessingString(values, key)) }.getOrNull()
+            // A timeout proves nothing about a NEW identity, and one arriving late for an older identity (a model or
+            // platform change in between) must not replace the current identity's evidence with its own (#559).
+            if (observation.reason == PolishReason.LOCAL_TIMEOUT && saved != null && saved.contextId.isNotEmpty() && saved.contextId != usage.contextId) return@let
+            var evidence = saved?.takeIf { it.contextId == usage.contextId }
                 ?: ProcessingQualification.of(usage.contextId, emptySet())
+            // A take that proves nothing (a timeout, a not-ready take, a late answer for an older model or platform) writes
+            // nothing: rewriting the unchanged value would replace another identity's saved evidence with an empty one (#559).
+            val before = evidence
             val generationFailure = if (usage.generationFailed && usage.backend != null) setOf(usage.backend) else emptySet()
             usage.loadStamp?.let { stamp -> evidence = evidence.observed(emptySet(), usage.failedBackends - generationFailure, usage.runtimeFailed && usage.generationStamp == null, usage.preferenceRevision, stamp) }
             usage.generationStamp?.let { stamp ->
                 val success = if (usage.acceptedLocalText && usage.backend != null && observation.reason == PolishReason.POLISHED) setOf(usage.backend) else emptySet()
                 evidence = evidence.observed(success, generationFailure, usage.runtimeFailed, usage.preferenceRevision, stamp)
             }
-            writes[key] = evidence.encode()
+            if (evidence != before) writes[key] = evidence.encode()
         }
         if (writes.isEmpty()) return
         writeProcessing(writes)

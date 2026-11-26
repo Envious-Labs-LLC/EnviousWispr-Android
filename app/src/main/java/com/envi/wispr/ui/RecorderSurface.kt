@@ -18,8 +18,6 @@ internal interface RecorderSurface {
     fun updateElapsed(seconds: Int)
     fun updateBands(takeSerial: Long, bands: FloatArray)
     fun hide()
-    /** Records that [takeId] finished with no saved History row (#560). */
-    fun markTakeEndedWithoutRow(takeId: String)
 
     /** The serial [show] stamped on the current take; the picture listener stamps it on every picture and [updateBands] compares. */
     fun currentTakeSerial(): Long
@@ -36,6 +34,5 @@ internal object OverlayRecorderSurface : RecorderSurface {
     override fun updateElapsed(seconds: Int) = RecordingOverlayState.updateElapsed(seconds)
     override fun updateBands(takeSerial: Long, bands: FloatArray) = RecordingOverlayState.updateBands(takeSerial, bands)
     override fun hide() = RecordingOverlayState.hide()
-    override fun markTakeEndedWithoutRow(takeId: String) = RecordingOverlayState.markTakeEndedWithoutRow(takeId)
     override fun currentTakeSerial(): Long = RecordingOverlayState.snapshots.value.takeSerial
 }

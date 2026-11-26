@@ -66,15 +66,12 @@ internal object RecordingOverlayState {
 
     /** Hands out [Snapshot.takeSerial]; only [show] advances it, under the lock. */
     private var lastTakeSerial = 0L
-    private const val ENDED_WITHOUT_ROW_LIMIT = 32
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val lock = Any()
     private var snapshot = Snapshot()
     private var listener: Listener? = null
     private val snapshotFlow = MutableStateFlow(Snapshot())
-    private val endedWithoutRowHistory = ArrayDeque<String>(ENDED_WITHOUT_ROW_LIMIT)
-    private val endedWithoutRowFlow = MutableStateFlow<Set<String>>(emptySet())
 
     /**
      * The same state the overlay is handed, as a flow for a second reader that only wants the phase
@@ -82,14 +79,6 @@ internal object RecordingOverlayState {
      * committed value or a later one, never an earlier one.
      */
     val snapshots: StateFlow<Snapshot> = snapshotFlow.asStateFlow()
-
-    /**
-     * Takes that ended without a saved History row (cancelled, silent, failed before words, or save failed),
-     * bounded to the newest [ENDED_WITHOUT_ROW_LIMIT] ids (#560). Kept separate from [snapshots] so [hide]
-     * or a newer take starting can never erase the signal before a collector reads it, and an asynchronous
-     * save failure arriving after the Service stopped still reaches practice.
-     */
-    val takesEndedWithoutRow: StateFlow<Set<String>> = endedWithoutRowFlow.asStateFlow()
 
     fun attach(listener: Listener) {
         synchronized(lock) { this.listener = listener }
@@ -162,17 +151,6 @@ internal object RecordingOverlayState {
 
     /** The owner can accept a new start: IDLE, no pill, no token. */
     fun hide() = change { Snapshot() }
-
-    /** Records that [takeId] ended with no saved History row (#560). Safe from any thread; blank ids ignored. */
-    fun markTakeEndedWithoutRow(takeId: String) {
-        if (takeId.isBlank()) return
-        synchronized(lock) {
-            if (takeId in endedWithoutRowHistory) return
-            if (endedWithoutRowHistory.size >= ENDED_WITHOUT_ROW_LIMIT) endedWithoutRowHistory.removeFirst()
-            endedWithoutRowHistory.addLast(takeId)
-            endedWithoutRowFlow.value = endedWithoutRowHistory.toSet()
-        }
-    }
 
     /**
      * Read the current state, decide the next one, and commit it WITHOUT letting go of the lock

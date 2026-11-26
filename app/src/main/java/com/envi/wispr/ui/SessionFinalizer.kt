@@ -311,6 +311,8 @@ internal class SessionFinalizer(
     private val historySaves: HistorySaveObserver,
     /** The words' last resort (#288): application-owned, written ahead of delivery and settled by a SAVED answer. */
     private val rescuedWords: RescuedWords,
+    /** Non-blocking, limb-safe terminal delivery observer for non-SCHEDULED fallbacks (#560, #563). */
+    private val onTerminal: (takeId: String, result: String) -> Unit = { _, _ -> },
 ) {
     /**
      * The finalize-or-insert write, ENQUEUED inside the owner's reservation (#115): destroy takes the same
@@ -437,6 +439,7 @@ internal class SessionFinalizer(
                 clipboard == ClipboardOutcome.COPIED -> InsertionResultKind.CLIPBOARD
                 else -> InsertionResultKind.INSERTION_FAILED
             }
+            runCatching { onTerminal(takeId, resultKind.stored) }
             Telemetry.capture(
                 AnalyticsEvent.InsertionTerminal(
                     takeId = takeId, handoff = handoff, result = resultKind, route = InsertionRouteKind.of(resultKind),

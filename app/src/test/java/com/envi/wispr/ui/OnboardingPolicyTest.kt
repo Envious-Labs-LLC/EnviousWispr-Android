@@ -5,7 +5,6 @@ import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AccessibilityPermissionCheck
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.DictationTargetPin
-import com.envi.wispr.paste.InsertionHandoff
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -150,20 +149,21 @@ class OnboardingPolicyTest {
         assertEquals(PracticeOutcome.LANDED, judgePracticeTake(ended.copy(held = true), PracticeLesson.TAP, landed))
     }
 
-    /** #560: a take identified by takeId waits for Room's row or an explicit wordless/save-failed ending. */
-    @Test fun anIdentifiedTakeWithNoRowYetStaysWorkingUntilRowOrWordlessEnding() {
+    /** #560: a take identified by takeId resolves off its terminal delivery result, even without a History row. */
+    @Test fun anIdentifiedTakeResolvesFromTerminalDeliveryEvenWithoutAHistoryRow() {
         val identified = PracticeTake(held = false, transcriptId = null, ended = true, takeId = "take-1")
         val other = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 9L).copy(takeId = "take-other")
-        // Room has not emitted this take's row yet, and attachTranscript never arrived: WORKING, never NOTHING_LANDED.
+        // Before any terminal result or matching final row arrives: WORKING, never NOTHING_LANDED.
         assertEquals(PracticeOutcome.WORKING, judgePracticeTake(identified, PracticeLesson.TAP, emptyList()))
         assertEquals(PracticeOutcome.WORKING, judgePracticeTake(identified, PracticeLesson.TAP, listOf(other)))
-        // Once Room emits the committed row with matching takeId, it lands even with transcriptId == null.
-        val matching = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 99L).copy(takeId = "take-1")
-        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(other, matching)))
-        // An explicit wordless/save-failed ending yields NOTHING_LANDED even if no row or a stale draft exists.
-        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, emptyList(), setOf("take-1")))
+        // Terminal COMMITTED/PASTED lands even when History save failed (rows is empty or still draft).
         val staleDraft = row(TranscriptEntity.STATUS_DRAFT, "pending", id = 99L).copy(takeId = "take-1")
-        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(staleDraft), setOf("take-1")))
+        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(identified, PracticeLesson.TAP, emptyList(), mapOf("take-1" to InsertionResults.COMMITTED)))
+        assertEquals(PracticeOutcome.LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(staleDraft), mapOf("take-1" to InsertionResults.PASTED)))
+        assertEquals(PracticeOutcome.LANDED_BY_TAP, judgePracticeTake(identified, PracticeLesson.HOLD, emptyList(), mapOf("take-1" to InsertionResults.COMMITTED)))
+        // Non-landed terminal result or wordless/teardown sentinel yields NOTHING_LANDED even with a stale draft.
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, emptyList(), mapOf("take-1" to TakeDeliveryObserver.RESULT_NOT_DELIVERED)))
+        assertEquals(PracticeOutcome.NOTHING_LANDED, judgePracticeTake(identified, PracticeLesson.TAP, listOf(staleDraft), mapOf("take-1" to InsertionResults.COPY_ONLY)))
     }
 
     /**
@@ -199,12 +199,13 @@ class OnboardingPolicyTest {
         assertNull(onboardingStepToRecord(OnboardingStage.PRACTICE.ordinal, shown))
     }
 
-    /** #563: only a take handed to auto-paste in a field that is not the practice box proves setup. */
-    @Test fun onlyAHandoffToAnotherAppsFieldProvesSetup() {
-        // Most third-party editors carry no view id; a pinned take into one still counts.
-        assertTrue(dictationProvesSetup(DictationTargetPin.PINNED, null, InsertionHandoff.SCHEDULED))
-        assertFalse(dictationProvesSetup(DictationTargetPin.PINNED, OnboardingViewModel.PRACTICE_FIELD_ID, InsertionHandoff.SCHEDULED))
-        assertFalse(dictationProvesSetup(DictationTargetPin.PINNED, "field-1", InsertionHandoff.SERVICE_NOT_RUNNING))
-        assertFalse(dictationProvesSetup(DictationTargetPin.NO_TARGET, null, InsertionHandoff.NO_PINNED_TARGET))
+    /** #563: only a pinned take into a non-practice field is eligible to settle setup once insertion lands. */
+    @Test fun onlyAPinnedNonPracticeFieldIsAnExternalSettlementTarget() {
+        // Most third-party editors carry no view id; a pinned take into one still qualifies.
+        assertTrue(isExternalSettlementTarget(DictationTargetPin.PINNED, null))
+        assertTrue(isExternalSettlementTarget(DictationTargetPin.PINNED, "com.whatsapp:id/entry"))
+        assertFalse(isExternalSettlementTarget(DictationTargetPin.PINNED, OnboardingViewModel.PRACTICE_FIELD_ID))
+        assertFalse(isExternalSettlementTarget(DictationTargetPin.NO_TARGET, null))
+        assertFalse(isExternalSettlementTarget(DictationTargetPin.INSERTION_BUSY, "com.whatsapp:id/entry"))
     }
 }

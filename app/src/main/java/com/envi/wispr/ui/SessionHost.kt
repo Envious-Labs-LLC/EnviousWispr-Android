@@ -56,10 +56,16 @@ internal interface SessionHost {
     fun speechModelTakeEnded(takeId: String)
 
     /**
-     * #563: this take was handed to auto-paste in another app's field ([dictationProvesSetup]). The application's
-     * `OnboardingSettlement` decides whether setup is now complete; the host only forwards, and never waits.
+     * #563: marks [takeId] as an eligible external take BEFORE `finalizer.deliver()`, so `OnboardingSettlement`
+     * can complete setup once its insertion actually lands (`COMMITTED` or `PASTED`). Non-blocking.
      */
-    fun setupProvenByDictation()
+    fun registerSettlementCandidate(takeId: String)
+
+    /**
+     * #560, #563: forwards a take's terminal delivery outcome (wordless ending, non-SCHEDULED fallback, or
+     * pre-handoff teardown) to the application-owned `TakeDeliveryObserver`. Non-blocking and limb-safe.
+     */
+    fun onTakeDeliveryTerminal(takeId: String, result: String)
 
     /** `stopSelf()`. Separate from [removeForegroundAndDismiss] because the owner resets state between them. */
     fun stopSelfNow()

@@ -16,6 +16,7 @@ import androidx.work.WorkManager
 import com.envi.wispr.history.EnviousWisprDatabase
 import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.history.TranscriptRepository
+import com.envi.wispr.models.ModelBootstrapApplication
 import com.envi.wispr.models.ModelDeliveryWorker
 import com.envi.wispr.models.ModelHealth
 import com.envi.wispr.models.ModelManifest
@@ -72,10 +73,14 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         private set
     var downloadMessage by mutableStateOf("")
         private set
-    /** The followed take and its one reported verdict (issues #176, #560). */
-    private val practice = PracticeTakeFollower()
+    /** Application-owned tracker for identified practice takes so leaving mid-take never drops telemetry (#560). */
+    private val practiceTracker by lazy { ModelBootstrapApplication.takeDelivery(context).practice }
+    /** The visible practice take for UI rendering; durable reporting lives in [practiceTracker] (#176, #560). */
+    private val practiceLazy = lazy { PracticeTakeFollower(practiceTracker) }
+    private val practice by practiceLazy
     private var rows: List<TranscriptEntity> = emptyList()
-    private var endedWithoutRow: Set<String> = emptySet()
+    private var terminalResults: Map<String, String> = emptyMap()
+    private var verdicts: Map<String, PracticeVerdict> = emptyMap()
     private var watching: Job? = null
     private val engines = EngineWarmUp(context, viewModelScope)
     /** The phone's own launcher icons for the demo's first scene; empty until [loadDemoIcons] has run. */
@@ -181,25 +186,26 @@ internal class OnboardingViewModel(application: Application, private val saved: 
     fun enterPractice() {
         if (watching?.isActive == true) return
         OwnFieldAdmission.admit(PRACTICE_FIELD_ID)
-        endedWithoutRow = RecordingOverlayState.takesEndedWithoutRow.value
+        terminalResults = practiceTracker.terminalResults.value
+        verdicts = practiceTracker.verdicts.value
         watching = viewModelScope.launch {
             launch { RecordingOverlayState.snapshots.collect { snapshot -> followOwner(snapshot) } }
-            launch { RecordingOverlayState.takesEndedWithoutRow.collect { ended -> endedWithoutRow = ended; judge() } }
+            launch { practiceTracker.terminalResults.collect { latest -> terminalResults = latest; judge() } }
+            launch { practiceTracker.verdicts.collect { latest -> verdicts = latest; judge() } }
             launch { transcripts.transcripts.collect { latest -> rows = latest; judge() } }
         }
     }
 
     /**
-     * Stop following. A take the screen stopped watching mid-way is dropped, not resumed: its end was
-     * not observed, so a row seen on return could belong to a dictation made elsewhere in between
-     * (Codex review round 7). The words, if they landed, are in the box; the lesson simply asks for
-     * a take it can watch from start to end.
+     * Stop following new takes on screen. An in-flight take (not yet IDLE) is cleared from UI state on
+     * return, while all identified takes stay tracked in [practiceTracker] so their final verdict still
+     * emits `onboarding.practice` once (#560).
      */
     fun leavePractice() {
         watching?.cancel()
         watching = null
-        if (practice.take?.ended == false) {
-            practice.forget()
+        if (practiceLazy.isInitialized() && practice.leave()) {
+            practicePhase = RecordingOverlayState.Phase.IDLE
             practiceOutcome = null
             takeHeld = null
         }
@@ -212,7 +218,7 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         if (practicing) return
         lesson = PracticeLesson.HOLD
         saved["practice_hold_lesson"] = true
-        practice.forget()
+        if (practiceLazy.isInitialized()) practice.forgetVisible()
         practiceOutcome = null
     }
 
@@ -252,30 +258,18 @@ internal class OnboardingViewModel(application: Application, private val saved: 
         judge()
     }
 
-    /** Re-judge the current take off the row the owner named for it. */
+    /** Re-judge the visible take off its terminal delivery outcome (falling back to History). */
     private fun judge() {
-        val judgement = practice.judge(rows, endedWithoutRow) ?: return
-        // One `onboarding.practice` per ended take, with its FINAL verdict (plan §3.1, #560): the take
-        // itself is an ordinary bubble dictation and reports through the owner like any other.
-        judgement.reports.forEach { report ->
-            Telemetry.capture(AnalyticsEvent.OnboardingPractice(report.lesson.name.lowercase(), report.outcome.name.lowercase()))
-            when (report.outcome) {
-                PracticeOutcome.LANDED -> if (report.lesson == PracticeLesson.HOLD) {
-                    holdComplete = true
-                    saved["practice_hold_complete"] = true
-                } else {
-                    practiceComplete = true
-                    saved["practice_complete"] = true
-                }
-                // A tap answered the hold lesson: still a landed take, so Finish setup is earned.
-                PracticeOutcome.LANDED_BY_TAP -> {
-                    practiceComplete = true
-                    saved["practice_complete"] = true
-                }
-                PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED -> Unit
-            }
+        val judgement = practice.judge(rows, terminalResults, verdicts) ?: return
+        if (judgement.landedHold) {
+            holdComplete = true
+            saved["practice_hold_complete"] = true
         }
-        // Only the latest take drives the screen; an older one still resolving only reports.
+        if (judgement.landedTap) {
+            practiceComplete = true
+            saved["practice_complete"] = true
+        }
+        // Only the visible take drives the screen; earlier takes still resolving only unlock completion.
         if (practice.take == null) return
         practiceOutcome = judgement.shown
     }

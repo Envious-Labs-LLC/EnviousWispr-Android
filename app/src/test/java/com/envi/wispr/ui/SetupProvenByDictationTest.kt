@@ -1,32 +1,70 @@
 package com.envi.wispr.ui
 
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.envi.wispr.history.Enqueued
+import com.envi.wispr.history.HistoryRow
+import com.envi.wispr.history.TranscriptEntity
+import com.envi.wispr.insertion.ClipboardOutcome
+import com.envi.wispr.insertion.InsertionResults
+import com.envi.wispr.paste.InsertionEnding
 import com.envi.wispr.paste.InsertionHandoff
+import com.envi.wispr.paste.InsertionOutcomeRecorder
+import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.telemetry.AnalyticsEvent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
- * Observability Contract (#560, #563): driven through the real [DictationSessionCoordinator] on the rig.
+ * Observability Contract (#560, #563): driven through the real [DictationSessionCoordinator],
+ * [SessionFinalizer], [InsertionOutcomeRecorder], and [TakeDeliveryObserver] on [DictationSessionRig].
  *
- * 1. (#563) The session owner reports a take that proves setup works — handed to auto-paste in another
- *    app's field — and no other. `app.launched`'s `onboarding_complete` is settled from this report
- *    (`OnboardingSettlement`, covered in `OnboardingTelemetryTest`).
- * 2. (#560) The session owner publishes each take's `takeId` at `showStarting` and marks `takeId` as
- *    ended-without-row on wordless/non-completed endings and failed History saves, and never on a healthy
- *    completed take.
+ * Covers:
+ * 1. (#563) External take registers before `finalizer.deliver()` and settles `onboardingComplete = true`
+ *    ONLY when `InsertionOutcomeRecorder` reports `COMMITTED` / `PASTED` (never on `SCHEDULED` alone,
+ *    `COPY_ONLY`, `SERVICE_NOT_RUNNING`, or practice-box takes).
+ * 2. (#560) Practice take whose History save fails (`dao.failInserts = true`) while insertion succeeds
+ *    (`COMMITTED`) still reports `LANDED` once and credits completion (never `NOTHING_LANDED`).
+ * 3. (#560) Wordless take and Service `destroy()` during `awaitRescue()` after `commit(COMPLETED)`
+ *    both publish `RESULT_NOT_DELIVERED` so Practice settles to `NOTHING_LANDED` instead of hanging.
  *
- * REVERTS that turn rows red: drop the `dictationProvesSetup` call after `finalizer.deliver`; drop the
- * practice-box exclusion from `dictationProvesSetup`; report before `deliver` corrects the handoff; omit
- * `takeId` from `showStarting`; omit `markTakeEndedWithoutRow` from `arbiter` or `saved.onAnswered`.
+ * REVERTS that turn rows red: settle immediately on `SCHEDULED`; skip `registerSettlementCandidate`;
+ * call `markTakeEndedWithoutRow` on History save failure; drop `finally` in `publishResult`; omit
+ * `onTerminal` on non-SCHEDULED fallback or non-COMPLETED arbiter commit.
  */
 class SetupProvenByDictationTest {
+    @get:Rule val tempFolder = TemporaryFolder()
+
     private val rig = DictationSessionRig()
+    private val storeJob = Job()
+    private val storeScope = CoroutineScope(storeJob + Dispatchers.IO)
 
-    @After fun tearDown() = rig.close()
+    @After fun tearDown() {
+        rig.holdRescueWrite?.complete(Unit)
+        rig.close()
+        runBlocking { storeJob.cancelAndJoin() }
+    }
 
-    /** One completed take; returns how many times the owner reported it proved setup. */
-    private fun completedTake(): Long {
+    private fun newPrefs(name: String): AppPreferences {
+        val store = PreferenceDataStoreFactory.create(scope = storeScope) { File(tempFolder.root, "$name.preferences_pb") }
+        return AppPreferences(store)
+    }
+
+    private fun runCompletedTake(): String {
         val coordinator = rig.coordinator()
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
@@ -36,35 +74,128 @@ class SetupProvenByDictationTest {
         rig.polish.awaitRequest().onOutcome(rig.polish.outcome("Tell Grandma I will call."))
         assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
         rig.host.awaitServiceStopped()
-        return rig.host.setupProven.get()
+        return rig.surface.startedTakeIds.single()
     }
 
-    @Test fun aTakeHandedToAutoPasteInAnotherAppProvesSetupOnce() {
-        assertEquals(1L, completedTake())
-        assertEquals("precondition: the take was handed off", 1, rig.insertion.requests.size)
+    private fun recordInsertion(observer: TakeDeliveryObserver, takeId: String, result: String, row: HistoryRow = HistoryRow.None) {
+        val recorder = InsertionOutcomeRecorder(
+            enqueue = { _, _, _ -> Enqueued.ACCEPTED },
+            capture = {},
+            outcomeTrail = {},
+            warn = {},
+            onTerminal = observer::onTerminal,
+        )
+        val landed = result == InsertionResults.COMMITTED || result == InsertionResults.PASTED
+        recorder.record(
+            InsertionEnding(
+                row = row,
+                takeId = takeId,
+                targetPackage = "com.google.android.gm",
+                status = if (landed) TranscriptEntity.STATUS_COMPLETED else TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
+                result = result,
+                interrupted = !landed,
+                clipboard = if (landed) null else ClipboardOutcome.COPIED,
+                latencyMs = 120L,
+            ),
+        )
     }
 
-    @Test fun aPracticeBoxTakeNeverProvesSetup() {
+    @Test fun externalTakeSettlesOnlyAfterCommittedNeverOnScheduledAlone() = runBlocking {
+        val prefs = newPrefs("external-commit")
+        val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
+        val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
+        var settlementJob: Job? = null
+        rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
+        rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
+
+        val takeId = runCompletedTake()
+        assertEquals(listOf(takeId), rig.host.settlementCandidates.toList())
+        assertEquals(1, settlement.pendingCandidateCount())
+        assertFalse("SCHEDULED handoff alone must leave onboardingComplete false", prefs.state.first().onboardingComplete)
+
+        val recorder = InsertionOutcomeRecorder(
+            enqueue = { _, _, _ -> Enqueued.ACCEPTED },
+            capture = {},
+            outcomeTrail = {},
+            warn = {},
+            onTerminal = { id, res -> settlementJob = settlement.onTerminal(id, res) },
+        )
+        recorder.record(
+            InsertionEnding(
+                row = HistoryRow.None, takeId = takeId, targetPackage = "com.google.android.gm",
+                status = TranscriptEntity.STATUS_COMPLETED, result = InsertionResults.COMMITTED,
+                interrupted = false, clipboard = null, latencyMs = 80L,
+            ),
+        )
+        checkNotNull(settlementJob).join()
+        assertTrue(prefs.state.first().onboardingComplete)
+        assertEquals(0, settlement.pendingCandidateCount())
+    }
+
+    @Test fun externalTakeFallingBackToCopyOnlyNeverSettlesAndEvictsCandidate() = runBlocking {
+        val prefs = newPrefs("external-copy")
+        val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
+        val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
+        rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
+        rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
+
+        val takeId = runCompletedTake()
+        recordInsertion(observer, takeId, InsertionResults.COPY_ONLY)
+        assertFalse(prefs.state.first().onboardingComplete)
+        assertEquals(0, settlement.pendingCandidateCount())
+    }
+
+    @Test fun practiceBoxTakeNeverRegistersForSettlement() {
         rig.insertion.fieldId = OnboardingViewModel.PRACTICE_FIELD_ID
-        assertEquals(0L, completedTake())
+        runCompletedTake()
+        assertEquals(emptyList<String>(), rig.host.settlementCandidates.toList())
         assertEquals("precondition: the take was handed off", 1, rig.insertion.requests.size)
     }
 
-    @Test fun aTakeTheServiceCouldNotTakeNeverProvesSetup() {
+    @Test fun nonScheduledFallbackEmitsTerminalOutcomeAndEvictsSettlementCandidate() = runBlocking {
+        val prefs = newPrefs("non-scheduled")
+        val settlement = OnboardingSettlement(prefs, setupModelsReady = { true }, scope = storeScope)
+        val observer = TakeDeliveryObserver(PracticeTakeTracker {}, settlement)
+        rig.host.onRegisterSettlementCandidate = { id -> settlement.registerCandidate(id) }
+        rig.host.onTerminalDelivery = { id, result -> observer.onTerminal(id, result) }
         rig.insertion.handoff = InsertionHandoff.SERVICE_NOT_RUNNING
-        assertEquals(0L, completedTake())
+
+        val takeId = runCompletedTake()
+        assertEquals(listOf(takeId to InsertionResults.CLIPBOARD), rig.host.terminalDeliveries.toList())
+        assertEquals(0, settlement.pendingCandidateCount())
+        assertFalse(prefs.state.first().onboardingComplete)
     }
 
-    @Test fun aCompletedTakePublishesItsTakeIdAndNeverMarksEndedWithoutRow() {
-        completedTake()
+    /** #560: History save fails (`dao.failInserts = true`), insertion commits -> practice lands, never NOTHING_LANDED. */
+    @Test fun failedHistorySaveWithCommittedPracticeInsertionStillReportsLandedOnce() {
+        val reports = mutableListOf<Pair<String, String>>()
+        val tracker = PracticeTakeTracker { event ->
+            val practice = event as AnalyticsEvent.OnboardingPractice
+            reports += practice.lesson to practice.outcome
+        }
+        val practice = PracticeTakeFollower(tracker)
+        val observer = TakeDeliveryObserver(tracker, OnboardingSettlement(newPrefs("practice-nosave"), { true }, storeScope))
+        rig.host.onTerminalDelivery = observer::onTerminal
+        rig.insertion.fieldId = OnboardingViewModel.PRACTICE_FIELD_ID
+        rig.dao.failInserts = true
+
+        val takeId = runCompletedTake()
         rig.awaitHistoryIdle()
-        val takeId = rig.surface.startedTakeIds.single()
-        assertTrue("takeId must be non-blank", takeId.isNotBlank())
-        assertEquals(takeId, rig.dao.rows.values.single().takeId)
-        assertEquals(emptyList<String>(), rig.surface.endedWithoutRow.toList())
+        assertTrue("precondition: History save failed so no row exists", rig.dao.rows.isEmpty())
+
+        // Practice observed the take and saw IDLE before insertion finished: stays WORKING, never NOTHING_LANDED.
+        practice.follow(ours = true, transcriptId = null, held = false, lesson = PracticeLesson.TAP, takeId = takeId)
+        practice.follow(ours = false, transcriptId = null, held = null, lesson = PracticeLesson.TAP, takeId = null)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.WORKING), practice.judge(emptyList()))
+        assertEquals(emptyList<Pair<String, String>>(), reports)
+
+        // Insertion commits independently of History: reports LANDED once and unlocks completion.
+        recordInsertion(observer, takeId, InsertionResults.COMMITTED, row = HistoryRow.None)
+        assertEquals(listOf("tap" to "landed"), reports)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.LANDED, landedTap = true), practice.judge(emptyList()))
     }
 
-    @Test fun aWordlessTakeMarksItsTakeIdAsEndedWithoutRow() {
+    @Test fun wordlessTakePublishesNotDeliveredTerminal() {
         val coordinator = rig.coordinator()
         coordinator.onCreated()
         rig.command(coordinator, DictationSessionService.ACTION_START)
@@ -73,17 +204,49 @@ class SetupProvenByDictationTest {
         rig.speech.awaitRequest().onResult("")
         assertEquals(TerminalReason.ASR_EMPTY_DESPITE_AUDIO, rig.endings.awaitOne())
         rig.host.awaitServiceStopped()
-        rig.awaitHistoryIdle()
         val takeId = rig.surface.startedTakeIds.single()
-        assertEquals(emptyMap<Long, com.envi.wispr.history.TranscriptEntity>(), rig.dao.rows.toMap())
-        assertEquals(listOf(takeId), rig.surface.endedWithoutRow.toList())
+        assertEquals(listOf(takeId to TakeDeliveryObserver.RESULT_NOT_DELIVERED), rig.host.terminalDeliveries.toList())
     }
 
-    @Test fun aFailedHistorySaveMarksItsTakeIdAsEndedWithoutRow() {
-        rig.dao.failInserts = true
-        completedTake()
-        rig.awaitHistoryIdle()
+    /** #560: destroy() during awaitRescue() after commit(COMPLETED) never calls deliver(); finally settles Practice to NOTHING_LANDED. */
+    @Test fun destroyDuringAwaitRescueAfterCommitPublishesNotDeliveredTerminal() {
+        val reports = mutableListOf<Pair<String, String>>()
+        val tracker = PracticeTakeTracker { event ->
+            val practice = event as AnalyticsEvent.OnboardingPractice
+            synchronized(reports) { reports += practice.lesson to practice.outcome }
+        }
+        val practice = PracticeTakeFollower(tracker)
+        val terminalArrived = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        val hold = CompletableDeferred<Unit>()
+        rig.insertion.fieldId = OnboardingViewModel.PRACTICE_FIELD_ID
+        rig.rescueWriteEntered = entered
+        rig.holdRescueWrite = hold
+        rig.host.onTerminalDelivery = { id, result ->
+            tracker.onTerminal(id, result)
+            terminalArrived.countDown()
+        }
+
+        val coordinator = rig.coordinator()
+        coordinator.onCreated()
+        rig.command(coordinator, DictationSessionService.ACTION_START)
+        rig.surface.awaitShown()
         val takeId = rig.surface.startedTakeIds.single()
-        assertEquals(listOf(takeId), rig.surface.endedWithoutRow.toList())
+        practice.follow(ours = true, transcriptId = null, held = false, lesson = PracticeLesson.TAP, takeId = takeId)
+        rig.command(coordinator, DictationSessionService.ACTION_STOP)
+        rig.speech.awaitRequest().onResult("words before destroy")
+        rig.polish.awaitRequest().onOutcome(rig.polish.outcome("Words before destroy."))
+
+        // Wait until commit(COMPLETED) succeeded AND rescue write is blocked, so publishResult is suspended in awaitRescue().
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        assertTrue("rescue write should have started", entered.await(5, TimeUnit.SECONDS))
+
+        rig.onMain { coordinator.destroy() }
+        assertTrue("finally must publish RESULT_NOT_DELIVERED after destroy cancels awaitRescue", terminalArrived.await(5, TimeUnit.SECONDS))
+        practice.follow(ours = false, transcriptId = null, held = null, lesson = PracticeLesson.TAP, takeId = null)
+        assertTrue("deliver() must never have run after destroy during awaitRescue", rig.insertion.requests.isEmpty())
+        assertEquals(listOf(takeId to TakeDeliveryObserver.RESULT_NOT_DELIVERED), rig.host.terminalDeliveries.toList())
+        assertEquals(listOf("tap" to "nothing_landed"), reports)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.NOTHING_LANDED), practice.judge(emptyList()))
     }
 }

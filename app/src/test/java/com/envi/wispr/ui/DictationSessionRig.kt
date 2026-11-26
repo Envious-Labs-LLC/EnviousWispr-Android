@@ -122,7 +122,11 @@ internal class DictationSessionRig {
     /** The words' last resort (#288), on the observer's scope: application-owned in production, so it outlives the owner. */
     val rescuedWords = RescuedWords(
         rescueDir, saveScope, wallClock = { 1_000L }, warn = { line -> log.warn(line) },
-        beforeWrite = { if (rescueWriteDelayMs > 0L) kotlinx.coroutines.delay(rescueWriteDelayMs) },
+        beforeWrite = {
+            rescueWriteEntered?.countDown()
+            holdRescueWrite?.await()
+            if (rescueWriteDelayMs > 0L) kotlinx.coroutines.delay(rescueWriteDelayMs)
+        },
     )
 
     /** The start-up recovery's owner (#346), on the observer's scope like the rescue store; no telemetry in the rig. */
@@ -134,6 +138,9 @@ internal class DictationSessionRig {
 
     /** When set, each rescue write starts this late (#288): well inside the owner's bound, so only its wait sees KEPT. */
     @Volatile var rescueWriteDelayMs = 0L
+    /** Deterministic rescue-write hold gate for teardown-during-awaitRescue tests (#560). */
+    @Volatile var holdRescueWrite: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    @Volatile var rescueWriteEntered: CountDownLatch? = null
 
     /** The observer's breadcrumbs, as (message, data) (#304). */
     val breadcrumbs = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Map<String, Any?>>>()
@@ -371,9 +378,19 @@ internal class DictationSessionRig {
         override fun speechModelTakeStarted(takeId: String) { speechHold += "started:$takeId" }
         override fun speechModelUsed(takeId: String) { speechHold += "used:$takeId" }
         override fun speechModelTakeEnded(takeId: String) { speechHold += "ended:$takeId" }
-        /** Separate from [events] so existing event-list assertions stay unchanged (#563). */
-        val setupProven = AtomicLong(0L)
-        override fun setupProvenByDictation() { setupProven.incrementAndGet() }
+        /** Separate from [events] so existing event-list assertions stay unchanged (#560, #563). */
+        val settlementCandidates = CopyOnWriteArrayList<String>()
+        val terminalDeliveries = CopyOnWriteArrayList<Pair<String, String>>()
+        @Volatile var onRegisterSettlementCandidate: ((String) -> Unit)? = null
+        @Volatile var onTerminalDelivery: ((String, String) -> Unit)? = null
+        override fun registerSettlementCandidate(takeId: String) {
+            settlementCandidates += takeId
+            onRegisterSettlementCandidate?.invoke(takeId)
+        }
+        override fun onTakeDeliveryTerminal(takeId: String, result: String) {
+            terminalDeliveries += takeId to result
+            onTerminalDelivery?.invoke(takeId, result)
+        }
 
         override fun stopSelfNow() {
             events += "stopSelf"
@@ -434,8 +451,6 @@ internal class DictationSessionRig {
         }
         /** Take ids published to [showStarting], apart from [events] (#560). */
         val startedTakeIds = CopyOnWriteArrayList<String>()
-        /** Take ids marked as ended without a saved History row, apart from [events] (#560). */
-        val endedWithoutRow = CopyOnWriteArrayList<String>()
         override fun showStarting(token: BubbleRequestToken?, takeId: String?) {
             events += "starting"
             if (takeId != null) startedTakeIds += takeId
@@ -460,7 +475,6 @@ internal class DictationSessionRig {
             timeline += "updateBands:$takeSerial"
         }
         override fun hide() { events += "hide" }
-        override fun markTakeEndedWithoutRow(takeId: String) { endedWithoutRow += takeId }
         override fun currentTakeSerial(): Long = serial.get()
     }
 

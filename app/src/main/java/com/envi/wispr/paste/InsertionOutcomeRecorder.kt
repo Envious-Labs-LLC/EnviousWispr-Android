@@ -48,6 +48,8 @@ internal class InsertionOutcomeRecorder(
     private val outcomeTrail: (Map<String, String?>) -> Unit,
     private val warn: (String) -> Unit,
     private val onRecoveryUncertainCleared: (Long) -> Unit = {},
+    /** Non-blocking, limb-safe terminal delivery observer keyed by `takeId` (#560, #563). */
+    private val onTerminal: (takeId: String, result: String) -> Unit = { _, _ -> },
 ) {
     fun record(ending: InsertionEnding) {
         val kind = InsertionResultKind.fromStored(ending.result)
@@ -86,6 +88,8 @@ internal class InsertionOutcomeRecorder(
             }
             return
         }
+        // Limb-safe immediate delivery signal for live takes (#560, #563): independent of History save and postHogOn.
+        ending.takeId?.let { id -> runCatching { onTerminal(id, ending.result) } }
         fun emit() {
             outcomeTrail(mapOf("take_id" to ending.takeId, "result" to ending.result, "target_app" to ending.targetPackage))
             if (ending.takeId == null) return
@@ -139,6 +143,9 @@ internal class InsertionOutcomeRecorder(
             warn = { DebugLogger.warn(TAG, it) },
             onRecoveryUncertainCleared = { id ->
                 com.envi.wispr.ui.HistoryInsertionRecovery.clearPersistedUncertain(context.applicationContext, id)
+            },
+            onTerminal = { takeId, result ->
+                ModelBootstrapApplication.takeDelivery(context.applicationContext).onTerminal(takeId, result)
             },
         )
     }

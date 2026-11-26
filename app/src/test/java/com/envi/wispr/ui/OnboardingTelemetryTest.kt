@@ -22,6 +22,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -33,27 +34,28 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Observability Contract (#560, #563): the onboarding rows report what happened, once. Not product coverage:
- * the practice screen's own verdict is `OnboardingPolicyTest`'s.
+ * the practice screen's own verdict rules are `OnboardingPolicyTest`'s.
  *
- * The practice rows replay the owner's independent signals in every order: the snapshot going IDLE
- * (`surface.hide()` ends every take), `endedWithoutRow` marking takes with no saved row, and the History
- * row arriving and reaching its final status. The step and completion rows drive the shell view model against
- * a real preferences file on a multi-threaded dispatcher and read the rows it reports.
+ * The practice rows replay the owner's independent signals through the app-owned [PracticeTakeTracker] and
+ * [PracticeTakeFollower]: snapshot IDLE (`surface.hide()`), terminal delivery outcomes arriving before or
+ * after registration and before or after IDLE, History save failures, leaving Practice mid-take or while
+ * WORKING, and overlapping takes. The step, completion, and external-settlement rows drive the shell view
+ * model and [OnboardingSettlement] against real preferences files on a multi-threaded dispatcher.
  *
  * Competing writes are LAUNCHED before either is joined (`test-honesty.md` RULE:
  * a-single-threaded-test-cannot-distinguish-atomic-from-check-then-act).
  *
  * REVERTS that turn rows red: drop `STATUS_SAVED_UNROUTED` from `practiceRowStillOpen`; return NOTHING_LANDED
- * when an identified take's row has not arrived yet; report the first verdict in `PracticeTakeFollower.judge`
- * whatever it is; drop a still-resolving take when the next starts; emit `OnboardingStageReached` without
- * checking the stored step changed; let `advanceOnboardingStep` write past a dismissal or Back/Demo tap; emit
- * `OnboardingCompleted` on every `completeOnboarding`.
+ * when an identified take has no terminal result yet; ignore terminal delivery when History rows are empty;
+ * drop tracked takes on `leave()`; settle `onboardingComplete` on `registerCandidate` before COMMITTED/PASTED;
+ * keep failed candidates queued; emit `OnboardingStageReached` without checking the stored step changed; let
+ * `advanceOnboardingStep` write past a dismissal or Back/Demo tap; emit `OnboardingCompleted` on every call.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class OnboardingTelemetryTest {
     @get:Rule val tempFolder = TemporaryFolder()
 
-    // ---- #560: onboarding.practice carries the take's FINAL verdict, once ----
+    // ---- #560: app-owned PracticeTakeTracker + PracticeTakeFollower ----
 
     private fun row(status: String, result: String, id: Long = 6L, takeId: String? = "take-$id") = TranscriptEntity(
         id = id, originalText = "um tell grandma", finalText = "Tell Grandma.", createdAtMs = 1_000L, durationMs = 1_000L,
@@ -61,7 +63,15 @@ class OnboardingTelemetryTest {
         takeId = takeId,
     )
 
-    /** One take of the practice box: STARTING with takeId (before any row), optionally followed by attachTranscript. */
+    private fun newTracker(): Pair<PracticeTakeTracker, MutableList<Pair<String, String>>> {
+        val reports = mutableListOf<Pair<String, String>>()
+        val tracker = PracticeTakeTracker { event ->
+            val practice = event as AnalyticsEvent.OnboardingPractice
+            synchronized(reports) { reports += practice.lesson to practice.outcome }
+        }
+        return tracker to reports
+    }
+
     private fun PracticeTakeFollower.startTake(
         takeId: String = "take-6",
         transcriptId: Long? = 6L,
@@ -74,108 +84,128 @@ class OnboardingTelemetryTest {
         }
     }
 
-    /** The owner's `surface.hide()`: IDLE, so not ours any more. */
     private fun PracticeTakeFollower.ownerHides() =
         follow(ours = false, transcriptId = null, held = null, lesson = PracticeLesson.TAP, takeId = null)
 
-    private fun PracticeTakeFollower.judgeRows(
-        vararg rows: TranscriptEntity,
-        endedWithoutRow: Set<String> = emptySet(),
-    ): PracticeJudgement = checkNotNull(judge(rows.toList(), endedWithoutRow))
-
-    private fun tap(outcome: PracticeOutcome) = PracticeReport(PracticeLesson.TAP, outcome)
-
-    @Test fun theOwnerGoingIdleBeforeRowArrivesOrCommitsReportsLandedOnce() {
-        val practice = PracticeTakeFollower()
-        // attachTranscript never arrived before hide() (dropped as a no-op at IDLE); only takeId is known.
+    @Test fun theOwnerGoingIdleBeforeTerminalResultCommitsReportsLandedOnce() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        // attachTranscript never arrived before hide(); only takeId is known.
         practice.startTake(takeId = "take-6", transcriptId = null)
-        assertEquals(PracticeJudgement(null, emptyList()), practice.judgeRows())
+        assertEquals(PracticeScreenJudgement(null), practice.judge(emptyList()))
         practice.ownerHides()
-        // Missing row at IDLE stays WORKING (never prematurely latches NOTHING_LANDED).
-        assertEquals(PracticeJudgement(PracticeOutcome.WORKING, emptyList()), practice.judgeRows())
-        // The order build 327 recorded: IDLE while the saved row waits for its route.
-        assertEquals(PracticeJudgement(PracticeOutcome.WORKING, emptyList()), practice.judgeRows(row(TranscriptEntity.STATUS_SAVED_UNROUTED, "pending")))
-        assertEquals(PracticeJudgement(PracticeOutcome.WORKING, emptyList()), practice.judgeRows(row(TranscriptEntity.STATUS_READY_FOR_INSERTION, "pending")))
-        val landed = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)
-        assertEquals(PracticeJudgement(PracticeOutcome.LANDED, listOf(tap(PracticeOutcome.LANDED))), practice.judgeRows(landed))
-        // Every later History emission re-judges the same take; it is reported once.
-        assertEquals(PracticeJudgement(PracticeOutcome.LANDED, emptyList()), practice.judgeRows(landed))
+        // Missing row and in-flight statuses stay WORKING (never prematurely latch NOTHING_LANDED).
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.WORKING), practice.judge(emptyList()))
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.WORKING), practice.judge(listOf(row(TranscriptEntity.STATUS_SAVED_UNROUTED, "pending"))))
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.WORKING), practice.judge(listOf(row(TranscriptEntity.STATUS_READY_FOR_INSERTION, "pending"))))
+        assertEquals(emptyList<Pair<String, String>>(), reports)
+        // Authoritative terminal COMMITTED lands even if Room still has empty rows (e.g. failed History save).
+        tracker.onTerminal("take-6", InsertionResults.COMMITTED)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.LANDED, landedTap = true), practice.judge(emptyList()))
+        // Duplicate terminal or later History emissions never double-report.
+        tracker.onTerminal("take-6", InsertionResults.COMMITTED)
+        practice.judge(listOf(row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED)))
+        assertEquals(listOf("tap" to "landed"), reports)
     }
 
-    @Test fun aRowFinalBeforeTheOwnerGoesIdleIsReportedAtIdle() {
-        val practice = PracticeTakeFollower()
-        val landed = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.PASTED)
-        practice.startTake(held = true, lesson = PracticeLesson.HOLD)
-        assertEquals(emptyList<PracticeReport>(), practice.judgeRows(landed).reports)
+    @Test fun aTerminalResultArrivingBeforeRegistrationOrBeforeIdleReportsOnce() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        // Order A: terminal arrives BEFORE IDLE on a HOLD take.
+        practice.startTake(takeId = "take-hold", held = true, lesson = PracticeLesson.HOLD)
+        tracker.onTerminal("take-hold", InsertionResults.PASTED)
+        assertEquals(listOf("hold" to "landed"), reports)
+        // UI keeps verdict null while still running, then shows LANDED once IDLE.
+        assertNull(checkNotNull(practice.judge(emptyList())).shown)
         practice.ownerHides()
-        assertEquals(
-            PracticeJudgement(PracticeOutcome.LANDED, listOf(PracticeReport(PracticeLesson.HOLD, PracticeOutcome.LANDED))),
-            practice.judgeRows(landed),
-        )
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.LANDED, landedHold = true), practice.judge(emptyList()))
+        assertEquals(listOf("hold" to "landed"), reports)
+
+        // Order B: terminal arrives BEFORE track() registration (e.g. ultra-fast cancel).
+        tracker.onTerminal("take-fast-cancel", TakeDeliveryObserver.RESULT_NOT_DELIVERED)
+        assertEquals(listOf("hold" to "landed"), reports)
+        practice.startTake(takeId = "take-fast-cancel", transcriptId = null, held = false, lesson = PracticeLesson.TAP)
+        practice.ownerHides()
+        assertEquals(PracticeOutcome.NOTHING_LANDED, checkNotNull(practice.judge(emptyList())).shown)
+        assertEquals(listOf("hold" to "landed", "tap" to "nothing_landed"), reports)
     }
 
-    @Test fun aTakeThatPutNoWordsInTheBoxReportsNothingLandedOnce() {
-        val practice = PracticeTakeFollower()
-        // 1. The route missed the box: the saved row reconciles to copy-only.
-        practice.startTake(takeId = "take-6", transcriptId = 6L)
-        practice.ownerHides()
-        assertEquals(emptyList<PracticeReport>(), practice.judgeRows(row(TranscriptEntity.STATUS_SAVED_UNROUTED, "pending")).reports)
-        val copied = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COPY_ONLY)
-        assertEquals(PracticeJudgement(PracticeOutcome.NOTHING_LANDED, listOf(tap(PracticeOutcome.NOTHING_LANDED))), practice.judgeRows(copied))
-        assertEquals(emptyList<PracticeReport>(), practice.judgeRows(copied).reports)
-
-        // 2. Explicit wordless/save-failed ending arriving AFTER IDLE (even while stale draft is still in Room).
-        practice.startTake(takeId = "take-wordless", transcriptId = 7L)
-        practice.ownerHides()
-        val staleDraft = row(TranscriptEntity.STATUS_DRAFT, "pending", id = 7L, takeId = "take-wordless")
-        assertEquals(PracticeJudgement(PracticeOutcome.WORKING, emptyList()), practice.judgeRows(copied, staleDraft))
-        assertEquals(
-            PracticeJudgement(PracticeOutcome.NOTHING_LANDED, listOf(tap(PracticeOutcome.NOTHING_LANDED))),
-            practice.judgeRows(copied, staleDraft, endedWithoutRow = setOf("take-wordless")),
-        )
-        assertEquals(emptyList<PracticeReport>(), practice.judgeRows(copied, endedWithoutRow = setOf("take-wordless")).reports)
-
-        // 3. Explicit wordless ending already present BEFORE IDLE: reported at IDLE, never while still running.
-        practice.startTake(takeId = "take-cancelled", transcriptId = null)
-        assertEquals(
-            PracticeJudgement(null, emptyList()),
-            practice.judgeRows(copied, endedWithoutRow = setOf("take-wordless", "take-cancelled")),
-        )
-        practice.ownerHides()
-        assertEquals(
-            PracticeJudgement(PracticeOutcome.NOTHING_LANDED, listOf(tap(PracticeOutcome.NOTHING_LANDED))),
-            practice.judgeRows(copied, endedWithoutRow = setOf("take-wordless", "take-cancelled")),
-        )
+    @Test fun wordlessAndNonLandedDeliveryResultsReportNothingLandedOnce() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        for ((index, result) in listOf(
+            InsertionResults.COPY_ONLY,
+            InsertionResults.CLIPBOARD,
+            InsertionResults.HISTORY_ONLY,
+            InsertionResults.INSERTION_FAILED,
+            TakeDeliveryObserver.RESULT_NOT_DELIVERED,
+        ).withIndex()) {
+            val id = "take-fail-$index"
+            practice.startTake(takeId = id, transcriptId = null)
+            practice.ownerHides()
+            assertEquals(PracticeOutcome.WORKING, checkNotNull(practice.judge(emptyList())).shown)
+            tracker.onTerminal(id, result)
+            assertEquals(PracticeOutcome.NOTHING_LANDED, checkNotNull(practice.judge(emptyList())).shown)
+            tracker.onTerminal(id, result)
+        }
+        assertEquals(List(5) { "tap" to "nothing_landed" }, reports)
     }
 
-    /** A second take while the first is still resolving (including when IDLE was conflated): each gets its own row. */
-    @Test fun aTakeStillResolvingWhenTheNextStartsIsReportedWhenItsRowIsFinal() {
-        val practice = PracticeTakeFollower()
+    /** Leaving Practice mid-take (before IDLE) still reports its verdict once; later non-practice takes are ignored. */
+    @Test fun leavingPracticeMidTakeStillReportsOnceAndDoesNotAdoptLaterTakes() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        practice.startTake(takeId = "take-mid", held = false, lesson = PracticeLesson.TAP)
+        assertTrue("leaving before IDLE clears UI take", practice.leave())
+        assertNull(practice.take)
+        // Terminal arrives while user is away: app-owned tracker still emits once.
+        tracker.onTerminal("take-mid", InsertionResults.COMMITTED)
+        assertEquals(listOf("tap" to "landed"), reports)
+        // A take started elsewhere after leavePractice() is never registered or adopted.
+        tracker.onTerminal("take-external", InsertionResults.COMMITTED)
+        assertEquals(listOf("tap" to "landed"), reports)
+        // Re-entering Practice (even receiving another snapshot for the same take) does not double-report.
+        tracker.track("take-mid", PracticeLesson.TAP, false)
+        assertEquals(listOf("tap" to "landed"), reports)
+    }
+
+    /** Leaving Practice while WORKING (after IDLE) reports once while away and updates UI cleanly on return. */
+    @Test fun leavingPracticeWhileWorkingReportsOnceAndShowsVerdictOnReturn() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
+        practice.startTake(takeId = "take-working", held = false, lesson = PracticeLesson.TAP)
+        practice.ownerHides()
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.WORKING), practice.judge(emptyList()))
+        assertFalse("ended take stays visible for return", practice.leave())
+        // Terminal arrives while paused: emitted once immediately.
+        tracker.onTerminal("take-working", InsertionResults.COMMITTED)
+        assertEquals(listOf("tap" to "landed"), reports)
+        // User returns to Practice: UI sees LANDED and unlocks completion without double-reporting.
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.LANDED, landedTap = true), practice.judge(emptyList()))
+        assertEquals(listOf("tap" to "landed"), reports)
+    }
+
+    /** A second take while the first is still resolving (including when IDLE was conflated): each gets its own report. */
+    @Test fun aTakeStillResolvingWhenTheNextStartsReportsBothAndCreditsCompletion() {
+        val (tracker, reports) = newTracker()
+        val practice = PracticeTakeFollower(tracker)
         practice.startTake(takeId = "take-6", transcriptId = null, held = true, lesson = PracticeLesson.HOLD)
-        // Even if IDLE was conflated before take-7 began, switching to take-7 marks take-6 ended and retains it.
+        // Even if IDLE was conflated before take-7 began, switching to take-7 keeps take-6 tracked.
         practice.startTake(takeId = "take-7", transcriptId = 7L, held = false, lesson = PracticeLesson.TAP)
-        val secondDraft = row(TranscriptEntity.STATUS_DRAFT, "pending", id = 7L, takeId = "take-7")
-        assertEquals(PracticeJudgement(null, emptyList()), practice.judgeRows(secondDraft))
-        // Take-6's row arrives and commits while take-7 is still recording: take-6 reports HOLD/LANDED; UI stays on take-7.
-        val firstLanded = row(TranscriptEntity.STATUS_COMPLETED, InsertionResults.COMMITTED, id = 6L, takeId = "take-6")
-        assertEquals(
-            PracticeJudgement(null, listOf(PracticeReport(PracticeLesson.HOLD, PracticeOutcome.LANDED))),
-            practice.judgeRows(firstLanded, secondDraft),
-        )
-        // Take-7 finishes and fails to save: reports TAP/NOTHING_LANDED once.
+        assertEquals(PracticeScreenJudgement(null), practice.judge(emptyList()))
+        // Take-6 commits while take-7 is still recording: reports HOLD/LANDED once, credits hold, UI stays on take-7.
+        tracker.onTerminal("take-6", InsertionResults.COMMITTED)
+        assertEquals(PracticeScreenJudgement(null, landedHold = true), practice.judge(emptyList()))
+        assertEquals(listOf("hold" to "landed"), reports)
+        // Take-7 finishes and fails delivery: reports TAP/NOTHING_LANDED once.
         practice.ownerHides()
-        assertEquals(PracticeJudgement(PracticeOutcome.WORKING, emptyList()), practice.judgeRows(firstLanded, secondDraft))
-        assertEquals(
-            PracticeJudgement(PracticeOutcome.NOTHING_LANDED, listOf(tap(PracticeOutcome.NOTHING_LANDED))),
-            practice.judgeRows(firstLanded, secondDraft, endedWithoutRow = setOf("take-7")),
-        )
-        assertEquals(
-            PracticeJudgement(PracticeOutcome.NOTHING_LANDED, emptyList()),
-            practice.judgeRows(firstLanded, secondDraft, endedWithoutRow = setOf("take-7")),
-        )
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.WORKING, landedHold = true), practice.judge(emptyList()))
+        tracker.onTerminal("take-7", InsertionResults.COPY_ONLY)
+        assertEquals(PracticeScreenJudgement(PracticeOutcome.NOTHING_LANDED, landedHold = true), practice.judge(emptyList()))
+        assertEquals(listOf("hold" to "landed", "tap" to "nothing_landed"), reports)
     }
 
-    // ---- #563: onboarding.stage_reached and onboarding.completed, against a real preferences file ----
+    // ---- #563: onboarding.stage_reached, onboarding.completed, and external settlement ----
 
     private val mainPool = Executors.newFixedThreadPool(2)
     private val mainDispatcher = mainPool.asCoroutineDispatcher()
@@ -277,19 +307,60 @@ class OnboardingTelemetryTest {
         assertEquals(listOf("onboarding.completed" to emptyMap<String, Any?>()), reported())
     }
 
-    // ---- #563: a dictation into another app settles setup, with no onboarding.completed row ----
-
-    @Test fun aDictationThatProvedSetupCompletesItOnlyWithTheSetupModels() = runBlocking {
-        // A user still inside the guided flow, never dismissed, who dictates into another app.
+    @Test fun externalSettlementCompletesOnlyOnCommittedOrPastedAndCleansUpFailures() = runBlocking {
+        // User still in the guided flow (not dismissed): SCHEDULED alone never completes setup.
         preferences.setOnboardingStep(OnboardingStage.PERMISSIONS.ordinal)
-        OnboardingSettlement(preferences, setupModelsReady = { false }, scope = storeScope).dictationProvedSetup().join()
-        assertFalse("a missing setup model leaves setup open", preferences.state.first().onboardingComplete)
-        OnboardingSettlement(preferences, setupModelsReady = { true }, scope = storeScope).dictationProvedSetup().join()
+        var modelsReady = true
+        val settlement = OnboardingSettlement(preferences, setupModelsReady = { modelsReady }, scope = storeScope)
+
+        assertNull(settlement.registerCandidate("take-copy"))
+        assertEquals(1, settlement.pendingCandidateCount())
+        assertFalse("SCHEDULED alone must leave onboardingComplete false", preferences.state.first().onboardingComplete)
+
+        // Terminal failures leave onboardingComplete false and evict the candidate.
+        assertNull(settlement.onTerminal("take-copy", InsertionResults.COPY_ONLY))
+        assertEquals(0, settlement.pendingCandidateCount())
+        assertFalse(preferences.state.first().onboardingComplete)
+
+        assertNull(settlement.registerCandidate("take-failed"))
+        assertNull(settlement.onTerminal("take-failed", InsertionResults.INSERTION_FAILED))
+        assertEquals(0, settlement.pendingCandidateCount())
+        assertFalse(preferences.state.first().onboardingComplete)
+
+        assertNull(settlement.registerCandidate("take-aborted"))
+        assertNull(settlement.onTerminal("take-aborted", TakeDeliveryObserver.RESULT_NOT_DELIVERED))
+        assertEquals(0, settlement.pendingCandidateCount())
+        assertFalse(preferences.state.first().onboardingComplete)
+
+        // Unregistered practice take receiving COMMITTED never settles setup.
+        assertNull(settlement.onTerminal("take-practice", InsertionResults.COMMITTED))
+        assertFalse(preferences.state.first().onboardingComplete)
+
+        // Missing setup models leave setup incomplete even on COMMITTED.
+        modelsReady = false
+        assertNull(settlement.registerCandidate("take-no-models"))
+        checkNotNull(settlement.onTerminal("take-no-models", InsertionResults.COMMITTED)).join()
+        assertEquals(0, settlement.pendingCandidateCount())
+        assertFalse("missing setup models must not complete setup", preferences.state.first().onboardingComplete)
+
+        // Registered external take receiving COMMITTED with models ready completes setup (0 OnboardingCompleted rows).
+        modelsReady = true
+        assertNull(settlement.registerCandidate("take-committed"))
+        checkNotNull(settlement.onTerminal("take-committed", InsertionResults.COMMITTED)).join()
+        assertEquals(0, settlement.pendingCandidateCount())
         val settled = preferences.state.first()
         assertTrue(settled.onboardingComplete)
         assertFalse(settled.onboardingDismissed)
-        // The settlement reports nothing, and a later Finish tap on a complete setup counts no completion.
+        // Later Finish tap on an already settled setup counts no OnboardingCompleted row either.
         shell.completeOnboarding().join()
         assertEquals(emptyList<Pair<String, Map<String, Any?>>>(), reported())
+
+        // Verify PASTED also settles cleanly on a fresh store.
+        val pastedStore = PreferenceDataStoreFactory.create(scope = storeScope) { File(tempFolder.root, "pasted.preferences_pb") }
+        val pastedPrefs = AppPreferences(pastedStore)
+        val pastedSettlement = OnboardingSettlement(pastedPrefs, setupModelsReady = { true }, scope = storeScope)
+        assertNull(pastedSettlement.registerCandidate("take-pasted"))
+        checkNotNull(pastedSettlement.onTerminal("take-pasted", InsertionResults.PASTED)).join()
+        assertTrue(pastedPrefs.state.first().onboardingComplete)
     }
 }

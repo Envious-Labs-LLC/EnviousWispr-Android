@@ -4,10 +4,13 @@ import com.envi.wispr.history.TranscriptEntity
 import com.envi.wispr.insertion.InsertionResults
 import com.envi.wispr.paste.AutoPasteAvailability
 import com.envi.wispr.paste.DictationTargetPin
-import com.envi.wispr.paste.InsertionHandoff
 import com.envi.wispr.settings.AppPreferences
+import com.envi.wispr.telemetry.AnalyticsEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -37,22 +40,21 @@ internal data class PracticeTake(
 )
 
 /**
- * Three answers, read off ONE fact: this take's own History row. Earlier rounds judged more (the box's
- * text, a freshness flag, a lock on the verdict) and each round found one more ordering in which the
- * extra reads lied; the fourth deleted them (Codex reviews 1 to 5, 2026-09-14). The row is the one
- * record the insertion path writes about where the words went, so it is the one thing judged.
+ * Three answers, read off the take's terminal delivery outcome (falling back to its History row when
+ * no `takeId` is present). Earlier rounds judged extra editor state and each found an ordering that
+ * lied (Codex reviews 1 to 5, 2026-09-14); judging the authoritative delivery outcome directly keeps
+ * History failures from turning a landed take into `NOTHING_LANDED` (#560).
  */
 internal enum class PracticeOutcome {
-    /** The take's row is still being written: transcribing, polishing, or inserting (bounded by the owner). */
+    /** The take is still finishing: transcribing, polishing, or inserting (bounded by the owner). */
     WORKING,
     /** The words are in the practice box, by the route any other app gets. */
     LANDED,
     /** Landed, but the hold lesson was answered with a tap. Still a success; the hint asks for a hold. */
     LANDED_BY_TAP,
     /**
-     * Nothing landed: silent, cancelled, failed, or the words missed the box. The owner records those
-     * differently (some delete the row, one keeps an empty error row, one keeps a copy-only row) and
-     * none of them put words in the box, so the screen says that one thing and asks for another try.
+     * Nothing landed: silent, cancelled, failed, or the words missed the box. None of them put words
+     * in the box, so the screen says that one thing and asks for another try.
      */
     NOTHING_LANDED,
 }
@@ -83,118 +85,223 @@ internal fun practiceRowStillOpen(status: String): Boolean? = when (status) {
 }
 
 /**
+ * Maps a take's terminal delivery [result] (`COMMITTED`/`PASTED` vs fallback/wordless/teardown) to its
+ * practice verdict (#560). Independent of whether History persisted a row.
+ */
+internal fun practiceOutcomeForResult(result: String, lesson: PracticeLesson, held: Boolean?): PracticeOutcome = when {
+    !OnboardingSettlement.isLandedInsertionResult(result) -> PracticeOutcome.NOTHING_LANDED
+    lesson == PracticeLesson.HOLD && held != true -> PracticeOutcome.LANDED_BY_TAP
+    else -> PracticeOutcome.LANDED
+}
+
+/**
  * What the practice screen says about [take]: null while the owner is busy with it; otherwise read
- * off the row matching [PracticeTake.takeId] (falling back to [PracticeTake.transcriptId]). The owner
- * goes IDLE before its row is final (`surface.hide()` does not wait for History or the route), so a
- * row still open OR not yet emitted by Room for an identified take that has not ended without a row
- * ([endedWithoutRow]) is WORKING. Only an explicit wordless/save-failed ending or a final non-landed
- * row yields NOTHING_LANDED (#560).
+ * off [terminalResults] keyed by [PracticeTake.takeId] first (authoritative even when History save
+ * fails), falling back to the matching History row. An identified take with no terminal result and
+ * no final row yet stays WORKING (#560).
  */
 internal fun judgePracticeTake(
     take: PracticeTake,
     lesson: PracticeLesson,
     rows: List<TranscriptEntity>,
-    endedWithoutRow: Set<String> = emptySet(),
+    terminalResults: Map<String, String> = emptyMap(),
 ): PracticeOutcome? {
     if (!take.ended) return null
-    if (take.takeId != null && take.takeId in endedWithoutRow) return PracticeOutcome.NOTHING_LANDED
+    take.takeId?.let { id ->
+        terminalResults[id]?.let { result -> return practiceOutcomeForResult(result, lesson, take.held) }
+    }
     val row = take.takeId?.let { id -> rows.firstOrNull { it.takeId == id } }
         ?: take.transcriptId?.let { id -> rows.firstOrNull { it.id == id } }
     if (row == null) return if (take.takeId != null) PracticeOutcome.WORKING else PracticeOutcome.NOTHING_LANDED
     if (practiceRowStillOpen(row.status) == true) return PracticeOutcome.WORKING
     return when {
         row.status != TranscriptEntity.STATUS_COMPLETED -> PracticeOutcome.NOTHING_LANDED
-        row.insertionResult != InsertionResults.COMMITTED && row.insertionResult != InsertionResults.PASTED -> PracticeOutcome.NOTHING_LANDED
-        lesson == PracticeLesson.HOLD && take.held != true -> PracticeOutcome.LANDED_BY_TAP
-        else -> PracticeOutcome.LANDED
+        else -> practiceOutcomeForResult(row.insertionResult, lesson, take.held)
     }
 }
 
-/** One `onboarding.practice` row: the lesson the take answered and its final verdict. */
-internal data class PracticeReport(val lesson: PracticeLesson, val outcome: PracticeOutcome)
-
-/** What the screen shows for the latest take, and the rows to report now: each take's final verdict, once. */
-internal data class PracticeJudgement(val shown: PracticeOutcome?, val reports: List<PracticeReport>)
+/** One finalized practice verdict recorded by [PracticeTakeTracker]. */
+internal data class PracticeVerdict(val lesson: PracticeLesson, val outcome: PracticeOutcome)
 
 /**
- * The practice takes the screen follows, and their `onboarding.practice` rows (#560). The owner's signals
- * are independent: the snapshot going IDLE ends the take, `endedWithoutRow` marks takes with no saved row,
- * and the History row reaching its final status says where the words went; IDLE routinely comes first. So a
- * take is reported only once its verdict is final, never while it is [PracticeOutcome.WORKING], and only
- * once. A take that ended and is still WORKING when the next one starts stays followed until its final
- * verdict arrives; only the latest take drives the screen. Pure, so every order the signals can arrive in
- * is replayed by `OnboardingTelemetryTest` without a phone.
+ * Application-owned tracker for identified onboarding practice takes (#560).
+ *
+ * Joins two independent signals keyed by `takeId`:
+ * 1. [track] from `OnboardingViewModel` once the owner names the practice box as target, with the lesson and gesture.
+ * 2. [onTerminal] from the delivery paths (`InsertionOutcomeRecorder`, `SessionFinalizer`, `DictationSessionCoordinator`).
+ *
+ * Whichever arrives first, once BOTH exist for a `takeId`, this tracker emits `AnalyticsEvent.OnboardingPractice`
+ * exactly once — even if the user left the practice screen before IDLE or while WORKING, and even if History
+ * failed to save the row. Bounded to [MAX_ENTRIES] recent entries so idle memory never grows without limit.
  */
-internal class PracticeTakeFollower {
+internal class PracticeTakeTracker(
+    private val capture: (AnalyticsEvent) -> Unit,
+) {
+    private data class Registration(val lesson: PracticeLesson, val held: Boolean?)
+
+    private val lock = Any()
+    private val tracked = LinkedHashMap<String, Registration>()
+    private val terminals = LinkedHashMap<String, String>()
+    private val reported = LinkedHashMap<String, PracticeVerdict>()
+    private val terminalFlow = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val verdictFlow = MutableStateFlow<Map<String, PracticeVerdict>>(emptyMap())
+
+    /** Terminal delivery results by `takeId` (bounded), observed by `OnboardingViewModel`. */
+    val terminalResults: StateFlow<Map<String, String>> = terminalFlow.asStateFlow()
+
+    /** Final reported practice verdicts by `takeId` (bounded), observed by `OnboardingViewModel`. */
+    val verdicts: StateFlow<Map<String, PracticeVerdict>> = verdictFlow.asStateFlow()
+
+    fun track(takeId: String, lesson: PracticeLesson, held: Boolean?) {
+        if (takeId.isBlank()) return
+        val event = synchronized(lock) {
+            if (takeId in reported) return
+            val existing = tracked[takeId]
+            val updated = if (existing == null) Registration(lesson, held) else existing.copy(held = existing.held ?: held)
+            putBounded(tracked, takeId, updated)
+            val result = terminals[takeId] ?: return
+            reportLocked(takeId, updated, result)
+        }
+        runCatching { capture(event) }
+    }
+
+    fun onTerminal(takeId: String, result: String) {
+        if (takeId.isBlank()) return
+        val event = synchronized(lock) {
+            if (takeId in terminals) return
+            putBounded(terminals, takeId, result)
+            terminalFlow.value = terminals.toMap()
+            if (takeId in reported) return
+            val registration = tracked[takeId] ?: return
+            reportLocked(takeId, registration, result)
+        }
+        runCatching { capture(event) }
+    }
+
+    private fun reportLocked(takeId: String, registration: Registration, result: String): AnalyticsEvent.OnboardingPractice {
+        val outcome = practiceOutcomeForResult(result, registration.lesson, registration.held)
+        putBounded(reported, takeId, PracticeVerdict(registration.lesson, outcome))
+        tracked.remove(takeId)
+        verdictFlow.value = reported.toMap()
+        return AnalyticsEvent.OnboardingPractice(registration.lesson.name.lowercase(), outcome.name.lowercase())
+    }
+
+    private fun <V> putBounded(map: LinkedHashMap<String, V>, key: String, value: V) {
+        map[key] = value
+        while (map.size > MAX_ENTRIES) {
+            val oldest = map.entries.iterator().next().key
+            map.remove(oldest)
+        }
+    }
+
+    companion object {
+        const val MAX_ENTRIES = 64
+    }
+}
+
+/** What the practice screen renders for its visible take, plus any completion earned in this session. */
+internal data class PracticeScreenJudgement(
+    val shown: PracticeOutcome?,
+    val landedTap: Boolean = false,
+    val landedHold: Boolean = false,
+)
+
+/**
+ * Screen-side state for the visible practice take, delegating durable telemetry tracking to the
+ * application-owned [PracticeTakeTracker] (#560). Only the visible take drives UI `practiceOutcome`,
+ * while takes handed to [tracker] still emit `onboarding.practice` once if the user leaves Practice
+ * mid-take or while WORKING.
+ */
+internal class PracticeTakeFollower(
+    private val tracker: PracticeTakeTracker,
+) {
     private class Followed(val take: PracticeTake, val lesson: PracticeLesson)
 
-    private var latest: Followed? = null
-    private var latestReported = false
-    /** Ended takes whose verdict was still WORKING when a newer take started. */
-    private val unresolved = mutableListOf<Followed>()
+    private var visible: Followed? = null
+    /** Identified takes started in this visible practice session (excluding takes left mid-flight before IDLE). */
+    private val sessionTakeIds = LinkedHashSet<String>()
 
-    val take: PracticeTake? get() = latest?.take
+    val take: PracticeTake? get() = visible?.take
 
-    /**
-     * The owner's snapshot, reduced by the caller: [ours] is a take aimed at the practice box, false once the
-     * owner is IDLE. [takeId], [transcriptId] and [held] are the snapshot's, null until it names them;
-     * [lesson] is the lesson on screen when the take starts.
-     */
     fun follow(ours: Boolean, transcriptId: Long?, held: Boolean?, lesson: PracticeLesson, takeId: String? = null) {
-        val current = latest
-        latest = if (ours) {
+        val current = visible
+        visible = if (ours) {
             val replaced = current != null && !current.take.ended &&
                 takeId != null && current.take.takeId != null && current.take.takeId != takeId
             if (current == null || current.take.ended || replaced) {
-                if (current != null && !latestReported) {
-                    val ended = if (current.take.ended) current else Followed(current.take.copy(ended = true), current.lesson)
-                    unresolved += ended
+                if (takeId != null) {
+                    tracker.track(takeId, lesson, held)
+                    rememberSessionTake(takeId)
                 }
-                latestReported = false
                 Followed(PracticeTake(held = held, transcriptId = transcriptId, takeId = takeId), lesson)
             } else {
-                val take = current.take
-                Followed(
-                    take.copy(
-                        held = take.held ?: held,
-                        transcriptId = take.transcriptId ?: transcriptId,
-                        takeId = take.takeId ?: takeId,
-                    ),
-                    current.lesson,
+                val merged = current.take.copy(
+                    held = current.take.held ?: held,
+                    transcriptId = current.take.transcriptId ?: transcriptId,
+                    takeId = current.take.takeId ?: takeId,
                 )
+                merged.takeId?.let { id ->
+                    tracker.track(id, current.lesson, merged.held)
+                    rememberSessionTake(id)
+                }
+                Followed(merged, current.lesson)
             }
         } else {
             current?.let { if (it.take.ended) it else Followed(it.take.copy(ended = true), it.lesson) }
         }
     }
 
-    /** Null while no take is followed. */
-    fun judge(rows: List<TranscriptEntity>, endedWithoutRow: Set<String> = emptySet()): PracticeJudgement? {
-        val reports = mutableListOf<PracticeReport>()
-        unresolved.removeAll { followed ->
-            val outcome = judgePracticeTake(followed.take, followed.lesson, rows, endedWithoutRow)
-                ?.takeIf { it != PracticeOutcome.WORKING }
-                ?: return@removeAll false
-            reports += PracticeReport(followed.lesson, outcome)
-            true
-        }
-        val current = latest ?: return if (reports.isEmpty()) null else PracticeJudgement(null, reports)
-        val outcome = judgePracticeTake(current.take, current.lesson, rows, endedWithoutRow)
-        if (outcome != null && outcome != PracticeOutcome.WORKING && !latestReported) {
-            latestReported = true
-            reports += PracticeReport(current.lesson, outcome)
-        }
-        return PracticeJudgement(outcome, reports)
+    /**
+     * Called when leaving the practice screen (`leavePractice` / `onCleared`). Stops showing an in-flight
+     * take (not yet IDLE) on UI return, while keeping all identified takes tracked in [tracker] so their
+     * terminal outcome still emits `onboarding.practice` once. Returns true when UI state should clear.
+     */
+    fun leave(): Boolean {
+        val current = visible ?: return false
+        if (current.take.ended) return false
+        current.take.takeId?.let(sessionTakeIds::remove)
+        visible = null
+        return true
     }
 
-    /**
-     * The latest take is no longer the screen's: one it stopped watching mid-way, or the lesson moved on. An
-     * ended take still waiting for its row stays followed, since its identity is known.
-     */
-    fun forget() {
-        val current = latest
-        if (current != null && current.take.ended && !latestReported) unresolved += current
-        latest = null
+    /** Clears the visible take when advancing lessons; [tracker] continues tracking any earlier take. */
+    fun forgetVisible() {
+        visible = null
+    }
+
+    fun judge(
+        rows: List<TranscriptEntity>,
+        terminalResults: Map<String, String> = tracker.terminalResults.value,
+        verdicts: Map<String, PracticeVerdict> = tracker.verdicts.value,
+    ): PracticeScreenJudgement? {
+        var landedTap = false
+        var landedHold = false
+        for (id in sessionTakeIds) {
+            val verdict = verdicts[id] ?: continue
+            when (verdict.outcome) {
+                PracticeOutcome.LANDED -> if (verdict.lesson == PracticeLesson.HOLD) landedHold = true else landedTap = true
+                PracticeOutcome.LANDED_BY_TAP -> landedTap = true
+                PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED -> Unit
+            }
+        }
+        val current = visible ?: return if (landedTap || landedHold) PracticeScreenJudgement(null, landedTap, landedHold) else null
+        val shown = judgePracticeTake(current.take, current.lesson, rows, terminalResults)
+        if (current.take.takeId == null) {
+            when (shown) {
+                PracticeOutcome.LANDED -> if (current.lesson == PracticeLesson.HOLD) landedHold = true else landedTap = true
+                PracticeOutcome.LANDED_BY_TAP -> landedTap = true
+                PracticeOutcome.WORKING, PracticeOutcome.NOTHING_LANDED, null -> Unit
+            }
+        }
+        return PracticeScreenJudgement(shown, landedTap, landedHold)
+    }
+
+    private fun rememberSessionTake(takeId: String) {
+        sessionTakeIds.add(takeId)
+        while (sessionTakeIds.size > PracticeTakeTracker.MAX_ENTRIES) {
+            val oldest = sessionTakeIds.iterator().next()
+            sessionTakeIds.remove(oldest)
+        }
     }
 }
 
@@ -221,9 +328,9 @@ internal fun onboardingStage(step: Int, readiness: AppReadiness, autoPaste: Auto
  * The step to store when the shown [stage] is AHEAD of the stored [step] (#563), else null. Only one
  * advance happens without a tap: the downloads finishing moves DOWNLOADS on to PERMISSIONS, and nothing
  * recorded it, so `onboarding.stage_reached{stage="permissions"}` left for 1 install in 107. Recording it
- * through the same step write as every tapped move reports it once. A stage BEHIND the stored step (a
- * permission lost, or the auto-paste service still connecting at a cold start) is never stored: the
- * restored step comes back once the fact does.
+ * through the atomic advance write reports it once. A stage BEHIND the stored step (a permission lost,
+ * or the auto-paste service still connecting at a cold start) is never stored: the restored step comes
+ * back once the fact does.
  */
 internal fun onboardingStepToRecord(step: Int, stage: OnboardingStage): Int? {
     val requested = OnboardingStage.entries.getOrElse(step) { OnboardingStage.WELCOME }
@@ -231,33 +338,107 @@ internal fun onboardingStepToRecord(step: Int, stage: OnboardingStage): Int? {
 }
 
 /**
- * #563: one take proves setup works when it was pinned to an editor and handed to auto-paste, in a field that
- * is not the practice box. That take needed the microphone, the speech model and a live auto-paste service, so
- * a user who dictates this way is set up whether or not they ever finished, or dismissed, the guided flow.
- * Practice takes are excluded: settling then would close setup under the user mid-lesson.
+ * #563: whether a take targeting [targetFieldId] with [pin] is eligible to settle `onboarding_complete`
+ * once its insertion actually lands (`COMMITTED` or `PASTED`). Practice takes are excluded so setup
+ * never closes under the user mid-lesson.
  */
-internal fun dictationProvesSetup(pin: DictationTargetPin, targetFieldId: String?, handoff: InsertionHandoff): Boolean =
-    pin == DictationTargetPin.PINNED &&
-        handoff == InsertionHandoff.SCHEDULED &&
-        targetFieldId != OnboardingViewModel.PRACTICE_FIELD_ID
+internal fun isExternalSettlementTarget(pin: DictationTargetPin, targetFieldId: String?): Boolean =
+    pin == DictationTargetPin.PINNED && targetFieldId != OnboardingViewModel.PRACTICE_FIELD_ID
 
 /**
- * Marks setup complete after a take that [dictationProvesSetup] (#563), so `app.launched` stops reporting an
- * active bubble user as never set up. Application-owned (`ModelBootstrapApplication`), because the session's
- * Service stops right after the handoff and most such takes start with the app closed. The guided flow's own
- * models must be on the phone too. No `onboarding.completed` row: that row is the guided flow's last step,
- * which this user did not take there. The write is never awaited and never fails the take.
+ * Settles `onboarding_complete = true` once an eligible external take actually lands (`COMMITTED` or
+ * `PASTED`, #563), so `app.launched` stops reporting an active bubble user as never set up without
+ * settling on a failed handoff or failed insertion. Application-owned (`ModelBootstrapApplication`),
+ * because the session's Service stops right after handoff and most such takes start with the app closed.
+ * No `onboarding.completed` row is emitted, and `onboardingDismissed` is not required.
  */
 internal class OnboardingSettlement(
     private val preferences: AppPreferences,
     private val setupModelsReady: () -> Boolean,
     private val scope: CoroutineScope,
 ) {
-    fun dictationProvedSetup(): Job = scope.launch {
+    private val lock = Any()
+    private val candidates = LinkedHashSet<String>()
+    private val earlyTerminals = LinkedHashMap<String, String>()
+
+    /**
+     * Registers [takeId] as an eligible external take BEFORE `finalizer.deliver()`. Bounded to
+     * [MAX_ENTRIES] entries; settles immediately if a landed terminal already arrived for [takeId].
+     */
+    fun registerCandidate(takeId: String): Job? {
+        if (takeId.isBlank()) return null
+        val earlyResult = synchronized(lock) {
+            earlyTerminals.remove(takeId) ?: run {
+                candidates.add(takeId)
+                while (candidates.size > MAX_ENTRIES) {
+                    val oldest = candidates.iterator().next()
+                    candidates.remove(oldest)
+                }
+                return null
+            }
+        }
+        return if (isLandedInsertionResult(earlyResult)) settleAsync() else null
+    }
+
+    /**
+     * Delivers a take's terminal result. Evicts any candidate for [takeId]; settles ONLY when [takeId]
+     * was registered and [result] is `COMMITTED` or `PASTED`.
+     */
+    fun onTerminal(takeId: String, result: String): Job? {
+        if (takeId.isBlank()) return null
+        val eligible = synchronized(lock) {
+            if (candidates.remove(takeId)) {
+                true
+            } else {
+                if (takeId !in earlyTerminals) {
+                    earlyTerminals[takeId] = result
+                    while (earlyTerminals.size > MAX_ENTRIES) {
+                        val oldest = earlyTerminals.entries.iterator().next().key
+                        earlyTerminals.remove(oldest)
+                    }
+                }
+                false
+            }
+        }
+        return if (eligible && isLandedInsertionResult(result)) settleAsync() else null
+    }
+
+    /** Exposed for unit tests to verify failed/cancelled candidates are evicted cleanly. */
+    internal fun pendingCandidateCount(): Int = synchronized(lock) { candidates.size }
+
+    private fun settleAsync(): Job = scope.launch {
         runCatching {
             if (preferences.authoritativeState.first().onboardingComplete) return@runCatching
             if (setupModelsReady()) preferences.completeOnboarding()
         }
+    }
+
+    companion object {
+        const val MAX_ENTRIES = 64
+
+        internal fun isLandedInsertionResult(result: String): Boolean =
+            result == InsertionResults.COMMITTED || result == InsertionResults.PASTED
+    }
+}
+
+/**
+ * Application-owned fan-out for every take's terminal delivery outcome (#560, #563): forwards each
+ * `(takeId, result)` to both [PracticeTakeTracker] and [OnboardingSettlement], independently of
+ * History persistence and telemetry opt-in, never blocking or throwing into its caller.
+ */
+internal class TakeDeliveryObserver(
+    val practice: PracticeTakeTracker,
+    val settlement: OnboardingSettlement,
+) {
+    fun onTerminal(takeId: String, result: String) {
+        if (takeId.isBlank()) return
+        runCatching { practice.onTerminal(takeId, result) }
+        runCatching { settlement.onTerminal(takeId, result) }
+    }
+
+    companion object {
+        /** Explicit no-delivery sentinel for wordless endings and pre-handoff teardowns. */
+        const val RESULT_NOT_DELIVERED = "not_delivered"
     }
 }
 

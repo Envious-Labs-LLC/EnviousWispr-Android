@@ -214,7 +214,10 @@ internal class DictationSessionCoordinator(
     private val capture = CaptureSessionController(host, surface, log, pipeline, ::onCaptureEvent)
 
     /** The History row and the delivery, after this owner has decided (#216). */
-    private val finalizer = SessionFinalizer(host, insertion, log, historyWrites, historySaves, rescuedWords)
+    private val finalizer = SessionFinalizer(
+        host, insertion, log, historyWrites, historySaves, rescuedWords,
+        onTerminal = { takeId, result -> runCatching { host.onTakeDeliveryTerminal(takeId, result) } },
+    )
 
     /** What the start's lane may read of this owner: two answers, never the state (#216). */
     private val phaseView = object : TakePhaseView {
@@ -401,8 +404,10 @@ internal class DictationSessionCoordinator(
         // hands the committed reason to telemetry and never waits on storage or the network.
         val protection = recordingProtection?.begin(takeId, System.currentTimeMillis())
         val arbiter = TakeArbiter { reason ->
-            // #560: every non-completed ending leaves no landed words (and often no saved row), so practice can settle it.
-            if (reason != TerminalReason.COMPLETED) runCatching { surface.markTakeEndedWithoutRow(takeId) }
+            // #560, #563: every non-completed ending delivers no words, so notify the delivery observer immediately.
+            if (reason != TerminalReason.COMPLETED) {
+                runCatching { host.onTakeDeliveryTerminal(takeId, TakeDeliveryObserver.RESULT_NOT_DELIVERED) }
+            }
             runCatching { protection?.ended(reason) }
             runCatching { historyRecovery.ordinaryEnded() }
             endingSink(takeFacts, reason)
@@ -1121,47 +1126,51 @@ internal class DictationSessionCoordinator(
             if (current.arbiter.commit(publication, TerminalReason.FINAL_TEXT_EMPTY)) finishSession()
             return
         }
-        // #560: if History cannot persist a row for this take (queue full, DB error, or deleted), practice must not stay WORKING forever.
-        saved.onAnswered { answer ->
-            val persisted = answer.outcome is SaveOutcome.Saved && answer.outcome.id > 0L
-            if (!persisted) runCatching { surface.markTakeEndedWithoutRow(takeId) }
-        }
         notices.sayPolishFailureIfAny(payload.polishFacts)
 
         scope.launch {
-            // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
-            // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
-            // a slow or failed save is reported by the application's [HistorySaveObserver] alone (#304).
-            current.outcome.historySaved(
-                when (saved.answeredNow()?.outcome) {
-                    is SaveOutcome.Saved -> true
-                    is SaveOutcome.Failed -> false
-                    null -> null
-                },
-            )
-            // COMMIT BEFORE the insertion handoff: completed means the text finalised, never that insertion
-            // succeeded. A revoked reservation (the owner was destroyed) stops here: no handoff, no announcement,
-            // no terminal; the teardown's own History write is the last word on that row (G2 D2).
-            if (!current.arbiter.commit(publication, TerminalReason.COMPLETED)) {
-                current.log.warn("Publication revoked before the handoff; not inserting")
-                return@launch
+            var deliveryTransferred = false
+            try {
+                // The words never wait on History (#277): insertion is the heart, History a limb. The save's answer is
+                // recorded if it is already in, else `pending`; the committed facts are never changed afterwards, and
+                // a slow or failed save is reported by the application's [HistorySaveObserver] alone (#304).
+                current.outcome.historySaved(
+                    when (saved.answeredNow()?.outcome) {
+                        is SaveOutcome.Saved -> true
+                        is SaveOutcome.Failed -> false
+                        null -> null
+                    },
+                )
+                // COMMIT BEFORE the insertion handoff: completed means the text finalised, never that insertion
+                // succeeded. A revoked reservation (the owner was destroyed) stops here: no handoff, no announcement,
+                // no terminal; the teardown's own History write is the last word on that row (G2 D2).
+                if (!current.arbiter.commit(publication, TerminalReason.COMPLETED)) {
+                    current.log.warn("Publication revoked before the handoff; not inserting")
+                    return@launch
+                }
+                runCatching {
+                    recordProcessing(com.envi.wispr.processing.ProcessingObservation(
+                        takeId, requestId, System.currentTimeMillis(), polishContext.encode(), reason,
+                        sessionPreferences.speechProcessing, processing, current.acceptedAtMs,
+                        localPreference = (sessionPreferences.policy as? PolishPolicy.LocalS1)?.processing,
+                    ))
+                }.onFailure { current.log.warn("Processing result could not be saved: ${it.javaClass.simpleName}") }
+                // The words are on this phone before they are handed anywhere (#288), bounded so a slow disk never holds them.
+                finalizer.awaitRescue(current.history)
+                // #563: register eligible external takes BEFORE deliver() so settlement completes only on COMMITTED/PASTED.
+                if (isExternalSettlementTarget(current.targetPin, targetFieldId)) {
+                    runCatching { host.registerSettlementCandidate(takeId) }
+                }
+                finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
+                deliveryTransferred = true
+                current.log.log(current.log.pipelineSummary())
+                finishSession()
+            } finally {
+                // #560, #563: Service teardown during awaitRescue() after commit(COMPLETED) never hands off to deliver().
+                if (!deliveryTransferred && current.arbiter.committed == TerminalReason.COMPLETED) {
+                    runCatching { host.onTakeDeliveryTerminal(takeId, TakeDeliveryObserver.RESULT_NOT_DELIVERED) }
+                }
             }
-            runCatching {
-                recordProcessing(com.envi.wispr.processing.ProcessingObservation(
-                    takeId, requestId, System.currentTimeMillis(), polishContext.encode(), reason,
-                    sessionPreferences.speechProcessing, processing, current.acceptedAtMs,
-                    localPreference = (sessionPreferences.policy as? PolishPolicy.LocalS1)?.processing,
-                ))
-            }.onFailure { current.log.warn("Processing result could not be saved: ${it.javaClass.simpleName}") }
-            // The words are on this phone before they are handed anywhere (#288), bounded so a slow disk never holds them.
-            finalizer.awaitRescue(current.history)
-            val delivery = finalizer.deliver(takeId, current.targetPin, payload, current.history, sessionPreferences.clipboard)
-            // #563: a take handed to auto-paste in another app's field proves setup works; the owner only says so.
-            if (dictationProvesSetup(current.targetPin, targetFieldId, delivery.handoff)) {
-                runCatching { host.setupProvenByDictation() }
-            }
-            current.log.log(current.log.pipelineSummary())
-            finishSession()
         }
     }
 

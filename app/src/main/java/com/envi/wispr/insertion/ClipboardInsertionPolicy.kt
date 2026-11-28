@@ -5,4 +5,5 @@ internal data class ClipboardInsertionPolicy(
     val autoCopyToClipboard: Boolean = true,
     val restoreClipboardAfterPaste: Boolean = true,
     val smartInsertion: Boolean = true,
+    val snippetWordSpacing: Boolean? = null,
 )

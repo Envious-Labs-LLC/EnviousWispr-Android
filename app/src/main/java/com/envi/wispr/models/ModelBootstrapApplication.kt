@@ -1,5 +1,8 @@
 package com.envi.wispr.models
 
+import com.envi.wispr.snippets.matchSnippets
+import com.envi.wispr.snippets.RecoveredSnippetText
+import com.envi.wispr.snippets.snippetWordSpacing
 import com.envi.wispr.telemetry.AppDefect
 import com.envi.wispr.debug.DeveloperLogs
 import com.envi.wispr.debug.DeveloperSwitches
@@ -139,8 +142,11 @@ class ModelBootstrapApplication : Application() {
             TranscriptRepository(EnviousWisprDatabase.get(this).transcriptDao()), historyWrites, rescuedWords,
             CoroutineScope(SupervisorJob() + Dispatchers.IO), recordingProtection,
             transform = { raw, frozen ->
+                val expansion = matchSnippets(raw)
                 com.envi.wispr.polish.MlKitLanguageDetector(this).use { detector ->
-                    com.envi.wispr.cleanup.recoverDeterministicText(raw, frozen.cleanup, frozen.terms, detector)
+                    val cleaned = com.envi.wispr.cleanup.recoverDeterministicText(expansion.masked, frozen.cleanup, frozen.terms, detector)
+                    val text = expansion.restore(cleaned) ?: checkNotNull(expansion.restore(expansion.masked))
+                    RecoveredSnippetText(text, if (expansion.fired) snippetWordSpacing(raw, detector) else null)
                 }
             })
     }

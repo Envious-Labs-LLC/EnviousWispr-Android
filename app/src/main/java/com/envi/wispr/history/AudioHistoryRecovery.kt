@@ -31,7 +31,7 @@ internal class AudioHistoryRecovery(
     private val words: RescuedWords,
     private val scope: CoroutineScope,
     private val recordings: RecordingProtectionOwner,
-    private val transform: (String, FrozenRecoveryContext) -> String,
+    private val transform: suspend (String, FrozenRecoveryContext) -> com.envi.wispr.snippets.RecoveredSnippetText,
     private val gate: ModelSwapGate = ModelSwapGate.main,
 ) {
     private val application = context.applicationContext
@@ -146,9 +146,11 @@ internal class AudioHistoryRecovery(
                 }
                 if (!accepted) return
                 disposition = null // Produced text/input stays retained while either write may still settle.
-                val finalText = try { transform(result.rawText, frozen).ifBlank { result.rawText } }
-                    catch (_: Exception) { result.rawText }
-                val row = TranscriptEntity(originalText = result.rawText, finalText = finalText,
+                val final = try { transform(result.rawText, frozen) }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { com.envi.wispr.snippets.RecoveredSnippetText(result.rawText, null) }
+                val row = TranscriptEntity(originalText = result.rawText, finalText = final.text.ifBlank { result.rawText },
+                    snippetWordSpacing = final.wordSpacing,
                     createdAtMs = frozen.createdAtMs, durationMs = result.durationMs,
                     speechEngine = result.model.displayName, polishEngine = PolishEngineLabels.OFF,
                     polishLatencyMs = 0L, insertionResult = InsertionResults.HISTORY_ONLY,

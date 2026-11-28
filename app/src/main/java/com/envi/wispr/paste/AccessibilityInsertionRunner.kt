@@ -164,8 +164,8 @@ internal class AccessibilityInsertionRunner(
         }
         pending.attempt = InsertionAttempt(
             editor = ServiceEditor(pending),
-            text = text,
-            smartInsertion = policy.smartInsertion,
+            text = if (policy.snippetWordSpacing == true && !text.endsWith(" ")) "$text " else text,
+            smartInsertion = policy.smartInsertion && policy.snippetWordSpacing == null,
             deadlineMs = pending.deadlineMs,
         )
         pendingInsertion = pending

@@ -601,6 +601,16 @@ internal object SettingsSearchCatalog {
             synonymPhrases = listOf("preview sound", "test chime"),
         ),
         SettingsSearchEntry(
+            id = "page-snippets",
+            target = SettingsSearchTarget.Page(SettingsPage.Snippets),
+            kind = SettingsSearchEntryKind.DESTINATION,
+            title = SettingsPage.Snippets.title,
+            description = SettingsPage.Snippets.subtitle,
+            breadcrumb = "Settings · Output",
+            keywords = listOf("snippets", "shortcuts", "trigger", "signature"),
+            synonymPhrases = listOf("saved phrases", "text replacement"),
+        ),
+        SettingsSearchEntry(
             id = "page-clipboard",
             target = SettingsSearchTarget.Page(SettingsPage.Clipboard),
             kind = SettingsSearchEntryKind.DESTINATION,

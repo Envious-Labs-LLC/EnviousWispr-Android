@@ -52,6 +52,7 @@ internal data class TranscriptEntity(
     val recoveryStartSample: Long? = null,
     val recoveryPartial: Boolean? = null,
     val recoveryModelIdentity: String? = null,
+    val snippetWordSpacing: Boolean? = null,
 ) {
     companion object {
         const val STATUS_DRAFT = "draft"

@@ -1,5 +1,7 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.snippets.SnippetExpansion
+import com.envi.wispr.snippets.snippetWordSpacing
 import com.envi.wispr.cleanup.CasualEnding
 import com.envi.wispr.cleanup.CleanupOptions
 import com.envi.wispr.cleanup.LanguageDetector
@@ -28,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal sealed interface PreparedText {
     val text: String
     val context: PolishContext
+    val snippetWordSpacing: Boolean?
 
     data class Polished(
         override val text: String,
@@ -40,6 +43,7 @@ internal sealed interface PreparedText {
         val requestId: Long = 0,
         val diagnostics: com.envi.wispr.polish.LocalPolishDiagnostics? = null,
         val waitMs: Long? = null,
+        override val snippetWordSpacing: Boolean? = null,
     ) : PreparedText
 
     data class Fallback(
@@ -47,6 +51,7 @@ internal sealed interface PreparedText {
         val reason: PolishReason,
         override val context: PolishContext,
         val waitMs: Long? = null,
+        override val snippetWordSpacing: Boolean? = null,
     ) : PreparedText
 }
 
@@ -94,6 +99,7 @@ internal class TakePolishController(
     private val restore: (String, StructuredTermRestorer.Matcher) -> String = { text, matcher -> matcher.restore(text) },
     /** The deterministic cleanup with its language detection (#252: a JVM row makes it throw). */
     private val cleanup: (String, CleanupOptions, LanguageDetector) -> PolishFallback.Outcome = PolishFallback::deterministicOutcome,
+    private val matchSnippets: suspend (String) -> SnippetExpansion = { SnippetExpansion.unchanged(it) },
     private val nowMs: () -> Long = android.os.SystemClock::elapsedRealtime,
 ) {
     /**
@@ -108,6 +114,7 @@ internal class TakePolishController(
     }
 
     /** Guarded by [lock]. */
+    @Volatile private var activeExpansion: SnippetExpansion? = null
     private var decision: Decision = Decision.Undecided
     /** Written at request-open and the winning claim, then read by off-main preparation. */
     private var localOpenedAtMs: Long? = null
@@ -215,7 +222,8 @@ internal class TakePolishController(
     fun prepare(rawText: String, takePreferences: SessionPreferences) {
         scope.launch {
             // Fails open to the raw words (#252): the request is sent either way.
-            val preparedRaw = restoreVocabulary(rawText, takePreferences, STEP_RESTORE_RAW) ?: rawText
+            val expansion = matchSnippets(rawText)
+            val preparedRaw = restoreVocabulary(expansion.masked, takePreferences, STEP_RESTORE_RAW) ?: expansion.masked
             val service = link()
             var fallback: PolishReason? = null
             var unansweredLink = false
@@ -226,6 +234,7 @@ internal class TakePolishController(
                     return@synchronized null
                 }
                 if (decision != Decision.Undecided) return@launch
+                activeExpansion = expansion.takeIf { it.fired }
                 val seenLoss = lost
                 if (service == null || seenLoss != null) {
                     // Refused at bind, never connected, or died: this take publishes the deterministic text.
@@ -417,7 +426,21 @@ internal class TakePolishController(
      */
     private fun handBack(prepare: () -> PreparedText) {
         scope.launch(Dispatchers.IO) {
-            val text = prepare()
+            val prepared = prepare()
+            val expansion = activeExpansion
+            val text = if (expansion == null) prepared else {
+                // An altered or missing marker cannot be trusted to carry the literal. The intact
+                // deterministic result wins, with the original masked transcript as its final floor.
+                val restored = expansion.restore(prepared.text)
+                val value = restored ?: expansion.restore(deterministic(expansion.masked, preferences()))
+                    ?: checkNotNull(expansion.restore(expansion.masked))
+                val spacing = snippetWordSpacing(transcript(), languageDetector)
+                when (prepared) {
+                    is PreparedText.Polished -> if (restored != null) prepared.copy(text = value, snippetWordSpacing = spacing)
+                        else PreparedText.Fallback(value, PolishReason.OUTPUT_REJECTED, prepared.context, prepared.waitMs, spacing)
+                    is PreparedText.Fallback -> prepared.copy(text = value, snippetWordSpacing = spacing)
+                }
+            }
             withContext(mainDispatcher) {
                 if (stillPublishable()) onPrepared(text) else log.log("Prepared polish text dropped: the take can no longer publish")
             }
@@ -432,7 +455,7 @@ internal class TakePolishController(
      * fail-open-to-the-last-good-text), so the fallback always hands its words back.
      */
     private fun preparedFallback(rawText: String, takePreferences: SessionPreferences, reason: PolishReason): PreparedText.Fallback =
-        PreparedText.Fallback(deterministic(rawText, takePreferences), reason, PolishContext.from(takePreferences.policy), localWaitMs)
+        PreparedText.Fallback(deterministic(activeExpansion?.masked ?: rawText, takePreferences), reason, PolishContext.from(takePreferences.policy), localWaitMs)
 
     private fun deterministic(rawText: String, takePreferences: SessionPreferences): String {
         var outcome: PolishFallback.Outcome? = null

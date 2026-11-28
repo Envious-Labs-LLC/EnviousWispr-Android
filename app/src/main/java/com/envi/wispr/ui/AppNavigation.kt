@@ -89,6 +89,7 @@ internal enum class SettingsPage(
     Appearance(SettingsPageGroup.APP, "Appearance", "How EnviousWispr looks on this phone."),
     Microphone(SettingsPageGroup.RECORD, "Microphone", "The microphone EnviousWispr listens with."),
     Sounds(SettingsPageGroup.RECORD, "Sounds", "What you feel and hear when recording starts and stops."),
+    Snippets(SettingsPageGroup.OUTPUT, "Snippets", "Insert saved text with a spoken shortcut."),
     Clipboard(
         SettingsPageGroup.OUTPUT,
         "Clipboard",

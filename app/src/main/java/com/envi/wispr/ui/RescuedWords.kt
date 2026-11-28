@@ -81,7 +81,7 @@ internal class RescuedWords(
      * Writes [text] ahead of delivery for [takeId] and settles it on [save]'s SAVED answer, after the write, so a late
      * write cannot recreate a settled record. Returns the write's outcome; never blocks.
      */
-    fun keep(takeId: String, text: String, save: SaveSlot): Deferred<RescueOutcome> {
+    fun keep(takeId: String, text: String, save: SaveSlot, snippetWordSpacing: Boolean? = null): Deferred<RescueOutcome> {
         if (!TAKE_ID.matches(takeId)) {
             warn("Rescue refused an unexpected take id shape")
             return scope.async { RescueOutcome.FAILED }
@@ -93,7 +93,7 @@ internal class RescuedWords(
             val outcome = lock.withLock {
                 beforeWrite()
                 // Deleted while this write was queued: the user's delete wins, and nothing is written.
-                if (takeId in deleted) RescueOutcome.FAILED else write(takeId, text)
+                if (takeId in deleted) RescueOutcome.FAILED else write(takeId, text, snippetWordSpacing)
             }
             record(takeId, outcome)
             outcome
@@ -275,10 +275,17 @@ internal class RescuedWords(
             val takeId = file.name.removeSuffix(SUFFIX)
             if (!file.name.endsWith(SUFFIX) || !TAKE_ID.matches(takeId) || takeId in tracked) continue
             val record = runCatching { file.readText() }.getOrNull() ?: continue
-            val createdAtMs = record.substringBefore('\n').toLongOrNull() ?: continue
+            val header = record.substringBefore('\n')
+            val createdAtMs = header.substringBefore(':').toLongOrNull() ?: continue
+            val snippetWordSpacing = when (header.substringAfter(':', "")) {
+                "" -> null
+                "snippet-spaced" -> true
+                "snippet-literal" -> false
+                else -> continue
+            }
             val text = record.substringAfter('\n')
             val written = try {
-                repository.keepRescuedWords(takeId, text, createdAtMs)
+                repository.keepRescuedWords(takeId, text, createdAtMs, snippetWordSpacing)
             } catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 warn("Rescued words not written to History: ${error.javaClass.simpleName}")
@@ -300,12 +307,17 @@ internal class RescuedWords(
      * created it), so the name survives a power loss: KEPT is reported only after all of them. A crash leaves either
      * nothing or the whole record.
      */
-    private fun write(takeId: String, text: String): RescueOutcome = try {
+    private fun write(takeId: String, text: String, snippetWordSpacing: Boolean?): RescueOutcome = try {
         // A directory this write creates is itself a name in its parent: flushed too, or a power loss can drop it.
         if (!dir.isDirectory && dir.mkdirs()) syncDirectory(dir.parentFile ?: dir)
         val temp = File(dir, "$takeId$TEMP")
         FileOutputStream(temp).use { out ->
-            out.write("${wallClock()}\n$text".toByteArray(Charsets.UTF_8))
+            val header = wallClock().toString() + when (snippetWordSpacing) {
+                true -> ":snippet-spaced"
+                false -> ":snippet-literal"
+                null -> ""
+            }
+            out.write("$header\n$text".toByteArray(Charsets.UTF_8))
             out.fd.sync()
         }
         if (temp.renameTo(File(dir, "$takeId$SUFFIX"))) {

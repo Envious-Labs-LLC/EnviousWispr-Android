@@ -1,0 +1,60 @@
+[
+  {
+    "beforePolish" : "EWSNIPfixture",
+    "finalText" : "john.doe@example.com",
+    "input" : "backslash my email.",
+    "usedFillIns" : [
+
+    ]
+  },
+  {
+    "beforePolish" : "Please use EWSNIPfixture.",
+    "finalText" : "Please use work@example.com.",
+    "input" : "Please use backslash my email address.",
+    "usedFillIns" : [
+
+    ]
+  },
+  {
+    "beforePolish" : "my email address",
+    "finalText" : "my email address",
+    "input" : "my email address",
+    "usedFillIns" : [
+
+    ]
+  },
+  {
+    "beforePolish" : "backslash unknown",
+    "finalText" : "backslash unknown",
+    "input" : "backslash unknown",
+    "usedFillIns" : [
+
+    ]
+  },
+  {
+    "beforePolish" : "backslash my. Email address",
+    "finalText" : "backslash my. Email address",
+    "input" : "backslash my. Email address",
+    "usedFillIns" : [
+
+    ]
+  },
+  {
+    "beforePolish" : "EWSNIPfixture",
+    "finalText" : "Best,\nDiana\n",
+    "input" : "backslash sign off.",
+    "usedFillIns" : [
+
+    ]
+  },
+  {
+    "beforePolish" : "EWSNIPfixture",
+    "finalText" : "Jan 1, 1970 | 12:00 AM | Ticket {{DATE}}",
+    "input" : "backslash stamp",
+    "usedFillIns" : [
+      "clipboard",
+      "date",
+      "time"
+    ]
+  }
+]

@@ -224,6 +224,7 @@ internal fun EnviousWisprApp(
                                         autoCopyToClipboard = preferences.autoCopyToClipboard,
                                         restoreClipboardAfterPaste = preferences.restoreClipboardAfterPaste,
                                         smartInsertion = preferences.smartInsertionEnabled,
+                                        snippetWordSpacing = transcript.snippetWordSpacing,
                                     ),
                                     manualSwitch = manualSwitch,
                                 )
@@ -301,6 +302,7 @@ internal fun EnviousWisprApp(
                             onKeepEarbudsReadyChanged = actions.microphone.onKeepEarbudsReadyChanged,
                         )
                         SettingsPage.Sounds -> SoundsPage(preferences, actions.sounds)
+                        SettingsPage.Snippets -> SnippetsPage()
                         SettingsPage.Clipboard -> ClipboardPage(
                             preferences = preferences,
                             onAutoCopyChanged = actions.clipboard.onAutoCopyChanged,

@@ -50,8 +50,10 @@ internal class FallbackAnnouncement private constructor(val line: String) {
             savedInHistory: Boolean,
             /** Where the words are held when not saved (#288); read only when [savedInHistory] is false. */
             kept: WordsKept = WordsKept.LOST,
+            snippetFired: Boolean = false,
         ): FallbackAnnouncement? {
-            if (!autoPasteWasExpectedToWork(autoPaste, handoff) &&
+            val announceSnippetCopy = snippetFired && clipboard == ClipboardOutcome.COPIED
+            if (!announceSnippetCopy && !autoPasteWasExpectedToWork(autoPaste, handoff) &&
                 !wordsMissedTheirDestination(clipboard, savedInHistory)
             ) {
                 return null

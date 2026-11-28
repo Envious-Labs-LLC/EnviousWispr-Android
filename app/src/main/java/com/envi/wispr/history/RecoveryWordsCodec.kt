@@ -24,10 +24,10 @@ internal object RecoveryWordsCodec {
         val take = validate(record)
         val row = record.transcript
         val strings = listOf(row.speechEngine, requireNotNull(row.recoveryModelIdentity), row.originalText, row.finalText)
-        val bytes = FIXED_BYTES.toLong() + (if (row.asrMs == null) 0L else 8L) + strings.sumOf { it.length.toLong() * 2L }
+        val bytes = FIXED_BYTES.toLong() + (if (row.snippetWordSpacing != null) 1 else 0) + (if (row.asrMs == null) 0L else 8L) + strings.sumOf { it.length.toLong() * 2L }
         if (bytes > RecoveryTextLimits.WORDS_BYTES) malformed()
         val output = ByteBuffer.allocate(bytes.toInt())
-        output.put(magic); output.putShort(1)
+        output.put(magic); output.putShort(if (row.snippetWordSpacing == null) 1 else 2)
         output.putLong(take.mostSignificantBits); output.putLong(take.leastSignificantBits)
         output.putLong(row.createdAtMs); output.putLong(row.durationMs)
         output.putLong(requireNotNull(row.recoveryStartSample)); output.putLong(record.sampleCount)
@@ -37,6 +37,7 @@ internal object RecoveryWordsCodec {
         val asr = row.asrMs
         output.put((if (asr == null) 0 else 1).toByte())
         if (asr != null) output.putLong(asr)
+        row.snippetWordSpacing?.let { output.put(if (it) 1.toByte() else 0.toByte()) }
         strings.forEach { value ->
             output.putInt(value.length)
             value.forEach { output.putChar(it) }
@@ -52,7 +53,9 @@ internal object RecoveryWordsCodec {
         if (CRC32().apply { update(bytes, 0, bodySize) }.value.toInt() != ByteBuffer.wrap(bytes, bodySize, 4).int) malformed()
         try {
             val input = DataInputStream(ByteArrayInputStream(bytes, 0, bodySize))
-            if (!ByteArray(8).also(input::readFully).contentEquals(magic) || input.readUnsignedShort() != 1) malformed()
+            if (!ByteArray(8).also(input::readFully).contentEquals(magic)) malformed()
+            val version = input.readUnsignedShort()
+            if (version !in 1..2) malformed()
             val take = UUID(input.readLong(), input.readLong()).toString()
             if (take != expectedTakeId) malformed()
             val created = input.readLong()
@@ -62,13 +65,14 @@ internal object RecoveryWordsCodec {
             val partial = when (input.readUnsignedByte()) { 0 -> false; 1 -> true; else -> malformed() }
             if (input.readUnsignedByte() != 0 || input.readUnsignedByte() != 0) malformed()
             val asr = when (input.readUnsignedByte()) { 0 -> null; 1 -> input.readLong(); else -> malformed() }
+            val spacing = if (version == 1) null else when (input.readUnsignedByte()) { 0 -> false; 1 -> true; else -> malformed() }
             val engine = readString(input, RecoveryTextLimits.MODEL_FIELD_CODE_UNITS)
             val model = readString(input, RecoveryTextLimits.MODEL_IDENTITY_CODE_UNITS)
             val raw = readString(input, RecoveryTextLimits.RAW_CODE_UNITS)
             val final = readString(input, RecoveryTextLimits.WORDS_BYTES / 2)
             if (input.read() != -1) malformed()
             val record = RecoveredWordsRecord(TranscriptEntity(
-                originalText = raw, finalText = final, createdAtMs = created, durationMs = duration,
+                originalText = raw, finalText = final, snippetWordSpacing = spacing, createdAtMs = created, durationMs = duration,
                 speechEngine = engine, polishEngine = PolishEngineLabels.OFF, polishLatencyMs = 0L,
                 insertionResult = InsertionResults.HISTORY_ONLY, recovered = true, takeId = take,
                 asrMs = asr, recoveryStartSample = first, recoveryPartial = partial, recoveryModelIdentity = model,

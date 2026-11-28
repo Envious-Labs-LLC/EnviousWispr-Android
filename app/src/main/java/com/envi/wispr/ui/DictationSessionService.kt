@@ -1,5 +1,6 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.snippets.matchSnippets
 import android.app.Notification
 import android.app.Service
 import android.content.ClipData
@@ -255,6 +256,7 @@ class DictationSessionService : Service() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val mainDispatcher = Dispatchers.Main.immediate
         coordinator = DictationSessionCoordinator(
+            matchSnippets = applicationContext::matchSnippets,
             host = host,
             surface = OverlayRecorderSurface,
             notices = SessionNoticePresenter(OverlayRecorderSurface, AccessibilityInsertionGateway, host, scope, mainDispatcher, DebugSessionLog),

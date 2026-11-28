@@ -111,6 +111,7 @@ internal class DictationSessionCoordinator(
     /** The main process's model-swap gate (#108); a test passes its own. */
     private val swapGate: com.envi.wispr.models.ModelSwapGate = com.envi.wispr.models.ModelSwapGate.main,
     private val recordingProtection: RecordingProtectionOwner? = null,
+    private val matchSnippets: suspend (String) -> com.envi.wispr.snippets.SnippetExpansion = { com.envi.wispr.snippets.SnippetExpansion.unchanged(it) },
     private val rescueWaitBoundMs: Long = RescuedWords.RESCUE_WRITE_BOUND_MS,
 ) : PipelineController.Listener {
     companion object {
@@ -463,6 +464,7 @@ internal class DictationSessionCoordinator(
             isProcessing = { state.get() == SessionState.PROCESSING && take.arbiter.isOpen },
             isLive = ::polishStillWanted,
             onPrepared = ::publishPrepared,
+            matchSnippets = matchSnippets,
             mainDispatcher = mainDispatcher,
             stillPublishable = { !destroyed.get() && take.arbiter.isOpen },
             nowMs = host::elapsedRealtimeMs,
@@ -1055,9 +1057,9 @@ internal class DictationSessionCoordinator(
     /** The controller's text, published: the engine's answer, or the deterministic fallback under its label. */
     private fun publishPrepared(prepared: PreparedText) = when (prepared) {
         is PreparedText.Polished ->
-            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context, prepared.processing, prepared.requestId, prepared.diagnostics, prepared.waitMs)
+            publishResult(prepared.text, prepared.engine, prepared.latencyMs, prepared.reason, prepared.statusCode, prepared.context, prepared.processing, prepared.requestId, prepared.diagnostics, prepared.waitMs, prepared.snippetWordSpacing)
         is PreparedText.Fallback ->
-            publishResult(prepared.text, PolishEngineLabels.DETERMINISTIC, 0, prepared.reason, 0, prepared.context, polishWaitMs = prepared.waitMs)
+            publishResult(prepared.text, PolishEngineLabels.DETERMINISTIC, 0, prepared.reason, 0, prepared.context, polishWaitMs = prepared.waitMs, snippetWordSpacing = prepared.snippetWordSpacing)
     }
 
     /**
@@ -1079,6 +1081,7 @@ internal class DictationSessionCoordinator(
         requestId: Long = 0,
         diagnostics: com.envi.wispr.polish.LocalPolishDiagnostics? = null,
         polishWaitMs: Long? = null,
+        snippetWordSpacing: Boolean? = null,
     ) {
         // The polish facts, written before the reservation so an ending committed by anyone after this
         // point carries them; the reason arrives once per take through the ledger, so the defect it may
@@ -1094,6 +1097,7 @@ internal class DictationSessionCoordinator(
             finalText = text.ifBlank { rawTranscript },
             engine = if (text.isBlank() && rawTranscript.isNotBlank()) PolishEngineLabels.RAW_FALLBACK else engine,
             originalText = rawTranscript,
+            snippetWordSpacing = snippetWordSpacing,
             latencyMs = latencyMs,
             durationMs = recordingDurationMs,
             captureDevice = captureDeviceLabel,

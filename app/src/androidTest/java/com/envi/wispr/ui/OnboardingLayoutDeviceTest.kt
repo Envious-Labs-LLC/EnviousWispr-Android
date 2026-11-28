@@ -49,7 +49,7 @@ import org.junit.runner.RunWith
 class OnboardingLayoutDeviceTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     @Before fun matchProductionWindowInsets() { compose.runOnUiThread { compose.activity.enableEdgeToEdge(); compose.activity.window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE) } }
-    private val modelsReady = AppReadiness(speechModelReady = true, polishModelReady = true)
+    private val modelsReady = AppReadiness(speechModelReady = true, polishModelReady = true, onboardingPolishModelReady = true)
 
     @Test fun allThreeGrantActionsAndDismissWorkInAShortViewport() {
         val called = mutableListOf<String>()
@@ -61,7 +61,7 @@ class OnboardingLayoutDeviceTest {
                         step = OnboardingStage.PERMISSIONS.ordinal,
                         readiness = modelsReady,
                         autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-                        onStepChange = {}, onDismiss = { called += "dismiss" },
+                        onStepChange = {}, onAdvance = { _, _ -> }, onDismiss = { called += "dismiss" },
                         onRequestMicrophone = { called += "microphone" },
                         onRequestNotifications = { called += "notifications" },
                         onOpenAccessibility = { called += "accessibility" }, onComplete = {},
@@ -90,7 +90,7 @@ class OnboardingLayoutDeviceTest {
                             step = OnboardingStage.PERMISSIONS.ordinal,
                             readiness = modelsReady.copy(microphoneGranted = true, notificationsGranted = true),
                             autoPaste = AutoPasteAvailability.PERMITTED_NOT_RUNNING,
-                            onStepChange = {}, onDismiss = {}, onRequestMicrophone = {},
+                            onStepChange = {}, onAdvance = { _, _ -> }, onDismiss = {}, onRequestMicrophone = {},
                             onRequestNotifications = {}, onOpenAccessibility = {}, onComplete = {},
                         )
                     }
@@ -113,7 +113,7 @@ class OnboardingLayoutDeviceTest {
                 val bars = WindowInsets.systemBars.asPaddingValues()
                 Box(Modifier.fillMaxWidth().requiredHeight(280.dp + bars.calculateTopPadding() + bars.calculateBottomPadding() + 28.dp)) {
                     OnboardingScreen(step = step.value, readiness = AppReadiness(), autoPaste = AutoPasteAvailability.NOT_PERMITTED,
-                        onStepChange = { step.value = it }, onDismiss = {}, onRequestMicrophone = {},
+                        onStepChange = { step.value = it }, onAdvance = { _, _ -> }, onDismiss = {}, onRequestMicrophone = {},
                         onRequestNotifications = {}, onOpenAccessibility = {}, onComplete = {})
                 }
             }
@@ -135,7 +135,7 @@ class OnboardingLayoutDeviceTest {
                 Box(Modifier.fillMaxWidth().requiredHeight(height.value.dp)) {
                     OnboardingScreen(step = OnboardingStage.PRACTICE.ordinal,
                         readiness = modelsReady.copy(microphoneGranted = true), autoPaste = AutoPasteAvailability.LIVE,
-                        onStepChange = {}, onDismiss = {}, onRequestMicrophone = {},
+                        onStepChange = {}, onAdvance = { _, _ -> }, onDismiss = {}, onRequestMicrophone = {},
                         onRequestNotifications = {}, onOpenAccessibility = {}, onComplete = {})
                 }
             }
@@ -155,7 +155,7 @@ class OnboardingLayoutDeviceTest {
                 Box(Modifier.fillMaxWidth().requiredHeight(280.dp + bars.calculateTopPadding() + bars.calculateBottomPadding() + 28.dp)) {
                     OnboardingScreen(step = OnboardingStage.DEMO.ordinal,
                         readiness = modelsReady.copy(microphoneGranted = true), autoPaste = AutoPasteAvailability.LIVE,
-                        onStepChange = {}, onDismiss = {}, onRequestMicrophone = {},
+                        onStepChange = {}, onAdvance = { _, _ -> }, onDismiss = {}, onRequestMicrophone = {},
                         onRequestNotifications = {}, onOpenAccessibility = {}, onComplete = {})
                 }
             }
@@ -188,7 +188,7 @@ class OnboardingLayoutDeviceTest {
                 Box(Modifier.fillMaxWidth().requiredHeight(700.dp + bars.calculateTopPadding() + bars.calculateBottomPadding() + 28.dp)) {
                     OnboardingScreen(step = OnboardingStage.PRACTICE.ordinal,
                         readiness = modelsReady.copy(microphoneGranted = true), autoPaste = AutoPasteAvailability.LIVE,
-                        onStepChange = {}, onDismiss = {}, onRequestMicrophone = {},
+                        onStepChange = {}, onAdvance = { _, _ -> }, onDismiss = {}, onRequestMicrophone = {},
                         onRequestNotifications = {}, onOpenAccessibility = {}, onComplete = { completed = true })
                 }
             }

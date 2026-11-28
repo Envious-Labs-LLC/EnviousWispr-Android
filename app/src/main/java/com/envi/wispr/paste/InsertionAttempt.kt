@@ -238,7 +238,18 @@ internal class InsertionAttempt(
                 } else {
                     payloadFor(baseline, target.selection)
                 }
-                writeCommit(target, baseline, plan.text, window)
+                val atDocumentEnd = AccessibilityInsertionRules.isCompleteDocumentEndCommitWindow(
+                    beforeText = baseline,
+                    selection = target.selection,
+                    beforeWindow = window,
+                )
+                writeCommit(
+                    located = target,
+                    baseline = baseline,
+                    payload = plan.text,
+                    window = window,
+                    allowsTrimmedTrailingSpace = plan.appendedTrailingSpace && atDocumentEnd,
+                )
             }
             InsertionRoute.PASTE -> writePaste(target, baseline, payloadFor(baseline, target.selection))
         }
@@ -249,6 +260,7 @@ internal class InsertionAttempt(
         baseline: String?,
         payload: String,
         window: SurroundingWindow?,
+        allowsTrimmedTrailingSpace: Boolean = false,
     ): Tick {
         val record = Verification(
             action = AccessibilityInsertionRules.Action.COMMIT,
@@ -257,6 +269,7 @@ internal class InsertionAttempt(
             selection = located.selection,
             insertedText = payload,
             beforeWindow = window,
+            allowsTrimmedTrailingSpace = allowsTrimmedTrailingSpace,
         )
         if (expired()) return Tick.Expired(false)
         verification = record

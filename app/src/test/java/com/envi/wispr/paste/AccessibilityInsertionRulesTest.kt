@@ -312,13 +312,19 @@ class AccessibilityInsertionRulesTest {
 
     // ---- The commit route's window judge: two reads off the same input connection. ----
 
-    private fun commitRecord(before: SurroundingWindow?, inserted: String = " and I will", nodeText: String? = null) = Verification(
+    private fun commitRecord(
+        before: SurroundingWindow?,
+        inserted: String = " and I will",
+        nodeText: String? = null,
+        allowsTrimmedTrailingSpace: Boolean = false,
+    ) = Verification(
         action = Action.COMMIT,
         beforeText = nodeText,
         beforeWasHint = false,
         selection = null,
         insertedText = inserted,
         beforeWindow = before,
+        allowsTrimmedTrailingSpace = allowsTrimmedTrailingSpace,
     )
 
     private fun window(before: String, after: String = "", documentStart: Boolean = true) =
@@ -425,6 +431,374 @@ class AccessibilityInsertionRulesTest {
     fun gmailNoBreakSpaceIsFoldedInTheWindowJudge() {
         val record = commitRecord(window("Hi team,"))
         assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judgeWindow(record, window("Hi team,\u00a0and\u00a0I will")))
+    }
+
+    /**
+     * REPRODUCIBLE (#495, S26 builds 303/304/312 into Chrome's `url_bar`): smart insertion appends a
+     * trailing space at the end of an empty field (`insertedLen=47`), while Chrome's omnibox strips
+     * that trailing space (`beforeLen=46 afterLen=0 offset=0`). `judgeWindow` stays exact-match-only
+     * and reports MISS when the space is missing so node rescue can confirm the full field and range
+     * selection, while refusing double insertions, mid-field/range replacements, PASTE routes, raw
+     * payloads, trailing NBSP, dropped non-space chars, and whitespace-only payloads.
+     */
+    @Test
+    fun chromeOmniboxDroppingSmartInsertionTrailingSpaceIsVerifiedByWindowAndNode() {
+        val insertedWithTrailingSpace = "The purple lantern is beside the quiet garden. "
+        val landedWithoutTrailingSpace = "The purple lantern is beside the quiet garden."
+        val windowRecord = commitRecord(
+            window(""),
+            inserted = insertedWithTrailingSpace,
+            nodeText = "",
+            allowsTrimmedTrailingSpace = true,
+        )
+        val nodeRecord = Verification(
+            action = Action.COMMIT,
+            beforeText = "",
+            beforeWasHint = false,
+            selection = EditorSelection(0, 0),
+            insertedText = insertedWithTrailingSpace,
+            beforeWindow = window(""),
+            allowsTrimmedTrailingSpace = true,
+        )
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judgeWindow(windowRecord, window(insertedWithTrailingSpace)),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(windowRecord, window(landedWithoutTrailingSpace)),
+        )
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judge(nodeRecord, EditorRead(landedWithoutTrailingSpace, false)),
+        )
+
+        // Document-start non-empty field at the end of the document hands trimmed reads off from window
+        // (MISS) to node judge, which verifies collapsed 5/5 and 0/0 carets while rejecting a 0..3 range.
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window("See: "), inserted = "hello ", nodeText = "See: ", allowsTrimmedTrailingSpace = true),
+                window("See: hello"),
+            ),
+        )
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "See: ",
+                    selection = EditorSelection(5, 5),
+                    insertedText = "hello ",
+                    beforeWindow = window("See: "),
+                ),
+                EditorRead("See: hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "See: ",
+                    selection = EditorSelection(0, 0),
+                    insertedText = "hello ",
+                    beforeWindow = window("See: "),
+                ),
+                EditorRead("See: hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "See: ",
+                    selection = EditorSelection(0, 3),
+                    insertedText = "hello ",
+                    beforeWindow = window("See: "),
+                ),
+                EditorRead("See: hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "See: ",
+                    selection = EditorSelection(5, 5),
+                    insertedText = "hello ",
+                    beforeWindow = null,
+                ),
+                EditorRead("See: hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "See: ",
+                    selection = EditorSelection(0, 0),
+                    insertedText = "hello ",
+                    beforeWindow = null,
+                ),
+                EditorRead("See: hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "See: ",
+                    selection = null,
+                    insertedText = "hello ",
+                    beforeWindow = null,
+                ),
+                EditorRead("See: hello", false),
+            ),
+        )
+        // Mismatched node baseline vs surrounding window refuses trimmed-space verification in both judges.
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window("See: "), inserted = "hello ", nodeText = "Old: ", allowsTrimmedTrailingSpace = true),
+                window("See: hello"),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = "Old: ",
+                    selection = EditorSelection(5, 5),
+                    insertedText = "hello ",
+                    beforeWindow = window("See: "),
+                ),
+                EditorRead("Old: hello", false),
+            ),
+        )
+
+        // Double insertion ("HelloHello" for "Hello ") and trimmed single insertion ("Hello") both
+        // return MISS from judgeWindow; node judge verifies only "Hello" and rejects "HelloHello".
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window(""), inserted = "Hello ", nodeText = "", allowsTrimmedTrailingSpace = true),
+                window("Hello"),
+            ),
+        )
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(insertedText = "Hello "),
+                EditorRead("Hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window(""), inserted = "Hello ", nodeText = "", allowsTrimmedTrailingSpace = true),
+                window("HelloHello"),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window(""), inserted = "Hello ", nodeText = "", allowsTrimmedTrailingSpace = true),
+                window("HelloHello", documentStart = false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(insertedText = "Hello "),
+                EditorRead("HelloHello", false),
+            ),
+        )
+
+        // Non-document-start pre-write windows never receive trimmed-space tolerance: post-write reads
+        // without the trailing space judge MISS (preventing unreadable-node trust), while a shorter
+        // non-document-start read carrying the full payload still defers as null.
+        val longDoc = "x".repeat(100)
+        val longWindowBefore = SurroundingWindow("x".repeat(80), "", "", offset = 20)
+        val longWindowRecord = commitRecord(longWindowBefore, inserted = "hello ", nodeText = longDoc, allowsTrimmedTrailingSpace = true)
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                longWindowRecord,
+                window("x".repeat(64) + "hello"),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                longWindowRecord,
+                SurroundingWindow("x".repeat(80) + "hello", "", "", offset = 20),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = longDoc,
+                    selection = EditorSelection(100, 100),
+                    insertedText = "hello ",
+                    beforeWindow = longWindowBefore,
+                ),
+                EditorRead(longDoc + "hello", false),
+            ),
+        )
+
+        // Non-document-start read 1 char shorter than expected carrying the space still returns null (never MISS).
+        assertNull(
+            AccessibilityInsertionRules.judgeWindow(
+                longWindowRecord,
+                window("x".repeat(63) + "hello ", documentStart = false),
+            ),
+        )
+
+        // Mid-field, range replacement, PASTE route, raw payload, and trailing NBSP all return MISS.
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                Verification(
+                    action = Action.COMMIT,
+                    beforeText = "oldworld",
+                    beforeWasHint = false,
+                    selection = EditorSelection(0, 3),
+                    insertedText = "Hello ",
+                    allowsTrimmedTrailingSpace = true,
+                ),
+                EditorRead("Helloworld", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window("Hi team", after = "!"), inserted = " world ", nodeText = "Hi team!", allowsTrimmedTrailingSpace = true),
+                window("Hi team world", after = "!"),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(action = Action.PASTE, insertedText = "Hello "),
+                EditorRead("Hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window(""), inserted = "Hello ", nodeText = "", allowsTrimmedTrailingSpace = false),
+                window("Hello"),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(insertedText = "Hello ", allowsTrimmedTrailingSpace = false),
+                EditorRead("Hello", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(
+                commitRecord(window(""), inserted = "Hello\u00a0", nodeText = "", allowsTrimmedTrailingSpace = true),
+                window("Hello"),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(insertedText = "Hello\u00a0"),
+                EditorRead("Hello", false),
+            ),
+        )
+
+        // Dropped non-space character (missing period) is still a MISS.
+        val missingPeriod = "The purple lantern is beside the quiet garden"
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(windowRecord, window(missingPeriod)),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(nodeRecord, EditorRead(missingPeriod, false)),
+        )
+
+        // Periodic draft > WINDOW_CHARS: judgeWindow rejects trimmed reads (MISS) and defers exact
+        // suffix matches (null) so the full-field node judge decides.
+        val periodic = "ab".repeat(60)
+        val periodicWindowRecord = commitRecord(window(periodic), inserted = "ab ", nodeText = periodic, allowsTrimmedTrailingSpace = true)
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(periodicWindowRecord, window(periodic)))
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(periodicWindowRecord, window(periodic + "ab")))
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judgeWindow(periodicWindowRecord, window(periodic + "ab ")))
+        val partialPeriodicBefore = SurroundingWindow(periodic.drop(40), "", "", offset = 40)
+        val partialPeriodicRecord = commitRecord(partialPeriodicBefore, inserted = "ab ", nodeText = periodic, allowsTrimmedTrailingSpace = true)
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(partialPeriodicRecord, SurroundingWindow(periodic.drop(40), "", "", offset = 40)))
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(partialPeriodicRecord, SurroundingWindow(periodic.drop(40) + "ab", "", "", offset = 40)))
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(periodicWindowRecord, window(periodic, documentStart = false)))
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judgeWindow(periodicWindowRecord, window(periodic + "ab", documentStart = false)))
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = periodic,
+                    selection = EditorSelection(periodic.length, periodic.length),
+                    insertedText = "ab ",
+                    beforeWindow = window(periodic),
+                ),
+                EditorRead(periodic, false),
+            ),
+        )
+        assertEquals(
+            Judgement.VERIFIED,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = periodic,
+                    selection = EditorSelection(periodic.length, periodic.length),
+                    insertedText = "ab ",
+                    beforeWindow = window(periodic),
+                ),
+                EditorRead(periodic + "ab", false),
+            ),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(
+                nodeRecord.copy(
+                    beforeText = periodic,
+                    selection = EditorSelection(periodic.length, periodic.length),
+                    insertedText = "ab ",
+                    beforeWindow = partialPeriodicBefore,
+                ),
+                EditorRead(periodic + "ab", false),
+            ),
+        )
+        val spacePeriodic = "yes ".repeat(20)
+        val spacePeriodicRecord = commitRecord(window(spacePeriodic), inserted = "yes ", nodeText = spacePeriodic, allowsTrimmedTrailingSpace = true)
+        assertNull(AccessibilityInsertionRules.judgeWindow(spacePeriodicRecord, window(spacePeriodic)))
+        assertNull(AccessibilityInsertionRules.judgeWindow(spacePeriodicRecord, window(spacePeriodic + "yes")))
+        assertNull(AccessibilityInsertionRules.judgeWindow(spacePeriodicRecord, window(spacePeriodic + "yes ")))
+        assertNull(AccessibilityInsertionRules.judgeWindow(spacePeriodicRecord, window(spacePeriodic + "yesyes")))
+        val spacePeriodicNodeRecord = nodeRecord.copy(
+            beforeText = spacePeriodic,
+            selection = EditorSelection(spacePeriodic.length, spacePeriodic.length),
+            insertedText = "yes ",
+            beforeWindow = window(spacePeriodic),
+        )
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judge(spacePeriodicNodeRecord, EditorRead(spacePeriodic, false)))
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judge(spacePeriodicNodeRecord, EditorRead(spacePeriodic + "yes", false)))
+        assertEquals(Judgement.VERIFIED, AccessibilityInsertionRules.judge(spacePeriodicNodeRecord, EditorRead(spacePeriodic + "yes ", false)))
+        assertEquals(Judgement.MISS, AccessibilityInsertionRules.judge(spacePeriodicNodeRecord, EditorRead(spacePeriodic + "yesyes", false)))
+
+        // Whitespace-only payload into an empty field that stays empty is a MISS.
+        val spaceOnlyWindowRecord = commitRecord(window(""), inserted = " ", nodeText = "", allowsTrimmedTrailingSpace = true)
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judgeWindow(spaceOnlyWindowRecord, window("")),
+        )
+        assertEquals(
+            Judgement.MISS,
+            AccessibilityInsertionRules.judge(nodeRecord.copy(insertedText = " "), EditorRead("", false)),
+        )
     }
 
     /** The one derivation from what getSurroundingText reports. */

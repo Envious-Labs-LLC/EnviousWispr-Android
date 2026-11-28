@@ -73,7 +73,7 @@ internal interface TranscriptDao {
             "speechEngine = :speechEngine, polishEngine = :polishEngine, " +
             "polishLatencyMs = :polishLatencyMs, insertionResult = :insertionResult, " +
             "polishReason = :polishReason, polishStatus = :polishStatus, polishContext = :polishContext, " +
-            "captureDevice = :captureDevice, " +
+            "captureDevice = :captureDevice, snippetWordSpacing = :snippetWordSpacing, " +
             "liveAfterMs = COALESCE(:liveAfterMs, liveAfterMs), asrMs = COALESCE(:asrMs, asrMs), " +
             "durationMs = :durationMs, status = :status, stateChangedAtMs = :stateChangedAtMs, interrupted = :interrupted " +
             "WHERE id = :id",
@@ -97,6 +97,7 @@ internal interface TranscriptDao {
         /** Null keeps the row's value (#378 D8): a writer that did not measure a timing never erases one. */
         liveAfterMs: Long? = null,
         asrMs: Long? = null,
+        snippetWordSpacing: Boolean? = null,
     ): Int
 
     @Query(

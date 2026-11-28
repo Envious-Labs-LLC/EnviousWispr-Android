@@ -48,7 +48,7 @@ class InsertionOutcomeRecorderTest {
             statusUpdates += "$id:$status:$insertionResult:$interrupted"
             return 1
         }
-        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?): Int = 1
+        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?, snippetWordSpacing: Boolean?): Int = 1
         override suspend fun finalizeInsertionOutcome(id: Long, status: String, result: String, stateChangedAtMs: Long, interrupted: Boolean, insertionMs: Long?, endToEndMs: Long?): Int {
             outcomes += "$id:$status:$result:$interrupted"
             timings += insertionMs to endToEndMs

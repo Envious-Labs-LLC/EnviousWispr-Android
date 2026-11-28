@@ -88,6 +88,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         stateChangedAtMs: Long = clock(),
         liveAfterMs: Long? = null,
         asrMs: Long? = null,
+        snippetWordSpacing: Boolean? = null,
     ) = dao.finalize(
         id = id,
         originalText = originalText,
@@ -105,6 +106,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
         status = status,
         liveAfterMs = liveAfterMs,
         asrMs = asrMs,
+        snippetWordSpacing = snippetWordSpacing,
     )
 
     /** The id of the row [takeId] wrote, or 0 (#288). */
@@ -117,7 +119,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
      * no longer needed: History holds the words, or the user deleted the take. The rescue holds the final text only, so
      * it is also the row's original text.
      */
-    suspend fun keepRescuedWords(takeId: String, text: String, createdAtMs: Long): Boolean {
+    suspend fun keepRescuedWords(takeId: String, text: String, createdAtMs: Long, snippetWordSpacing: Boolean? = null): Boolean {
         val existing = dao.findByTakeId(takeId)
         if (existing != null) {
             if (existing.finalText.isNotBlank()) return true
@@ -135,6 +137,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
                 polishStatus = existing.polishStatus,
                 polishContext = existing.polishContext,
                 captureDevice = existing.captureDevice,
+                snippetWordSpacing = snippetWordSpacing,
                 status = TranscriptEntity.STATUS_INSERTION_INTERRUPTED,
                 interrupted = true,
             ) > 0
@@ -144,6 +147,7 @@ internal class TranscriptRepository(private val dao: TranscriptDao, private val 
             TranscriptEntity(
                 originalText = text,
                 finalText = text,
+                snippetWordSpacing = snippetWordSpacing,
                 createdAtMs = createdAtMs,
                 durationMs = 0L,
                 speechEngine = "Parakeet",

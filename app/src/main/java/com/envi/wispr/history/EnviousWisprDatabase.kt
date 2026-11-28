@@ -13,7 +13,7 @@ import com.envi.wispr.vocabulary.CustomTermEntity
 
 @Database(
     entities = [TranscriptEntity::class, CustomTermEntity::class, TakeJournalEntry::class, DeletedTake::class],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 internal abstract class EnviousWisprDatabase : RoomDatabase() {
@@ -31,7 +31,7 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
                     context.applicationContext,
                     EnviousWisprDatabase::class.java,
                     "enviouswispr.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11).build().also { database -> instance = database }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).build().also { database -> instance = database }
             }
         }
 
@@ -127,6 +127,12 @@ internal abstract class EnviousWisprDatabase : RoomDatabase() {
         }
 
         /** Additive recovery provenance; legacy words, timing facts and deletion marks keep their values. */
+        internal val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE transcripts ADD COLUMN snippetWordSpacing INTEGER")
+            }
+        }
+
         internal val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE transcripts ADD COLUMN recoveryStartSample INTEGER")

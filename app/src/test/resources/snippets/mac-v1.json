@@ -1,0 +1,60 @@
+{
+  "keyword" : "backslash",
+  "snippets" : [
+    {
+      "createdAt" : 817538960.729775,
+      "expansion" : "john.doe@example.com",
+      "id" : "9F1C7A20-4E6B-4C31-9E2A-1D5B8F0A3C71",
+      "trigger" : "my email"
+    },
+    {
+      "createdAt" : 817538960.729776,
+      "expansion" : "(555) 010-4477",
+      "id" : "3B84D0E5-6A17-4F92-8C0D-7E2A9B4F1D63",
+      "trigger" : "my phone"
+    },
+    {
+      "createdAt" : 817538960.729776,
+      "expansion" : "1600 Example Way, Suite 200, Springfield, IL 62704",
+      "id" : "C6E29B14-8D3F-4A70-B5E8-2F91C7D04A56",
+      "trigger" : "my address"
+    },
+    {
+      "createdAt" : 817538960.729776,
+      "expansion" : "https:\/\/cal.example.com\/john-doe",
+      "id" : "5A0D3F81-2C94-4E6D-A17B-8B36E5C920F4",
+      "trigger" : "my calendar"
+    },
+    {
+      "createdAt" : 817538960.729776,
+      "expansion" : "Thanks so much. John Doe, Product at Example Co.",
+      "id" : "72B4E8C0-1F5A-4D39-96C7-4A0E2D8B7F15",
+      "trigger" : "my signature"
+    },
+    {
+      "createdAt" : 817538960.729776,
+      "expansion" : "Hi, I'm John Doe. I lead product at Example Co, and I'm happy to help however I can.",
+      "id" : "E8137C6A-9B02-4F58-8D41-6C3A5E90B2D7",
+      "trigger" : "my intro"
+    },
+    {
+      "createdAt" : 817538960.729784,
+      "expansion" : "work@example.com",
+      "id" : "0B80941E-5EF9-4660-A4AA-579E9E40B91F",
+      "trigger" : "my email address"
+    },
+    {
+      "createdAt" : 817538960.729792,
+      "expansion" : "Best,\nDiana\n",
+      "id" : "D80AD389-FDDC-4CA7-997C-8F7E1903F2F8",
+      "trigger" : "sign off"
+    },
+    {
+      "createdAt" : 817538960.729793,
+      "expansion" : "{{DATE}} | {{time}} | {{clipboard}}",
+      "id" : "440B4D7E-9200-4661-8E76-994A95322123",
+      "trigger" : "stamp"
+    }
+  ],
+  "version" : 1
+}

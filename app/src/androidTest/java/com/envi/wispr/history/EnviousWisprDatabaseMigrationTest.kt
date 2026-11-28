@@ -273,6 +273,16 @@ class EnviousWisprDatabaseMigrationTest {
                 for (column in 0..2) assertTrue("Legacy recovery provenance must remain unknown", it.isNull(column))
             }
         }
+        helper.runMigrationsAndValidate(TEST_DATABASE, 12, true, EnviousWisprDatabase.MIGRATION_11_12).use { database ->
+            tables.forEach { table ->
+                val original = before.getValue(table)
+                assertEquals(original, snapshot(database, table).filterKeys { it in original })
+            }
+            database.query("SELECT snippetWordSpacing FROM transcripts WHERE id = 12").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertTrue(cursor.isNull(0))
+            }
+        }
         val reopened = Room.databaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext,
             EnviousWisprDatabase::class.java, TEST_DATABASE).build()
         try {
@@ -290,14 +300,14 @@ class EnviousWisprDatabaseMigrationTest {
 
     /** The whole supported chain, 1 through 11, against the exported schemas: what an old install walks. */
     @Test
-    fun theWholeMigrationChainReachesVersion11() {
+    fun theWholeMigrationChainReachesVersion12() {
         helper.createDatabase(TEST_DATABASE, 1).close()
         helper.runMigrationsAndValidate(
-            TEST_DATABASE, 11, true,
+            TEST_DATABASE, 12, true,
             EnviousWisprDatabase.MIGRATION_1_2, EnviousWisprDatabase.MIGRATION_2_3, EnviousWisprDatabase.MIGRATION_3_4,
             EnviousWisprDatabase.MIGRATION_4_5, EnviousWisprDatabase.MIGRATION_5_6, EnviousWisprDatabase.MIGRATION_6_7,
             EnviousWisprDatabase.MIGRATION_7_8, EnviousWisprDatabase.MIGRATION_8_9, EnviousWisprDatabase.MIGRATION_9_10,
-            EnviousWisprDatabase.MIGRATION_10_11,
+            EnviousWisprDatabase.MIGRATION_10_11, EnviousWisprDatabase.MIGRATION_11_12,
         ).close()
     }
 

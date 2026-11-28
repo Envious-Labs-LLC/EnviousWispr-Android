@@ -211,6 +211,7 @@ internal class Publication(
     val asrMs: Long? = null,
     /** `host.elapsedRealtimeMs()` when the owner accepted the take; 0 means unknown, and no end-to-end is written. */
     val acceptedAtMs: Long = 0L,
+    val snippetWordSpacing: Boolean? = null,
 )
 
 /** Where a delivered take's words went, as the owner logs it; [clipboard] is the measured copy, when one was made. */
@@ -329,7 +330,7 @@ internal class SessionFinalizer(
     ) {
         // Written ahead of everything else (#288): until History answers SAVED, the words are also on this phone.
         history.rescueOutcome = { rescuedWords.outcome(takeId) }
-        history.rescue = rescuedWords.keep(takeId, publication.finalText, saved)
+        history.rescue = rescuedWords.keep(takeId, publication.finalText, saved, publication.snippetWordSpacing)
         // Taken IMMEDIATELY before the enqueue (#304), so the refusal path has it too.
         val enqueuedAtMs = host.elapsedRealtimeMs()
         val admitted = historyWrites.enqueue("finalize", WriteKind.TERMINAL) { repository ->
@@ -354,6 +355,7 @@ internal class SessionFinalizer(
                             status = TranscriptEntity.STATUS_SAVED_UNROUTED,
                             liveAfterMs = publication.liveAfterMs,
                             asrMs = publication.asrMs,
+                            snippetWordSpacing = publication.snippetWordSpacing,
                         )
                         // The draft is gone: re-created unless the user deleted it, which is never undone (#288).
                         if (updated > 0) existingId else repository.insertSavedTranscript(publication, takeId)
@@ -400,7 +402,7 @@ internal class SessionFinalizer(
         // same handoff. Deriving it twice is how the two surfaces started disagreeing.
         val handoff = InsertionJudgement.handoffToJudge(
             startPin = targetPin,
-            insertionHandoff = insertion.pasteWhenTargetReturns(row, finalText, clipboardPolicy, takeId, publication.acceptedAtMs),
+            insertionHandoff = insertion.pasteWhenTargetReturns(row, finalText, clipboardPolicy.copy(snippetWordSpacing = publication.snippetWordSpacing), takeId, publication.acceptedAtMs),
         )
         var measuredCopy: ClipboardOutcome? = null
         // Read once: the copy, the announcement and the log agree on whether History already holds the words.
@@ -433,6 +435,7 @@ internal class SessionFinalizer(
                 clipboard = clipboard,
                 savedInHistory = saved,
                 kept = row.wordsKept(),
+                snippetFired = publication.snippetWordSpacing != null,
             )
             // The owner is one of the three insertion writers (G1 D3): nothing was handed off, so
             // this is where the words ended up, as the same values the History row received.
@@ -493,6 +496,7 @@ internal class SessionFinalizer(
                 takeId = takeId,
                 liveAfterMs = publication.liveAfterMs,
                 asrMs = publication.asrMs,
+                snippetWordSpacing = publication.snippetWordSpacing,
             ),
         )
     }
@@ -541,6 +545,7 @@ internal class SessionFinalizer(
         clipboard: ClipboardOutcome,
         savedInHistory: Boolean,
         kept: WordsKept,
+        snippetFired: Boolean,
     ) {
         val announcement = FallbackAnnouncement.fallbackAnnouncement(
             autoPaste = host.autoPasteAvailability(),
@@ -548,6 +553,7 @@ internal class SessionFinalizer(
             clipboard = clipboard,
             savedInHistory = savedInHistory,
             kept = kept,
+            snippetFired = snippetFired,
         ) ?: return
         host.postToMain {
             host.toastFromService(announcement.line)

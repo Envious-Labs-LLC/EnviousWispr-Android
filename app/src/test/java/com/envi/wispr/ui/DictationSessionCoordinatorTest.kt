@@ -1,5 +1,8 @@
 package com.envi.wispr.ui
 
+import com.envi.wispr.snippets.SnippetLibrary
+import com.envi.wispr.snippets.newSnippet
+import com.envi.wispr.snippets.expand
 import com.envi.wispr.audio.AudioCaptureService
 import com.envi.wispr.audio.SpectrumAnalyzer
 import com.envi.wispr.history.TranscriptEntity
@@ -65,6 +68,25 @@ class DictationSessionCoordinatorTest {
         rig.awaitHistoryIdle()
         assertEquals("one History row", 1, rig.dao.rows.size)
         return rig.dao.rows.values.single()
+    }
+
+    @Test
+    fun signatureIsHiddenFromPolishAndSurvivesALostMarkerInHistoryAndDelivery() {
+        val library = SnippetLibrary(snippets = listOf(newSnippet("signature", "Best,\nDiana\n")))
+        val coordinator = rig.coordinator(matchSnippets = { library.expand(it) })
+        startAndGoLive(coordinator)
+        val polish = stopAndTranscribe(coordinator, "backslash signature.")
+        val request = requireNotNull(polish.lastRawText)
+        assertTrue(request.contains("EWSNIP"))
+        assertFalse(request.contains("Diana"))
+        polish.listener!!.onOutcome(polish.outcome("Signed by someone else."))
+        assertEquals(TerminalReason.COMPLETED, rig.endings.awaitOne())
+        rig.host.awaitStopped()
+        assertEquals(listOf(1L to "Best,\nDiana\n"), rig.insertion.pastes.toList())
+        val row = theOnlyRow()
+        assertEquals("backslash signature.", row.originalText)
+        assertEquals("Best,\nDiana\n", row.finalText)
+        assertEquals(true, row.snippetWordSpacing)
     }
 
     @Test

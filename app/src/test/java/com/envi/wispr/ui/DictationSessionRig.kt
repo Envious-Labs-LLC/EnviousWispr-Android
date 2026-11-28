@@ -173,6 +173,7 @@ internal class DictationSessionRig {
         /** Production's compile by default; the #290 rows throw or hold it. */
         compileMatcher: (List<CustomTerm>) -> com.envi.wispr.vocabulary.StructuredTermRestorer.Matcher = com.envi.wispr.vocabulary.StructuredTermRestorer::compile,
         /** Production's bound by default; teardown-during-awaitRescue rows widen it to avoid CI wall-clock flake. */
+        matchSnippets: suspend (String) -> com.envi.wispr.snippets.SnippetExpansion = { com.envi.wispr.snippets.SnippetExpansion.unchanged(it) },
         rescueWaitBoundMs: Long = RescuedWords.RESCUE_WRITE_BOUND_MS,
     ): DictationSessionCoordinator = DictationSessionCoordinator(
         host = host,
@@ -219,6 +220,7 @@ internal class DictationSessionRig {
         compileMatcher = compileMatcher,
         swapGate = swapGate,
         rescueWaitBoundMs = rescueWaitBoundMs,
+        matchSnippets = matchSnippets,
     )
 
     /** The rig's own model-swap gate (#108), recovered so takes are admitted unless a test begins a swap. */
@@ -1096,10 +1098,10 @@ internal class DictationSessionRig {
         @Volatile var holdFinalize: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         /** Counted down when a held publication write has been entered. */
         val finalizeEntered = CountDownLatch(1)
-        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?): Int {
+        override suspend fun finalize(id: Long, originalText: String, finalText: String, speechEngine: String, polishEngine: String, polishLatencyMs: Long, insertionResult: String, durationMs: Long, stateChangedAtMs: Long, polishReason: String, polishStatus: Int, polishContext: String, captureDevice: String, status: String, interrupted: Boolean, liveAfterMs: Long?, asrMs: Long?, snippetWordSpacing: Boolean?): Int {
             holdFinalize?.let { held -> finalizeEntered.countDown(); held.await() }
             if (failInserts || failFinalize) throw IllegalStateException("disk full")
-            val written = if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted, liveAfterMs = liveAfterMs ?: row.liveAfterMs, asrMs = asrMs ?: row.asrMs) } != null) 1 else 0
+            val written = if (rows.computeIfPresent(id) { _, row -> row.copy(originalText = originalText, finalText = finalText, speechEngine = speechEngine, polishEngine = polishEngine, polishLatencyMs = polishLatencyMs, insertionResult = insertionResult, durationMs = durationMs, stateChangedAtMs = stateChangedAtMs, polishReason = polishReason, polishStatus = polishStatus, polishContext = polishContext, captureDevice = captureDevice, status = status, interrupted = interrupted, liveAfterMs = liveAfterMs ?: row.liveAfterMs, snippetWordSpacing = snippetWordSpacing, asrMs = asrMs ?: row.asrMs) } != null) 1 else 0
             afterFinalize?.invoke()
             return written
         }
